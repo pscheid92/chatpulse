@@ -1,0 +1,61 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - durationcheck
+    - errorlint
+    - fatcontext
+    - goconst
+    - gocritic
+    - misspell
+    - nilerr
+    - noctx
+    - prealloc
+    - unconvert
+    - unparam
+    - wastedassign
+  settings:
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        - hugeParam        # structs passed by value are fine for our sizes
+        - rangeValCopy     # copying small structs in range is fine
+        - exitAfterDefer   # standard pattern in main() and TestMain()
+    unparam:
+      check-exported: false
+    errcheck:
+      exclude-functions:
+        # Close errors are generally ignorable for cleanup
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (io.ReadCloser).Close
+        - (*github.com/gorilla/websocket.Conn).Close
+        - (*github.com/gorilla/websocket.Conn).SetWriteDeadline
+        - (*github.com/gorilla/websocket.Conn).SetReadDeadline
+        - (*github.com/pscheid92/chatpulse/internal/redis.Client).Close
+  exclusions:
+    rules:
+      # Deprecated middleware.Logger — replacing requires larger refactor
+      - linters: [staticcheck]
+        text: "SA1019: middleware.Logger"
+      # bodyclose false positive on WebSocket Dial in tests
+      - linters: [bodyclose]
+        path: _test\.go
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
+
+output:
+  sort-order:
+    - file

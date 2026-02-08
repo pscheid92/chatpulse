@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"strconv"
 )
 
 type Config struct {
@@ -16,6 +15,10 @@ type Config struct {
 	TwitchRedirectURI  string
 	SessionSecret      string
 	TokenEncryptionKey string
+	WebhookCallbackURL string
+	WebhookSecret      string
+	BotUserID          string
+	RedisURL           string
 }
 
 func Load() (*Config, error) {
@@ -28,6 +31,10 @@ func Load() (*Config, error) {
 		TwitchRedirectURI:  getEnv("TWITCH_REDIRECT_URI", ""),
 		SessionSecret:      getEnv("SESSION_SECRET", ""),
 		TokenEncryptionKey: getEnv("TOKEN_ENCRYPTION_KEY", ""),
+		WebhookCallbackURL: getEnv("WEBHOOK_CALLBACK_URL", ""),
+		WebhookSecret:      getEnv("WEBHOOK_SECRET", ""),
+		BotUserID:          getEnv("BOT_USER_ID", ""),
+		RedisURL:           getEnv("REDIS_URL", ""),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -46,6 +53,22 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SESSION_SECRET is required")
 	}
 
+	// Webhook config: all three must be set together
+	if cfg.WebhookCallbackURL != "" || cfg.WebhookSecret != "" {
+		if cfg.WebhookCallbackURL == "" {
+			return nil, fmt.Errorf("WEBHOOK_CALLBACK_URL is required when WEBHOOK_SECRET is set")
+		}
+		if cfg.WebhookSecret == "" {
+			return nil, fmt.Errorf("WEBHOOK_SECRET is required when WEBHOOK_CALLBACK_URL is set")
+		}
+		if len(cfg.WebhookSecret) < 10 || len(cfg.WebhookSecret) > 100 {
+			return nil, fmt.Errorf("WEBHOOK_SECRET must be between 10 and 100 characters")
+		}
+		if cfg.BotUserID == "" {
+			return nil, fmt.Errorf("BOT_USER_ID is required when WEBHOOK_CALLBACK_URL is set")
+		}
+	}
+
 	if cfg.TokenEncryptionKey != "" {
 		keyBytes, err := hex.DecodeString(cfg.TokenEncryptionKey)
 		if err != nil {
@@ -62,15 +85,6 @@ func Load() (*Config, error) {
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intVal, err := strconv.Atoi(value); err == nil {
-			return intVal
-		}
 	}
 	return defaultValue
 }

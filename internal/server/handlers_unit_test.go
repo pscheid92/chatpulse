@@ -68,12 +68,12 @@ func TestValidateConfig_IdenticalTriggers(t *testing.T) {
 
 func TestValidateConfig_Valid(t *testing.T) {
 	tests := []struct {
-		name         string
-		triggerFor   string
+		name           string
+		triggerFor     string
 		triggerAgainst string
-		labelLeft    string
-		labelRight   string
-		decaySpeed   float64
+		labelLeft      string
+		labelRight     string
+		decaySpeed     float64
 	}{
 		{
 			name:           "default values",

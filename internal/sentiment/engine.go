@@ -4,12 +4,11 @@ import (
 	"context"
 	"log"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
-	"github.com/pscheid92/twitch-tow/internal/models"
+	"github.com/pscheid92/chatpulse/internal/models"
 )
 
 // ConfigStore is the subset of database operations needed by the engine.
@@ -22,9 +21,14 @@ type Broadcaster interface {
 }
 
 type TwitchManager interface {
-	Unsubscribe(userID uuid.UUID) error
-	IsReconnecting() bool
+	Unsubscribe(ctx context.Context, userID uuid.UUID) error
 }
+
+const (
+	pruneDebounceEvery = 1000 // ticks (~50 seconds at 50ms/tick)
+	orphanMaxAge       = 30 * time.Second
+	decayMinIntervalMs = 40
+)
 
 // --- Command types ---
 
@@ -123,47 +127,27 @@ func (cmdStop) engineCmd() {}
 
 // --- Engine ---
 
-type Session struct {
-	Value                float64
-	LastClientDisconnect time.Time
-	Config               models.ConfigSnapshot
-}
-
-type debounceKey struct {
-	SessionUUID  uuid.UUID
-	TwitchUserID string
-}
-
 type Engine struct {
-	cmdCh                chan engineCmd
-	db                   ConfigStore
-	clock                clockwork.Clock
-	activeSessions       map[uuid.UUID]*Session
-	broadcasterToSession map[string]uuid.UUID
-	debounceMap          map[debounceKey]time.Time
-	broadcaster          Broadcaster
-	statusFn             func() string
-	stopCh               chan struct{}
+	cmdCh chan engineCmd
+	db    ConfigStore
+	store SessionStateStore
+	clock clockwork.Clock
+	// localSessions tracks sessions activated on this instance (for tick/decay).
+	// Maps session UUID to cached config (needed for decay factor calculation).
+	localSessions map[uuid.UUID]models.ConfigSnapshot
+	broadcaster   Broadcaster
+	stopCh        chan struct{}
 }
 
-func NewEngine(db ConfigStore, broadcaster Broadcaster) *Engine {
+func NewEngine(store SessionStateStore, db ConfigStore, clock clockwork.Clock) *Engine {
 	return &Engine{
-		cmdCh:                make(chan engineCmd, 512),
-		db:                   db,
-		clock:                clockwork.NewRealClock(),
-		activeSessions:       make(map[uuid.UUID]*Session),
-		broadcasterToSession: make(map[string]uuid.UUID),
-		debounceMap:          make(map[debounceKey]time.Time),
-		broadcaster:          broadcaster,
-		stopCh:               make(chan struct{}),
+		cmdCh:         make(chan engineCmd, 512),
+		db:            db,
+		store:         store,
+		clock:         clock,
+		localSessions: make(map[uuid.UUID]models.ConfigSnapshot),
+		stopCh:        make(chan struct{}),
 	}
-}
-
-// SetStatusFunc sets a callback that returns the current connection status
-// (e.g., "active", "connecting"). Called from the ticker goroutine, so it
-// must not block. Typically wired to EventSubManager.GetConnectionStatus.
-func (e *Engine) SetStatusFunc(fn func() string) {
-	e.statusFn = fn
 }
 
 // SetBroadcaster sets the broadcaster for the engine. Used to resolve circular
@@ -175,14 +159,13 @@ func (e *Engine) SetBroadcaster(b Broadcaster) {
 
 // Start begins the engine's background goroutines (ticker and actor).
 // IMPORTANT: Call SetBroadcaster() before Start() to ensure broadcasts work correctly.
-// The broadcaster is set asynchronously, so it should be called with enough time for
-// the command to be processed before the first broadcast occurs.
 func (e *Engine) Start() {
 	go e.tickerLoop()
 	go e.run()
 }
 
 func (e *Engine) run() {
+	ctx := context.Background()
 	tickCount := 0
 	for cmd := range e.cmdCh {
 		switch c := cmd.(type) {
@@ -191,78 +174,88 @@ func (e *Engine) run() {
 			log.Printf("Broadcaster set for engine")
 
 		case cmdCheckSession:
-			_, exists := e.activeSessions[c.sessionUUID]
+			exists, err := e.store.SessionExists(ctx, c.sessionUUID)
+			if err != nil {
+				log.Printf("SessionExists error for %s: %v", c.sessionUUID, err)
+			}
 			c.replyCh <- exists
 
 		case cmdResumeSession:
-			if session, exists := e.activeSessions[c.sessionUUID]; exists {
-				session.LastClientDisconnect = time.Time{}
-				log.Printf("Session %s already active, resuming", c.sessionUUID)
+			if err := e.store.ResumeSession(ctx, c.sessionUUID); err != nil {
+				c.replyCh <- err
+				break
 			}
+			// Ensure session is tracked locally for tick/decay
+			if _, exists := e.localSessions[c.sessionUUID]; !exists {
+				config, err := e.store.GetSessionConfig(ctx, c.sessionUUID)
+				if err == nil && config != nil {
+					e.localSessions[c.sessionUUID] = *config
+				}
+			}
+			log.Printf("Session %s resumed", c.sessionUUID)
 			c.replyCh <- nil
 
 		case cmdActivateSession:
-			// Idempotent: if already exists (TOCTOU between check and activate), just resume
-			if session, exists := e.activeSessions[c.sessionUUID]; exists {
-				session.LastClientDisconnect = time.Time{}
-				c.replyCh <- nil
+			if err := e.store.ActivateSession(ctx, c.sessionUUID, c.broadcasterUserID, c.config); err != nil {
+				c.replyCh <- err
 				break
 			}
-			e.activeSessions[c.sessionUUID] = &Session{
-				Value:  0,
-				Config: c.config,
-			}
-			e.broadcasterToSession[c.broadcasterUserID] = c.sessionUUID
+			e.localSessions[c.sessionUUID] = c.config
 			log.Printf("Session %s activated (broadcaster %s)", c.sessionUUID, c.broadcasterUserID)
 			c.replyCh <- nil
 
 		case cmdProcessVote:
-			e.handleProcessVote(c)
+			e.handleProcessVote(ctx, c)
 
 		case cmdTick:
-			e.handleTick()
+			e.handleTick(ctx)
 			tickCount++
-			if tickCount%1000 == 0 {
-				e.pruneDebounceMap()
+			if tickCount%pruneDebounceEvery == 0 {
+				if err := e.store.PruneDebounce(ctx); err != nil {
+					log.Printf("PruneDebounce error: %v", err)
+				}
 			}
 
 		case cmdResetSession:
-			if session, exists := e.activeSessions[c.sessionUUID]; exists {
-				session.Value = 0
+			if err := e.store.ResetValue(ctx, c.sessionUUID); err != nil {
+				log.Printf("ResetValue error for session %s: %v", c.sessionUUID, err)
+			} else {
 				log.Printf("Session %s reset", c.sessionUUID)
 			}
 
 		case cmdMarkDisconnected:
-			if session, exists := e.activeSessions[c.sessionUUID]; exists {
-				session.LastClientDisconnect = e.clock.Now()
+			if err := e.store.MarkDisconnected(ctx, c.sessionUUID); err != nil {
+				log.Printf("MarkDisconnected error for session %s: %v", c.sessionUUID, err)
+			} else {
 				log.Printf("Session %s marked as disconnected", c.sessionUUID)
 			}
 
 		case cmdCleanupOrphans:
-			e.handleCleanupOrphans(c.twitchManager)
+			e.handleCleanupOrphans(ctx, c.twitchManager)
 
 		case cmdUpdateSessionConfig:
-			if session, exists := e.activeSessions[c.sessionUUID]; exists {
-				session.Config = c.config
+			if err := e.store.UpdateConfig(ctx, c.sessionUUID, c.config); err != nil {
+				log.Printf("UpdateConfig error for session %s: %v", c.sessionUUID, err)
+			} else {
+				if _, exists := e.localSessions[c.sessionUUID]; exists {
+					e.localSessions[c.sessionUUID] = c.config
+				}
 				log.Printf("Session %s config updated", c.sessionUUID)
 			}
 
 		case cmdGetSessionConfig:
-			session, exists := e.activeSessions[c.sessionUUID]
-			if !exists {
-				c.replyCh <- nil
-			} else {
-				snapshot := session.Config // copy
-				c.replyCh <- &snapshot
+			config, err := e.store.GetSessionConfig(ctx, c.sessionUUID)
+			if err != nil {
+				log.Printf("GetSessionConfig error for %s: %v", c.sessionUUID, err)
 			}
+			c.replyCh <- config
 
 		case cmdGetSessionValue:
-			session, exists := e.activeSessions[c.sessionUUID]
-			if !exists {
-				c.replyCh <- sessionValueResult{ok: false}
-			} else {
-				c.replyCh <- sessionValueResult{value: session.Value, ok: true}
+			value, exists, err := e.store.GetSessionValue(ctx, c.sessionUUID)
+			if err != nil {
+				log.Printf("GetSessionValue error for %s: %v", c.sessionUUID, err)
 			}
+			c.replyCh <- sessionValueResult{value: value, ok: exists}
 
 		case cmdStop:
 			close(e.stopCh)
@@ -272,105 +265,73 @@ func (e *Engine) run() {
 	}
 }
 
-func (e *Engine) handleProcessVote(c cmdProcessVote) {
-	sessionUUID, exists := e.broadcasterToSession[c.broadcasterUserID]
-	if !exists {
+func (e *Engine) handleProcessVote(ctx context.Context, c cmdProcessVote) {
+	sessionUUID, found, err := e.store.GetSessionByBroadcaster(ctx, c.broadcasterUserID)
+	if err != nil || !found {
 		return
 	}
 
-	targetSession, exists := e.activeSessions[sessionUUID]
-	if !exists {
+	config, err := e.store.GetSessionConfig(ctx, sessionUUID)
+	if err != nil || config == nil {
 		return
 	}
 
-	lowerText := strings.ToLower(c.messageText)
-	lowerFor := strings.ToLower(targetSession.Config.ForTrigger)
-	lowerAgainst := strings.ToLower(targetSession.Config.AgainstTrigger)
-
-	var delta float64
-	if strings.Contains(lowerText, lowerFor) {
-		delta = 10
-	} else if strings.Contains(lowerText, lowerAgainst) {
-		delta = -10
-	} else {
+	delta := MatchTrigger(c.messageText, config)
+	if delta == 0 {
 		return
 	}
 
-	key := debounceKey{SessionUUID: sessionUUID, TwitchUserID: c.twitchUserID}
-	lastVote, exists := e.debounceMap[key]
-	if exists && e.clock.Since(lastVote) < 1*time.Second {
+	allowed, err := e.store.CheckDebounce(ctx, sessionUUID, c.twitchUserID)
+	if err != nil || !allowed {
 		return
 	}
 
-	targetSession.Value = clamp(targetSession.Value+delta, -100, 100)
-	e.debounceMap[key] = e.clock.Now()
-
-	log.Printf("Vote processed: user=%s, delta=%.0f, new value=%.2f", c.twitchUserID, delta, targetSession.Value)
+	newValue, err := e.store.ApplyVote(ctx, sessionUUID, delta)
+	if err != nil {
+		log.Printf("ApplyVote error: %v", err)
+		return
+	}
+	log.Printf("Vote processed: user=%s, delta=%.0f, new value=%.2f", c.twitchUserID, delta, newValue)
 }
 
-func (e *Engine) handleTick() {
-	status := "active"
-	if e.statusFn != nil {
-		status = e.statusFn()
-	}
-
-	updates := make(map[uuid.UUID]float64)
-	for id, session := range e.activeSessions {
-		decayFactor := math.Exp(-session.Config.DecaySpeed * 0.05)
-		session.Value *= decayFactor
-		updates[id] = session.Value
-	}
-
-	for id, value := range updates {
-		e.broadcaster.Broadcast(id, value, status)
-	}
-}
-
-func (e *Engine) handleCleanupOrphans(twitchManager TwitchManager) {
-	orphans := make([]uuid.UUID, 0)
-	now := e.clock.Now()
-
-	for id, session := range e.activeSessions {
-		if !session.LastClientDisconnect.IsZero() && now.Sub(session.LastClientDisconnect) > 30*time.Second {
-			orphans = append(orphans, id)
+func (e *Engine) handleTick(ctx context.Context) {
+	for id, config := range e.localSessions {
+		decayFactor := math.Exp(-config.DecaySpeed * 0.05)
+		nowMs := e.clock.Now().UnixMilli()
+		newValue, err := e.store.ApplyDecay(ctx, id, decayFactor, nowMs, decayMinIntervalMs)
+		if err != nil {
+			log.Printf("Decay error for session %s: %v", id, err)
+			continue
 		}
+		if e.store.NeedsBroadcast() {
+			e.broadcaster.Broadcast(id, newValue, "active")
+		}
+	}
+}
+
+func (e *Engine) handleCleanupOrphans(ctx context.Context, twitchManager TwitchManager) {
+	orphans, err := e.store.ListOrphans(ctx, orphanMaxAge)
+	if err != nil {
+		log.Printf("ListOrphans error: %v", err)
+		return
 	}
 
 	for _, id := range orphans {
-		for broadcasterID, sessionUUID := range e.broadcasterToSession {
-			if sessionUUID == id {
-				delete(e.broadcasterToSession, broadcasterID)
-				break
-			}
+		if err := e.store.DeleteSession(ctx, id); err != nil {
+			log.Printf("DeleteSession error for %s: %v", id, err)
 		}
-		delete(e.activeSessions, id)
-		for key := range e.debounceMap {
-			if key.SessionUUID == id {
-				delete(e.debounceMap, key)
-			}
-		}
+		delete(e.localSessions, id)
 	}
 
-	// Unsubscribe outside actor via goroutine
-	if !twitchManager.IsReconnecting() {
-		go func() {
-			for _, id := range orphans {
-				if err := twitchManager.Unsubscribe(id); err != nil {
-					log.Printf("Failed to unsubscribe orphan session %s: %v", id, err)
-				}
-				log.Printf("Cleaned up orphan session %s", id)
+	go func() {
+		ctx := context.Background()
+		for _, id := range orphans {
+			if err := twitchManager.Unsubscribe(ctx, id); err != nil {
+				log.Printf("Failed to unsubscribe orphan session %s: %v", id, err)
 			}
-		}()
-	}
-}
-
-func (e *Engine) pruneDebounceMap() {
-	now := e.clock.Now()
-	for key, lastVote := range e.debounceMap {
-		if now.Sub(lastVote) > 5*time.Second {
-			delete(e.debounceMap, key)
+			log.Printf("Cleaned up orphan session %s", id)
 		}
-	}
+	}()
 }
 
 func (e *Engine) tickerLoop() {

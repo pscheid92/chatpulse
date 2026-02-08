@@ -3,8 +3,11 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"log"
@@ -16,13 +19,36 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
-	"github.com/pscheid92/twitch-tow/internal/models"
+	"github.com/pscheid92/chatpulse/internal/models"
 )
 
 // Session keys
 const (
-	sessionName     = "twitch-tow-session"
-	sessionKeyToken = "token"
+	sessionName          = "chatpulse-session"
+	sessionKeyToken      = "token"
+	sessionKeyOAuthState = "oauth_state"
+)
+
+// Twitch API endpoints and OAuth scopes
+const (
+	twitchAuthURL  = "https://id.twitch.tv/oauth2/authorize"
+	twitchTokenURL = "https://id.twitch.tv/oauth2/token"
+	twitchUsersURL = "https://api.twitch.tv/helix/users"
+	twitchScopeBot = "channel:bot"
+)
+
+// Validation limits
+const (
+	maxTriggerLen = 500
+	maxLabelLen   = 50
+	minDecaySpeed = 0.1
+	maxDecaySpeed = 2.0
+)
+
+// HTTP timeouts
+const (
+	oauthTimeout    = 10 * time.Second
+	httpCallTimeout = 10 * time.Second
 )
 
 var upgrader = websocket.Upgrader{
@@ -78,24 +104,47 @@ func (s *Server) requireAuth(next echo.HandlerFunc) echo.HandlerFunc {
 
 // --- Auth handlers ---
 
+func generateOAuthState() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate OAuth state: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
 func (s *Server) handleLoginPage(c echo.Context) error {
-	tmpl, err := template.ParseFiles("web/templates/login.html")
+	state, err := generateOAuthState()
 	if err != nil {
-		return c.String(500, "Failed to load template")
+		log.Printf("Failed to generate OAuth state: %v", err)
+		return c.String(500, "Internal error")
 	}
 
-	// Build Twitch OAuth URL with required scope
-	twitchAuthURL := fmt.Sprintf(
-		"https://id.twitch.tv/oauth2/authorize?client_id=%s&redirect_uri=%s&response_type=code&scope=user:read:chat",
+	// Store state in session for CSRF verification
+	session, err := s.sessionStore.Get(c.Request(), sessionName)
+	if err != nil {
+		log.Printf("Warning: failed to get session for OAuth state: %v", err)
+	}
+	session.Values[sessionKeyOAuthState] = state
+	if err := session.Save(c.Request(), c.Response().Writer); err != nil {
+		log.Printf("Failed to save OAuth state session: %v", err)
+		return c.String(500, "Internal error")
+	}
+
+	// Build Twitch OAuth URL with required scope and CSRF state
+	authURL := fmt.Sprintf(
+		"%s?client_id=%s&redirect_uri=%s&response_type=code&scope=%s&state=%s",
+		twitchAuthURL,
 		url.QueryEscape(s.config.TwitchClientID),
 		url.QueryEscape(s.config.TwitchRedirectURI),
+		url.QueryEscape(twitchScopeBot),
+		url.QueryEscape(state),
 	)
 
 	data := map[string]interface{}{
-		"TwitchAuthURL": twitchAuthURL,
+		"TwitchAuthURL": authURL,
 	}
 
-	return renderTemplate(c, tmpl, data)
+	return renderTemplate(c, s.loginTemplate, data)
 }
 
 func (s *Server) handleOAuthCallback(c echo.Context) error {
@@ -104,30 +153,39 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 		return c.String(400, "Missing code parameter")
 	}
 
+	// Verify CSRF state parameter
+	session, err := s.sessionStore.Get(c.Request(), sessionName)
+	if err != nil {
+		return c.String(400, "Invalid session")
+	}
+	expectedState, ok := session.Values[sessionKeyOAuthState].(string)
+	if !ok || expectedState == "" {
+		return c.String(400, "Missing OAuth state")
+	}
+	if c.QueryParam("state") != expectedState {
+		return c.String(400, "Invalid OAuth state")
+	}
+	delete(session.Values, sessionKeyOAuthState)
+
 	// Exchange code for access token with timeout
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), oauthTimeout)
 	defer cancel()
 
-	accessToken, refreshToken, expiresIn, twitchUserID, twitchUsername, err := s.exchangeCodeForToken(ctx, code)
+	result, err := s.exchangeCodeForToken(ctx, code)
 	if err != nil {
 		log.Printf("Failed to exchange code: %v", err)
 		return c.String(500, "Failed to authenticate with Twitch")
 	}
 
 	// Save user to database
-	tokenExpiry := time.Now().Add(time.Duration(expiresIn) * time.Second)
-	user, err := s.db.UpsertUser(ctx, twitchUserID, twitchUsername, accessToken, refreshToken, tokenExpiry)
+	tokenExpiry := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+	user, err := s.db.UpsertUser(ctx, result.UserID, result.Username, result.AccessToken, result.RefreshToken, tokenExpiry)
 	if err != nil {
 		log.Printf("Failed to save user: %v", err)
 		return c.String(500, "Failed to save user")
 	}
 
-	// Create session
-	session, err := s.sessionStore.Get(c.Request(), sessionName)
-	if err != nil {
-		log.Printf("Warning: failed to get session during OAuth: %v", err)
-		// Continue with new session
-	}
+	// Store user ID in existing session (reused from state verification above)
 	session.Values[sessionKeyToken] = user.ID.String()
 	if err := session.Save(c.Request(), c.Response().Writer); err != nil {
 		log.Printf("Failed to save session: %v", err)
@@ -158,8 +216,36 @@ func (s *Server) handleLogout(c echo.Context) error {
 	return c.Redirect(302, "/auth/login")
 }
 
-func (s *Server) exchangeCodeForToken(ctx context.Context, code string) (accessToken, refreshToken string, expiresIn int, twitchUserID, twitchUsername string, err error) {
-	// Exchange code for token
+// twitchTokenResult holds the result of a Twitch OAuth token exchange + user info fetch.
+type twitchTokenResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int
+	UserID       string
+	Username     string
+}
+
+func (s *Server) exchangeCodeForToken(ctx context.Context, code string) (*twitchTokenResult, error) {
+	accessToken, refreshToken, expiresIn, err := s.exchangeCode(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange failed: %w", err)
+	}
+
+	userID, username, err := s.fetchTwitchUser(ctx, accessToken)
+	if err != nil {
+		return nil, fmt.Errorf("user info fetch failed: %w", err)
+	}
+
+	return &twitchTokenResult{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresIn:    expiresIn,
+		UserID:       userID,
+		Username:     username,
+	}, nil
+}
+
+func (s *Server) exchangeCode(ctx context.Context, code string) (accessToken, refreshToken string, expiresIn int, err error) {
 	data := url.Values{}
 	data.Set("client_id", s.config.TwitchClientID)
 	data.Set("client_secret", s.config.TwitchClientSecret)
@@ -167,13 +253,13 @@ func (s *Server) exchangeCodeForToken(ctx context.Context, code string) (accessT
 	data.Set("grant_type", "authorization_code")
 	data.Set("redirect_uri", s.config.TwitchRedirectURI)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://id.twitch.tv/oauth2/token", nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", twitchTokenURL, nil)
 	if err != nil {
 		return
 	}
 	req.URL.RawQuery = data.Encode()
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: httpCallTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return
@@ -195,26 +281,26 @@ func (s *Server) exchangeCodeForToken(ctx context.Context, code string) (accessT
 		return
 	}
 
-	accessToken = tokenResp.AccessToken
-	refreshToken = tokenResp.RefreshToken
-	expiresIn = tokenResp.ExpiresIn
+	return tokenResp.AccessToken, tokenResp.RefreshToken, tokenResp.ExpiresIn, nil
+}
 
-	// Get user info
-	req2, err := http.NewRequestWithContext(ctx, "GET", "https://api.twitch.tv/helix/users", nil)
+func (s *Server) fetchTwitchUser(ctx context.Context, accessToken string) (userID, username string, err error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", twitchUsersURL, nil)
 	if err != nil {
 		return
 	}
-	req2.Header.Set("Authorization", "Bearer "+accessToken)
-	req2.Header.Set("Client-Id", s.config.TwitchClientID)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Client-Id", s.config.TwitchClientID)
 
-	resp2, err := client.Do(req2)
+	client := &http.Client{Timeout: httpCallTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
-	defer resp2.Body.Close()
+	defer resp.Body.Close()
 
-	if resp2.StatusCode != http.StatusOK {
-		err = fmt.Errorf("twitch user API returned status %d", resp2.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		err = fmt.Errorf("twitch user API returned status %d", resp.StatusCode)
 		return
 	}
 
@@ -226,7 +312,7 @@ func (s *Server) exchangeCodeForToken(ctx context.Context, code string) (accessT
 		} `json:"data"`
 	}
 
-	if err = json.NewDecoder(resp2.Body).Decode(&userResp); err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&userResp); err != nil {
 		return
 	}
 
@@ -235,10 +321,10 @@ func (s *Server) exchangeCodeForToken(ctx context.Context, code string) (accessT
 		return
 	}
 
-	twitchUserID = userResp.Data[0].ID
-	twitchUsername = userResp.Data[0].DisplayName
-	if twitchUsername == "" {
-		twitchUsername = userResp.Data[0].Login
+	userID = userResp.Data[0].ID
+	username = userResp.Data[0].DisplayName
+	if username == "" {
+		username = userResp.Data[0].Login
 	}
 
 	return
@@ -247,7 +333,10 @@ func (s *Server) exchangeCodeForToken(ctx context.Context, code string) (accessT
 // --- Dashboard handlers ---
 
 func (s *Server) handleDashboard(c echo.Context) error {
-	userID := c.Get("userID").(uuid.UUID)
+	userID, ok := c.Get("userID").(uuid.UUID)
+	if !ok {
+		return c.String(500, "Internal error: invalid user ID")
+	}
 	ctx := c.Request().Context()
 
 	user, err := s.db.GetUserByID(ctx, userID)
@@ -260,25 +349,20 @@ func (s *Server) handleDashboard(c echo.Context) error {
 		return c.String(500, "Failed to load config")
 	}
 
-	tmpl, err := template.ParseFiles("web/templates/dashboard.html")
-	if err != nil {
-		return c.String(500, "Failed to load template")
-	}
-
 	overlayURL := fmt.Sprintf("%s/overlay/%s", s.getBaseURL(c), user.OverlayUUID)
 
 	data := map[string]interface{}{
-		"Username":      user.TwitchUsername,
-		"OverlayURL":    overlayURL,
-		"OverlayUUID":   user.OverlayUUID.String(),
-		"ForTrigger":    config.ForTrigger,
+		"Username":       user.TwitchUsername,
+		"OverlayURL":     overlayURL,
+		"OverlayUUID":    user.OverlayUUID.String(),
+		"ForTrigger":     config.ForTrigger,
 		"AgainstTrigger": config.AgainstTrigger,
-		"LeftLabel":     config.LeftLabel,
-		"RightLabel":    config.RightLabel,
-		"DecaySpeed":    config.DecaySpeed,
+		"LeftLabel":      config.LeftLabel,
+		"RightLabel":     config.RightLabel,
+		"DecaySpeed":     config.DecaySpeed,
 	}
 
-	return renderTemplate(c, tmpl, data)
+	return renderTemplate(c, s.dashboardTemplate, data)
 }
 
 // validateConfig validates config form inputs
@@ -297,29 +381,32 @@ func validateConfig(forTrigger, againstTrigger, leftLabel, rightLabel string, de
 	}
 
 	// Length limits (prevent DB bloat)
-	if len(forTrigger) > 500 {
-		return fmt.Errorf("for trigger exceeds 500 characters")
+	if len(forTrigger) > maxTriggerLen {
+		return fmt.Errorf("for trigger exceeds %d characters", maxTriggerLen)
 	}
-	if len(againstTrigger) > 500 {
-		return fmt.Errorf("against trigger exceeds 500 characters")
+	if len(againstTrigger) > maxTriggerLen {
+		return fmt.Errorf("against trigger exceeds %d characters", maxTriggerLen)
 	}
-	if len(leftLabel) > 50 {
-		return fmt.Errorf("left label exceeds 50 characters")
+	if len(leftLabel) > maxLabelLen {
+		return fmt.Errorf("left label exceeds %d characters", maxLabelLen)
 	}
-	if len(rightLabel) > 50 {
-		return fmt.Errorf("right label exceeds 50 characters")
+	if len(rightLabel) > maxLabelLen {
+		return fmt.Errorf("right label exceeds %d characters", maxLabelLen)
 	}
 
 	// Decay range (must match slider in template: 0.1-2.0)
-	if decaySpeed < 0.1 || decaySpeed > 2.0 {
-		return fmt.Errorf("decay speed must be between 0.1 and 2.0")
+	if decaySpeed < minDecaySpeed || decaySpeed > maxDecaySpeed {
+		return fmt.Errorf("decay speed must be between %.1f and %.1f", minDecaySpeed, maxDecaySpeed)
 	}
 
 	return nil
 }
 
 func (s *Server) handleSaveConfig(c echo.Context) error {
-	userID := c.Get("userID").(uuid.UUID)
+	userID, ok := c.Get("userID").(uuid.UUID)
+	if !ok {
+		return c.String(500, "Internal error: invalid user ID")
+	}
 	ctx := c.Request().Context()
 
 	// Parse form
@@ -346,7 +433,9 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 
 	// Update in-memory config for active sessions
 	user, err := s.db.GetUserByID(ctx, userID)
-	if err == nil {
+	if err != nil {
+		log.Printf("Failed to get user for live config update: %v", err)
+	} else {
 		snapshot := models.ConfigSnapshot{
 			ForTrigger:     forTrigger,
 			AgainstTrigger: againstTrigger,
@@ -363,7 +452,10 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 // --- API handlers ---
 
 func (s *Server) handleResetSentiment(c echo.Context) error {
-	userID := c.Get("userID").(uuid.UUID)
+	userID, ok := c.Get("userID").(uuid.UUID)
+	if !ok {
+		return c.String(500, "Internal error: invalid user ID")
+	}
 	overlayUUIDStr := c.Param("uuid")
 
 	overlayUUID, err := uuid.Parse(overlayUUIDStr)
@@ -388,7 +480,10 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 }
 
 func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
-	userID := c.Get("userID").(uuid.UUID)
+	userID, ok := c.Get("userID").(uuid.UUID)
+	if !ok {
+		return c.String(500, "Internal error: invalid user ID")
+	}
 	ctx := c.Request().Context()
 
 	newUUID, err := s.db.RotateOverlayUUID(ctx, userID)
@@ -399,9 +494,9 @@ func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
 
 	newURL := fmt.Sprintf("%s/overlay/%s", s.getBaseURL(c), newUUID)
 	return c.JSON(200, map[string]interface{}{
-		"status":     "ok",
-		"new_uuid":   newUUID.String(),
-		"new_url":    newURL,
+		"status":   "ok",
+		"new_uuid": newUUID.String(),
+		"new_url":  newURL,
 	})
 }
 
@@ -418,7 +513,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 
 	// Look up user by overlay UUID to get config
 	user, err := s.db.GetUserByOverlayUUID(ctx, overlayUUID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return c.String(404, "Overlay not found")
 	}
 	if err != nil {
@@ -433,11 +528,6 @@ func (s *Server) handleOverlay(c echo.Context) error {
 		return c.String(500, "Failed to load config")
 	}
 
-	tmpl, err := template.ParseFiles("web/templates/overlay.html")
-	if err != nil {
-		return c.String(500, "Failed to load template")
-	}
-
 	data := map[string]interface{}{
 		"LeftLabel":   config.LeftLabel,
 		"RightLabel":  config.RightLabel,
@@ -445,7 +535,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 		"SessionUUID": overlayUUIDStr,
 	}
 
-	return renderTemplate(c, tmpl, data)
+	return renderTemplate(c, s.overlayTemplate, data)
 }
 
 // --- WebSocket handler ---
@@ -461,7 +551,7 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 
 	// Look up user by overlay UUID
 	user, err := s.db.GetUserByOverlayUUID(ctx, overlayUUID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return c.String(404, "Session not found")
 	}
 	if err != nil {
@@ -472,8 +562,9 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
-		log.Printf("Failed to upgrade WebSocket: %v", err)
-		return nil
+		// Upgrade writes its own HTTP error response, so return the error
+		// for logging only — Echo won't double-write after Upgrade.
+		return fmt.Errorf("failed to upgrade WebSocket: %w", err)
 	}
 
 	// Register with hub (onFirstConnect callback handles activation and subscription)
@@ -494,7 +585,7 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 	s.hub.Unregister(user.OverlayUUID, conn)
 	s.sentiment.MarkDisconnected(user.OverlayUUID)
 
-	return nil
+	return nil //nolint:nilerr // ReadMessage err is block-scoped; outer err is nil
 }
 
 // --- Helpers ---

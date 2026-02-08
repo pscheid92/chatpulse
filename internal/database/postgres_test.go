@@ -16,6 +16,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+const testEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 var (
 	testDB          *DB
 	testDatabaseURL string
@@ -25,8 +27,8 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container once for all tests
-	postgresContainer, err := postgres.RunContainer(ctx,
-		testcontainers.WithImage("postgres:15-alpine"),
+	postgresContainer, err := postgres.Run(ctx,
+		"postgres:15-alpine",
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("testuser"),
 		postgres.WithPassword("testpass"),
@@ -247,8 +249,7 @@ func TestEncryptDecrypt_WithKey(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	keyHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	db, err := Connect(testDatabaseURL, keyHex)
+	db, err := Connect(testDatabaseURL, testEncryptionKey)
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -292,8 +293,7 @@ func TestEncryptDecrypt_DecryptInvalidCiphertext(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	keyHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	db, err := Connect(testDatabaseURL, keyHex)
+	db, err := Connect(testDatabaseURL, testEncryptionKey)
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -366,8 +366,7 @@ func TestUpsertUser_TokenEncryption(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	keyHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	db, err := Connect(testDatabaseURL, keyHex)
+	db, err := Connect(testDatabaseURL, testEncryptionKey)
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -432,8 +431,7 @@ func TestGetUserByID_TokenDecryption(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	keyHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	db, err := Connect(testDatabaseURL, keyHex)
+	db, err := Connect(testDatabaseURL, testEncryptionKey)
 	require.NoError(t, err)
 	defer db.Close()
 

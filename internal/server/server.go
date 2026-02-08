@@ -3,17 +3,24 @@ package server
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/pscheid92/twitch-tow/internal/config"
-	"github.com/pscheid92/twitch-tow/internal/models"
-	"github.com/pscheid92/twitch-tow/internal/sentiment"
-	"github.com/pscheid92/twitch-tow/internal/websocket"
+	"github.com/pscheid92/chatpulse/internal/config"
+	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/sentiment"
+	"github.com/pscheid92/chatpulse/internal/websocket"
+)
+
+const (
+	sessionMaxAgeDays = 7
+	cleanupInterval   = 30 * time.Second
 )
 
 // dataStore is the subset of database operations used by the server
@@ -37,24 +44,46 @@ type sentimentService interface {
 
 // twitchService is the subset of Twitch operations used by the server
 type twitchService interface {
-	Subscribe(userID uuid.UUID, broadcasterUserID string) error
-	Unsubscribe(userID uuid.UUID) error
-	IsReconnecting() bool
+	Subscribe(ctx context.Context, userID uuid.UUID, broadcasterUserID string) error
+	Unsubscribe(ctx context.Context, userID uuid.UUID) error
+}
+
+// webhookHandler handles EventSub webhook requests (nil if webhooks not configured)
+type webhookHandler interface {
+	HandleEventSub(c echo.Context) error
 }
 
 type Server struct {
-	echo            *echo.Echo
-	config          *config.Config
-	db              dataStore
-	sentiment       sentimentService
-	twitch          twitchService
-	hub             *websocket.Hub
-	sessionStore    *sessions.CookieStore
-	cleanupTimer    *time.Ticker
-	cleanupStopCh   chan struct{}
+	echo              *echo.Echo
+	config            *config.Config
+	db                dataStore
+	sentiment         sentimentService
+	twitch            twitchService
+	hub               *websocket.Hub
+	webhook           webhookHandler
+	sessionStore      *sessions.CookieStore
+	cleanupTimer      *time.Ticker
+	cleanupStopCh     chan struct{}
+	loginTemplate     *template.Template
+	dashboardTemplate *template.Template
+	overlayTemplate   *template.Template
 }
 
-func NewServer(cfg *config.Config, db dataStore, sentiment sentimentService, twitch twitchService, hub *websocket.Hub) *Server {
+func NewServer(cfg *config.Config, db dataStore, sentiment sentimentService, twitch twitchService, hub *websocket.Hub, webhook webhookHandler) (*Server, error) {
+	// Parse templates once at startup
+	loginTmpl, err := template.ParseFiles("web/templates/login.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse login template: %w", err)
+	}
+	dashboardTmpl, err := template.ParseFiles("web/templates/dashboard.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse dashboard template: %w", err)
+	}
+	overlayTmpl, err := template.ParseFiles("web/templates/overlay.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse overlay template: %w", err)
+	}
+
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -67,21 +96,25 @@ func NewServer(cfg *config.Config, db dataStore, sentiment sentimentService, twi
 	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
 	sessionStore.Options = &sessions.Options{
 		Path:     "/",
-		MaxAge:   86400 * 7, // 7 days
+		MaxAge:   86400 * sessionMaxAgeDays,
 		HttpOnly: true,
 		Secure:   cfg.AppEnv == "production",
-		SameSite: 2, // Lax
+		SameSite: http.SameSiteLaxMode,
 	}
 
 	srv := &Server{
-		echo:          e,
-		config:        cfg,
-		db:            db,
-		sentiment:     sentiment,
-		twitch:        twitch,
-		hub:           hub,
-		sessionStore:  sessionStore,
-		cleanupStopCh: make(chan struct{}),
+		echo:              e,
+		config:            cfg,
+		db:                db,
+		sentiment:         sentiment,
+		twitch:            twitch,
+		hub:               hub,
+		webhook:           webhook,
+		sessionStore:      sessionStore,
+		cleanupStopCh:     make(chan struct{}),
+		loginTemplate:     loginTmpl,
+		dashboardTemplate: dashboardTmpl,
+		overlayTemplate:   overlayTmpl,
 	}
 
 	// Register routes
@@ -90,7 +123,7 @@ func NewServer(cfg *config.Config, db dataStore, sentiment sentimentService, twi
 	// Start cleanup timer (30s interval for orphaned sessions)
 	srv.startCleanupTimer()
 
-	return srv
+	return srv, nil
 }
 
 func (s *Server) Start() error {
@@ -108,12 +141,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) startCleanupTimer() {
-	s.cleanupTimer = time.NewTicker(30 * time.Second)
+	s.cleanupTimer = time.NewTicker(cleanupInterval)
 	go func() {
 		for {
 			select {
 			case <-s.cleanupTimer.C:
-				s.sentiment.CleanupOrphans(s.twitch)
+				if s.twitch != nil {
+					s.sentiment.CleanupOrphans(s.twitch)
+				}
 			case <-s.cleanupStopCh:
 				return
 			}

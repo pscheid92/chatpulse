@@ -1,16 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(go build:*)",
-      "Bash(tree:*)",
-      "Bash(./verify.sh:*)",
-      "Bash(make build:*)",
-      "Bash(go mod tidy:*)",
-      "Bash(go test:*)",
-      "Bash(go doc:*)",
-      "Bash(go vet:*)",
-      "Bash(make test:*)",
-      "Bash(find:*)"
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash",
+      "WebSearch",
+      "WebFetch"
     ]
   }
 }

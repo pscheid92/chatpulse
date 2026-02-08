@@ -10,7 +10,7 @@ run: build
 
 # Build Docker image
 docker-build:
-	docker build -t twitch-tow .
+	docker build -t chatpulse .
 
 # Start with Docker Compose
 docker-up:

@@ -33,7 +33,7 @@ func testHub(t *testing.T, onFirst func(uuid.UUID) error, onLast func(uuid.UUID)
 			t.Fatalf("upgrade failed: %v", err)
 		}
 		sessionUUID := uuid.MustParse(r.URL.Query().Get("session"))
-		hub.Register(sessionUUID, conn)
+		_ = hub.Register(sessionUUID, conn)
 
 		// Read loop to detect disconnects
 		go func() {

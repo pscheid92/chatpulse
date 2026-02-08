@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pscheid92/twitch-tow/internal/models"
+	"github.com/pscheid92/chatpulse/internal/models"
 	"github.com/stretchr/testify/require"
 )
 

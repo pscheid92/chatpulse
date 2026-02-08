@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
-	"github.com/pscheid92/twitch-tow/internal/models"
+	"github.com/pscheid92/chatpulse/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,21 +64,14 @@ func (m *mockBroadcaster) getBroadcasts() []broadcastCall {
 type mockTwitchManager struct {
 	mu               sync.Mutex
 	unsubscribeCalls []uuid.UUID
-	isReconnecting   bool
 	unsubscribeErr   error
 }
 
-func (m *mockTwitchManager) Unsubscribe(userID uuid.UUID) error {
+func (m *mockTwitchManager) Unsubscribe(ctx context.Context, userID uuid.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.unsubscribeCalls = append(m.unsubscribeCalls, userID)
 	return m.unsubscribeErr
-}
-
-func (m *mockTwitchManager) IsReconnecting() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.isReconnecting
 }
 
 func (m *mockTwitchManager) getUnsubscribeCalls() []uuid.UUID {
@@ -104,17 +97,18 @@ func defaultConfig() *models.Config {
 type testEngine struct {
 	engine      *Engine
 	clock       *clockwork.FakeClock
-	store       *mockConfigStore
+	configStore *mockConfigStore
 	broadcaster *mockBroadcaster
 }
 
 func newTestEngine(t *testing.T, cfg *models.Config) *testEngine {
 	t.Helper()
 	fakeClock := clockwork.NewFakeClock()
-	store := &mockConfigStore{config: cfg}
+	configStore := &mockConfigStore{config: cfg}
+	memStore := NewInMemoryStore(fakeClock)
 	broadcaster := &mockBroadcaster{}
-	engine := NewEngine(store, broadcaster)
-	engine.clock = fakeClock
+	engine := NewEngine(memStore, configStore, fakeClock)
+	engine.broadcaster = broadcaster
 	// Start the actor goroutine (required for command processing)
 	go engine.run()
 	t.Cleanup(func() {
@@ -123,7 +117,7 @@ func newTestEngine(t *testing.T, cfg *models.Config) *testEngine {
 	return &testEngine{
 		engine:      engine,
 		clock:       fakeClock,
-		store:       store,
+		configStore: configStore,
 		broadcaster: broadcaster,
 	}
 }
@@ -172,12 +166,12 @@ func TestActivateSession_AlreadyActive(t *testing.T) {
 
 	err := te.engine.ActivateSession(context.Background(), sessionUUID, userID, "broadcaster123")
 	require.NoError(t, err)
-	assert.Equal(t, 1, te.store.getCallCount())
+	assert.Equal(t, 1, te.configStore.getCallCount())
 
 	// Activate again — should be idempotent, no extra DB call
 	err = te.engine.ActivateSession(context.Background(), sessionUUID, userID, "broadcaster123")
 	require.NoError(t, err)
-	assert.Equal(t, 1, te.store.getCallCount())
+	assert.Equal(t, 1, te.configStore.getCallCount())
 }
 
 func TestActivateSession_ReconnectPreservesValue(t *testing.T) {
@@ -212,7 +206,7 @@ func TestActivateSession_ReconnectPreservesValue(t *testing.T) {
 
 func TestActivateSession_DBError(t *testing.T) {
 	te := newTestEngine(t, nil)
-	te.store.err = fmt.Errorf("database connection refused")
+	te.configStore.err = fmt.Errorf("database connection refused")
 
 	err := te.engine.ActivateSession(context.Background(), uuid.New(), uuid.New(), "broadcaster123")
 	require.Error(t, err)
@@ -426,7 +420,7 @@ func TestCleanupOrphans_Unsubscribes(t *testing.T) {
 	te.engine.GetSessionConfig(sessionUUID) // barrier
 	te.clock.Advance(31 * time.Second)
 
-	tm := &mockTwitchManager{isReconnecting: false}
+	tm := &mockTwitchManager{}
 	te.engine.CleanupOrphans(tm)
 
 	// Barrier to ensure cleanup command processed
@@ -437,24 +431,6 @@ func TestCleanupOrphans_Unsubscribes(t *testing.T) {
 	calls := tm.getUnsubscribeCalls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, sessionUUID, calls[0])
-}
-
-func TestCleanupOrphans_SkipsDuringReconnect(t *testing.T) {
-	te := newTestEngine(t, defaultConfig())
-	sessionUUID, _ := te.activate(t)
-
-	te.engine.MarkDisconnected(sessionUUID)
-	te.engine.GetSessionConfig(sessionUUID) // barrier
-	te.clock.Advance(31 * time.Second)
-
-	tm := &mockTwitchManager{isReconnecting: true}
-	te.engine.CleanupOrphans(tm)
-
-	// Session should be removed from map...
-	assert.Nil(t, te.engine.GetSessionConfig(sessionUUID))
-	// ...but Unsubscribe should NOT be called
-	time.Sleep(50 * time.Millisecond)
-	assert.Empty(t, tm.getUnsubscribeCalls())
 }
 
 func TestCleanupOrphans_OnlyRemovesOrphans(t *testing.T) {
@@ -567,7 +543,7 @@ func TestTickerLoop_AppliesDecay(t *testing.T) {
 
 	// Start ticker and let it fire
 	go te.engine.tickerLoop()
-	te.clock.BlockUntil(1) // Wait for ticker goroutine to be blocked on clock
+	te.clock.BlockUntilContext(context.Background(), 1) //nolint:errcheck // Wait for ticker goroutine to be blocked on clock
 	te.clock.Advance(50 * time.Millisecond)
 
 	broadcasts := waitForBroadcasts(te.broadcaster, 1)
@@ -591,7 +567,7 @@ func TestTickerLoop_BroadcastsAllSessions(t *testing.T) {
 	te.getValue(t, sessionUUID1)
 
 	go te.engine.tickerLoop()
-	te.clock.BlockUntil(1)
+	te.clock.BlockUntilContext(context.Background(), 1) //nolint:errcheck
 	te.clock.Advance(50 * time.Millisecond)
 
 	broadcasts := waitForBroadcasts(te.broadcaster, 2)

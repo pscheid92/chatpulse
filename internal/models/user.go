@@ -36,3 +36,11 @@ type ConfigSnapshot struct {
 	RightLabel     string
 	DecaySpeed     float64
 }
+
+type EventSubSubscription struct {
+	UserID            uuid.UUID `db:"user_id"`
+	BroadcasterUserID string    `db:"broadcaster_user_id"`
+	SubscriptionID    string    `db:"subscription_id"`
+	ConduitID         string    `db:"conduit_id"`
+	CreatedAt         time.Time `db:"created_at"`
+}

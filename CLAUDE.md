@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Twitch Sentiment Overlay ("tow") - a Go application that tracks real-time chat sentiment for Twitch streamers via an OBS browser source overlay.
+ChatPulse - a Go application that tracks real-time chat sentiment for Twitch streamers via an OBS browser source overlay. Uses a dedicated bot account to read chat on behalf of all streamers. Designed as a multi-tenant SaaS supporting horizontal scaling across multiple instances via Redis.
 
 ## Build & Run
 
@@ -10,10 +10,13 @@ Twitch Sentiment Overlay ("tow") - a Go application that tracks real-time chat s
 make build          # Build binary → ./server
 make run            # Build and run locally
 make test           # Run all tests (go test -v ./...)
+make test-short     # Run unit tests only (go test -short ./...)
+make test-race      # Run tests with race detector
+make test-coverage  # Generate coverage.out and coverage.html
 make fmt            # Format code (go fmt ./...)
-make lint           # Run golangci-lint (default rules, no .golangci.yml)
+make lint           # Run golangci-lint (configured via .golangci.yml)
 make deps           # go mod download && go mod tidy
-make docker-up      # Start with Docker Compose (app + PostgreSQL)
+make docker-up      # Start with Docker Compose (app + PostgreSQL + Redis)
 make docker-down    # Stop Docker Compose
 make clean          # Remove build artifacts
 ```
@@ -23,21 +26,32 @@ Environment is loaded automatically via `godotenv` from `.env` (see `.env.exampl
 ## Project Structure
 
 ```
-cmd/server/main.go          Entry point (dotenv → config → DB → migrations → server)
+cmd/server/main.go          Entry point with helper functions (initStore, initWebhooks, newHubCallbacks, runGracefulShutdown)
 internal/
   config/config.go          Environment variable loading + validation
   database/postgres.go      PostgreSQL connection, migrations, CRUD, token encryption, health check
-  models/user.go            User (with OverlayUUID), Config, ConfigSnapshot models
+  models/user.go            User, Config, ConfigSnapshot, EventSubSubscription models
+  redis/
+    client.go               Redis connection wrapper (NewClient, Ping, Close)
+    session.go              Redis-backed session state (keys, debounce, orphan scanning)
+    pubsub.go               Cross-instance broadcast via Redis Pub/Sub
+    scripts.go              Lua scripts for atomic vote + decay operations
+  sentiment/
+    engine.go               Core engine: actor pattern, tick/decay, session lifecycle
+    store.go                SessionStateStore interface definition
+    store_memory.go         In-memory store (single-instance mode)
+    store_redis.go          Redis store (multi-instance mode)
+    trigger.go              Pure function: MatchTrigger for vote matching
   server/
     server.go               Echo server setup, lifecycle, cleanup sweep
-    routes.go               Route definitions
+    routes.go               Route definitions (incl. webhook endpoint)
     handlers.go             HTTP handlers (OAuth, dashboard, API, WebSocket)
-  sentiment/engine.go       Core engine: sessions, decay, debouncing, voting (actor pattern)
   twitch/
-    helix.go                Twitch Helix API wrapper (EventSub create/delete)
-    eventsub.go             EventSub WebSocket with 5-state machine (actor pattern)
-    token.go                Token refresh middleware
-  websocket/hub.go          WebSocket hub for overlay clients (actor pattern, per-conn writers)
+    client.go               Kappopher-based Twitch API wrapper (conduit + EventSub CRUD)
+    conduit.go              Conduit lifecycle (create/find/configure webhook shard/cleanup)
+    webhook.go              EventSub webhook handler (HMAC verification, direct-to-store voting)
+    subscription.go         DB-backed EventSub subscription manager
+  websocket/hub.go          WebSocket hub (actor pattern, per-conn writers, Redis Pub/Sub listener)
 web/templates/
   login.html                Login page with Twitch OAuth button
   dashboard.html            Streamer config UI (auth required, has logout + rotate URL)
@@ -51,177 +65,164 @@ web/templates/
 - `GET /auth/callback` - Twitch OAuth callback
 - `POST /auth/logout` - Clears session, redirects to login page
 - `GET /dashboard` - Streamer config page (auth required)
-- `POST /dashboard/config` - Save config (auth required, live-updates in-memory config)
+- `POST /dashboard/config` - Save config (auth required, live-updates config)
 - `POST /api/reset/:uuid` - Reset sentiment bar (auth required)
 - `POST /api/rotate-overlay-uuid` - Generate new overlay URL (auth required)
 - `GET /overlay/:uuid` - Serve overlay page (public, uses overlay UUID)
 - `GET /ws/overlay/:uuid` - WebSocket endpoint (public, uses overlay UUID)
+- `POST /webhooks/eventsub` - Twitch EventSub webhook receiver (when configured)
 
 ## Environment Variables
 
-All defined in `.env.example`. Required: `DATABASE_URL`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TWITCH_REDIRECT_URI`, `SESSION_SECRET`. Optional: `TOKEN_ENCRYPTION_KEY` (64 hex chars = 32 bytes for AES-256-GCM token encryption at rest; if empty, tokens are stored in plaintext).
+All defined in `.env.example`.
+
+**Required**: `DATABASE_URL`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TWITCH_REDIRECT_URI`, `SESSION_SECRET`.
+
+**Webhook group** (all three required together):
+- `WEBHOOK_CALLBACK_URL` — Public HTTPS URL for EventSub webhook delivery (required for production)
+- `WEBHOOK_SECRET` — HMAC secret for webhook signature verification (10-100 chars)
+- `BOT_USER_ID` — Twitch user ID of the dedicated bot account that reads chat
+
+**Optional**:
+- `TOKEN_ENCRYPTION_KEY` — 64 hex chars (32 bytes) for AES-256-GCM token encryption at rest; if empty, tokens stored in plaintext
+- `REDIS_URL` — Redis connection URL (e.g., `redis://localhost:6379`); enables multi-instance mode
 
 ## Database
 
-PostgreSQL 15+. Two tables auto-created via migrations in `postgres.go`:
-- `users` - Twitch OAuth data, tokens (encrypted at rest if `TOKEN_ENCRYPTION_KEY` set), expiry, `overlay_uuid` (separate from internal `id`)
-- `configs` - Per-user sentiment config (triggers, labels, decay speed)
+PostgreSQL 15+. Three tables auto-created via migrations in `postgres.go`:
+- `users` — Twitch OAuth data, tokens (encrypted at rest if `TOKEN_ENCRYPTION_KEY` set), expiry, `overlay_uuid` (separate from internal `id`)
+- `configs` — Per-user sentiment config (triggers, labels, decay speed)
+- `eventsub_subscriptions` — Tracks active EventSub subscriptions per user (user_id FK, broadcaster_user_id, subscription_id, conduit_id)
 
 ## Architecture Notes
 
+### Scaling Model
+
+The app supports two deployment modes:
+
+1. **Single-instance** (no `REDIS_URL`): In-memory session state, Engine broadcasts directly to Hub. Good for development and small deployments.
+2. **Multi-instance** (`REDIS_URL` set): Session state in Redis, Lua scripts for atomic vote/decay, Redis Pub/Sub for cross-instance broadcasting. Hub subscribes to Pub/Sub channels for each active session.
+
+### Bot Account Architecture
+
+A single dedicated bot account reads chat on behalf of all streamers:
+
+- **Bot account** authorizes `user:read:chat` + `user:bot` scopes for the app (one-time setup)
+- **Streamers** only grant `channel:bot` scope during OAuth login, allowing the bot into their channel
+- EventSub subscriptions set `user_id` to the bot's Twitch user ID and `broadcaster_user_id` to the streamer
+- `BOT_USER_ID` env var provides the bot's Twitch user ID; stored in `SubscriptionManager` and threaded to `CreateEventSubSubscription`
+
+### EventSub Transport: Webhooks + Conduits
+
+Chat messages are received via **Twitch EventSub webhooks** transported through a **Conduit**:
+
+- **Conduit Manager** (`twitch/conduit.go`): On startup, finds an existing conduit via `GetConduits()` or creates a new one, then configures a webhook shard pointing to the app's `WEBHOOK_CALLBACK_URL`. On shutdown, deletes the conduit.
+- **Webhook Handler** (`twitch/webhook.go`): Receives Twitch POST notifications with Kappopher's built-in HMAC-SHA256 signature verification. Processes votes **directly through the `SessionStateStore`**, bypassing the Engine actor for minimal latency. Flow: broadcaster lookup → trigger match → debounce check → atomic vote application.
+- **Subscription Manager** (`twitch/subscription.go`): Creates/deletes EventSub subscriptions targeting the conduit. Stores `botUserID` and passes it to `CreateEventSubSubscription`. Handles Twitch 409 Conflict via `helix.APIError` type assertion (subscription already exists) as idempotent success. Subscriptions are persisted in PostgreSQL (`eventsub_subscriptions` table) for idempotency and crash recovery. On subscribe failure after Twitch API success, attempts cleanup.
+
 ### Concurrency Model: Actor Pattern
 
-All three core components use the **actor pattern** — a single goroutine owns all mutable state and receives typed commands via a buffered channel. No mutexes on actor-owned state. This eliminates race conditions, deadlocks, and cascading stalls structurally. The only mutex is on `HelixClient` (thin API wrapper, not an actor) to serialize `SetUserAccessToken` + API call pairs.
+Two core components use the **actor pattern** — a single goroutine owns all mutable state and receives typed commands via a buffered channel. No mutexes on actor-owned state.
 
 Each actor follows the same shape:
 - Buffered `cmdCh` channel for commands (fire-and-forget or request/reply via embedded `replyCh`)
 - Single `run()` goroutine with `for cmd := range cmdCh` loop
-- `Stop()`/`Shutdown()` method for clean shutdown
-- All blocking I/O (DB calls, HTTP calls, WebSocket dials) happens in background goroutines that send results back to the actor
+- `Stop()` method for clean shutdown
 
 ### WebSocket Hub (`websocket/hub.go`)
 
-- Actor goroutine owns the `clients` and `pendingClients` maps. `Register`, `Unregister`, `Broadcast`, `GetClientCount` all send commands.
+- Actor goroutine owns the `clients`, `pendingClients`, and `subscriptions` maps.
 - **Per-connection write goroutines** (`clientWriter`): each WebSocket connection gets its own goroutine with a buffered send channel (cap 16) and 5-second write deadlines. Slow clients are disconnected (non-blocking send) instead of blocking all broadcasts.
-- **Async `onFirstConnect`**: registration is two-phase — the callback runs in a background goroutine while clients are queued in `pendingClients`. When the callback completes, `cmdFirstConnectResult` promotes or rejects all queued clients. This prevents DB I/O from blocking the hub actor.
-- **Per-session client cap**: `maxClientsPerSession = 50` prevents resource exhaustion from excessive WebSocket connections.
-- `Register` blocks for a reply (caller needs to know if `onFirstConnect` failed). All others are fire-and-forget or reply-channel.
+- **Async `onFirstConnect`**: registration is two-phase — the callback runs in a background goroutine while clients are queued in `pendingClients`. When the callback completes, `cmdFirstConnectResult` promotes or rejects all queued clients.
+- **Per-session client cap**: `maxClientsPerSession = 50` prevents resource exhaustion.
+- **Redis Pub/Sub integration**: When `SetPubSub` is called, the Hub subscribes to Redis channels for each active session (`subscribePubSub`). A background goroutine per subscription reads updates and sends `cmdBroadcast` to the Hub's command channel. Subscriptions are closed on last client disconnect (`unsubscribePubSub`).
 
 ### Sentiment Engine (`sentiment/engine.go`)
 
-- Actor goroutine owns `activeSessions`, `broadcasterToSession`, and `debounceMap`.
-- **DB calls happen outside the actor**: `ActivateSession` checks if session exists (fast actor query), does the DB call in the caller's goroutine, then sends the config to the actor. The actor never does I/O.
-- **Ticker goroutine** sends `cmdTick` to the actor every 50ms. Actor applies decay and broadcasts (fire-and-forget to Hub).
-- **Debounce pruning**: every ~50 seconds, stale debounce entries (>5s old) are pruned to prevent unbounded growth during long streams.
-- `CleanupOrphans` fires Twitch unsubscribe calls in a background goroutine after removing orphans from the maps.
+- Actor goroutine delegates state operations to a **`SessionStateStore`** (in-memory or Redis).
+- **`localSessions`** map tracks sessions activated on this instance (UUID → cached `ConfigSnapshot`). Used by the tick handler for decay factor calculation.
+- **DB calls happen outside the actor**: `ActivateSession` checks if session exists (fast actor query via store), does the DB call in the caller's goroutine, then sends the config to the actor.
+- **Ticker goroutine** sends `cmdTick` every 50ms. Actor calls `store.ApplyDecay()` for each local session. In-memory mode: Engine calls `broadcaster.Broadcast()`. Redis mode: Lua scripts PUBLISH via Pub/Sub; Hub's listener handles broadcasting (`NeedsBroadcast()` returns false).
+- **Debounce pruning**: every ~50 seconds, `store.PruneDebounce()` is called (in-memory: prunes stale entries; Redis: no-op, TTL handles expiry).
+- `CleanupOrphans` queries `store.ListOrphans()`, deletes orphan sessions from store + local tracking, fires Twitch unsubscribe calls in a background goroutine.
 
-### EventSub Manager (`twitch/eventsub.go`)
+### SessionStateStore Interface (`sentiment/store.go`)
 
-- Actor goroutine owns connection state, subscriptions, and the state machine.
-- **Read pump** (`readPump`): dedicated goroutine reads WebSocket messages and sends them to the actor as commands. Never calls handlers directly.
-- **Async connect**: `startConnect` spawns a goroutine that dials the WebSocket and sends `cmdConnectResult` back. Actor checks generation to discard stale results.
-- **Pending subscribe queue**: if `Subscribe` is called before connected, requests are queued and processed when the welcome message arrives.
-- **Reconnect via `time.AfterFunc`**: no blocking `time.Sleep`. Infinite retries with exponential backoff capped at 60 seconds (never gives up).
-- **Keepalive timeout validated**: clamped to 10–600 second range from Twitch's reported value.
-- **Generation counter**: still used but only checked inside the actor loop (no scattered lock-check-unlock patterns).
+Abstracts session state with two implementations:
+
+- **`InMemoryStore`** (`store_memory.go`): Maps for sessions, broadcaster→session mapping (with reverse mapping for O(1) deletion), and debounce entries. Accepts `clockwork.Clock` for test determinism. `NeedsBroadcast()` returns `true`.
+- **`RedisStore`** (`store_redis.go`): Wraps `redis.SessionStore` and `redis.ScriptRunner`. Debounce via `SETNX` with 1s TTL. Vote/decay via Lua scripts (atomic update + PUBLISH). `NeedsBroadcast()` returns `false`.
+
+### Vote Processing Pipeline
+
+Votes flow through the webhook handler directly to the store (bypassing the Engine actor). The bot account's `user_id` in the EventSub subscription means Twitch sends all chat messages from channels the bot has joined:
+
+1. Twitch sends `channel.chat.message` webhook → Kappopher verifies HMAC
+2. `store.GetSessionByBroadcaster(broadcasterUserID)` → session UUID
+3. `store.GetSessionConfig(sessionUUID)` → config
+4. `sentiment.MatchTrigger(messageText, config)` → delta (+10, -10, or 0)
+5. `store.CheckDebounce(sessionUUID, chatterUserID)` → allowed (SETNX in Redis)
+6. `store.ApplyVote(sessionUUID, delta)` → new value (Lua script: clamp + PUBLISH)
+
+In Redis mode, step 6's Lua script publishes to `sentiment:{uuid}`, which the Hub's Pub/Sub listener receives and broadcasts to local WebSocket clients.
+
+### Redis Architecture (`internal/redis/`)
+
+**Key schema**:
+- `session:{overlayUUID}` — hash: `value`, `broadcaster_user_id`, `config_json`, `last_disconnect`, `last_decay`
+- `broadcaster:{twitchUserID}` — string → overlayUUID
+- `debounce:{overlayUUID}:{twitchUserID}` — key with 1s TTL (auto-expires)
+
+**Pub/Sub channels**: `sentiment:{overlayUUID}` — JSON `{value, status}`
+
+**Lua scripts** (run atomically server-side in Redis):
+- `applyVoteScript`: `HGET value → clamp(current + delta, -100, 100) → HSET → PUBLISH`
+- `applyDecayScript`: `HGET value + last_decay → timestamp guard (min interval) → multiply by factor → HSET value + last_decay → PUBLISH`. The timestamp guard (40ms minimum interval) prevents double-decay across multiple instances.
+
+### Twitch Client (`twitch/client.go`)
+
+Wraps Kappopher client for Twitch API operations:
+- **App-scoped client**: Uses client credentials flow for conduit management and EventSub CRUD
+- **Conduit operations**: `CreateConduit`, `GetConduits`, `UpdateConduitShards`, `DeleteConduit`
+- **EventSub operations**: `CreateEventSubSubscription` (conduit transport, accepts `botUserID` param), `DeleteEventSubSubscription`
+- **`TokenRefreshError`**: Error type for token refresh failures with `Revoked` flag
 
 ### HTTP Server (`internal/server/`)
 
-- **Echo Framework**: Uses Echo v4 with Logger and Recover middleware. Sessions via gorilla/sessions with 7-day expiry, secure cookies in production.
+- **Echo Framework**: Uses Echo v4 with Logger and Recover middleware. Sessions via gorilla/sessions with `sessionMaxAgeDays` (7) expiry, secure cookies in production. Templates are parsed once at startup and cached in the `Server` struct. `NewServer` returns `(*Server, error)`.
 - **Auth Middleware** (`requireAuth`): Checks session for user ID, parses UUID, stores in Echo context. Redirects to `/auth/login` if not authenticated.
-- **OAuth Flow**: `GET /auth/login` serves login page → user clicks Twitch button → Twitch redirects to `/auth/callback` with code → exchange code for tokens via Twitch OAuth API → fetch user info via Helix API → upsert user to DB → create session → redirect to `/dashboard`.
-- **WebSocket Lifecycle**: `GET /ws/overlay/:uuid` → parse overlay UUID → lookup user by `GetUserByOverlayUUID` → upgrade to WebSocket → `ActivateSession` (idempotent, creates EventSub subscription on first connect) → `Subscribe` to EventSub → `Register` with Hub → read pump blocks until disconnect → `Unregister` from Hub → `MarkDisconnected` in Engine.
+- **OAuth Flow**: `GET /auth/login` → generate CSRF state + store in session → Twitch OAuth (scope: `channel:bot`, `state` param) → `/auth/callback` → verify state matches session → `exchangeCode()` + `fetchTwitchUser()` → `twitchTokenResult` → upsert to DB → create session → `/dashboard`.
+- **WebSocket Lifecycle**: `GET /ws/overlay/:uuid` → parse overlay UUID → lookup user → upgrade to WebSocket → Hub `Register` → `onFirstConnect` callback activates session + subscribes EventSub → read pump blocks → `Unregister` → `MarkDisconnected`.
 - **Lifecycle Callbacks**: Hub's `onFirstConnect` callback (wired in main.go) calls `ActivateSession` + `Subscribe`. Hub's `onLastDisconnect` callback calls `MarkDisconnected`. This decouples the Hub from domain logic.
 - **Cleanup Timer**: Server starts a 30s ticker that calls `sentiment.CleanupOrphans(twitch)` to remove sessions with no clients for >30s.
-- **Graceful Shutdown**: `SIGINT`/`SIGTERM` → `server.Shutdown` → stop cleanup timer → `echo.Shutdown` → `engine.Stop` → `eventSubManager.Shutdown` → `hub.Stop`.
+- **Graceful Shutdown**: `SIGINT`/`SIGTERM` → `server.Shutdown` → stop cleanup timer → `echo.Shutdown` → `engine.Stop` → `hub.Stop` → `conduitManager.Cleanup`.
 
 ### Other Architecture Notes
 
-- **Vote Processing**: Trigger match (case-insensitive substring) → debounce (1s/user/session) → apply vote (±10, clamped [-100, 100]).
-- **EventSub State Machine**: Disconnected → Connecting → Connected → ReconnectingGraceful (Twitch sends new URL, subs carry over) or ReconnectingUngraceful (connection dies, re-create all subs). Keepalive timeout = server-provided value (clamped) + 5s buffer.
-- **Token Refresh**: `EnsureValidToken` checks expiry with 60s buffer, refreshes automatically (10s HTTP timeout), flags revoked tokens via `TokenRefreshError.Revoked`.
-- **HelixClient Mutex**: `sync.Mutex` serializes `SetUserAccessToken` + API call pairs in `CreateEventSubSubscription` and `DeleteEventSubSubscription`. `EnsureValidToken` (DB + HTTP I/O) runs outside the lock to minimize contention.
-- **Overlay UUID Separation**: The overlay URL uses a separate `overlay_uuid` column (not the user's internal `id`). Users can rotate their overlay UUID via `POST /api/rotate-overlay-uuid` to invalidate old URLs. `GetUserByOverlayUUID` looks up users for overlay/WebSocket handlers.
-- **Cleanup Sweep**: 30s timer removes orphaned sessions and their broadcaster mappings. `ActivateSession` clears `LastClientDisconnect` on reconnect so that a reconnected client doesn't get cleaned up as an orphan.
-- **EventSub Subscription**: `channel.chat.message` requires both `BroadcasterUserID` and `UserID` in the condition (both set to the broadcaster's Twitch user ID).
-- **Context Propagation**: All DB queries and HTTP calls accept `context.Context` as first parameter for cancellation support. Background goroutines in EventSub use `context.Background()`. Engine's `ActivateSession` passes context to `db.GetConfig`.
-- **Connection Status Broadcasting**: Engine broadcasts `{"value": float, "status": string}` via Hub. Status comes from `Engine.statusFn` (wired to `EventSubManager.GetConnectionStatus`). EventSub exposes status via `atomic.Value` (lock-free, single writer/reader). Overlay shows "reconnecting..." indicator when status !== "active".
-- **Token Encryption at Rest**: AES-256-GCM encryption for access/refresh tokens in PostgreSQL. `Connect(databaseURL, encryptionKeyHex)` accepts a 32-byte hex key. If key is empty, tokens pass through unencrypted (dev/test mode). Nonce prepended to ciphertext, hex-encoded for TEXT column storage. Encryption in `UpsertUser`/`UpdateUserTokens`, decryption in `GetUserByID`/`GetUserByOverlayUUID`.
+- **Trigger Matching**: `sentiment.MatchTrigger()` — pure function, case-insensitive substring match. "For" trigger takes priority when both match. Returns +`voteDelta`, -`voteDelta`, or 0 (`voteDelta` = 10.0).
+- **Vote Clamping**: Values clamped to [-100, 100].
+- **Debounce**: 1 second per user per session. In-memory: tracked in a map with clock injection for tests. Redis: `SETNX` with 1s TTL (auto-expires, no pruning needed).
+- **Overlay UUID Separation**: The overlay URL uses a separate `overlay_uuid` column (not the user's internal `id`). Users can rotate their overlay UUID via `POST /api/rotate-overlay-uuid` to invalidate old URLs.
+- **Token Encryption at Rest**: AES-256-GCM encryption for access/refresh tokens in PostgreSQL. `Connect(databaseURL, encryptionKeyHex)` accepts a 32-byte hex key. If key is empty, tokens pass through unencrypted (dev/test mode). Nonce prepended to ciphertext, hex-encoded for TEXT column storage. Shared cipher creation via `newGCM()`, shared decryption via `decryptUserTokens()`.
+- **Connection Status Broadcasting**: Engine broadcasts `{"value": float, "status": "active"}` via Hub. Overlay shows "reconnecting..." indicator when status !== "active".
 - **Health Check**: `db.HealthCheck(ctx)` calls `PingContext` for readiness probes.
-- **DB Connection Pool**: `MaxOpenConns(25)`, `MaxIdleConns(5)`, `ConnMaxLifetime(5min)` — prevents stale connections after PostgreSQL restarts.
-
-## Recent Bug Fixes & Improvements
-
-### Critical Bug Fixes (Feb 2026)
-
-**1. Eliminated Double Engine Creation Resource Leak**
-- **Problem**: Engine was created twice in `main.go` (lines 51 and 77) to resolve circular dependency, causing goroutine and memory leaks
-- **Solution**: Implemented `Engine.SetBroadcaster(hub)` method using actor pattern command (`cmdSetBroadcaster`) to set broadcaster after both Engine and Hub are created
-- **Implementation**: Hub created with Engine reference in callbacks → Engine calls `SetBroadcaster(hub)` → `Start()` launches actors
-- **Impact**: Eliminates leaked goroutines (ticker + actor), reduces memory footprint, maintains thread safety
-
-**2. Added EventSub WebSocket Dial Timeout**
-- **Problem**: `websocket.DefaultDialer.Dial()` had no timeout, could hang indefinitely if Twitch EventSub is unresponsive
-- **Solution**: Defense in depth - both context timeout and dialer handshake timeout (15 seconds each)
-- **Implementation**: `context.WithTimeout(15s)` + `websocket.Dialer{HandshakeTimeout: 15s}` in `startConnect()`
-- **Impact**: Prevents indefinite hangs, reconnect logic retries with exponential backoff after timeout
-
-**3. Fixed Session Invalidation on Logout**
-- **Problem**: `session.Save()` errors ignored in logout handler, users could think they're logged out but session remains valid
-- **Solution**: Check error and return 500 with actionable message if save fails
-- **Impact**: Security fix - ensures sessions are properly invalidated, prevents unauthorized access
-
-### High-Severity Bug Fixes
-
-**4. Error Propagation from Hub.Register**
-- **Problem**: `Hub.Register()` blocked on `errCh` but didn't return error to caller
-- **Solution**: Changed signature to `func Register(...) error` and return `<-errCh`
-- **Impact**: Handler can now detect and log registration failures (e.g., onFirstConnect errors)
-
-**5. Removed Duplicate Activation Logic**
-- **Problem**: `ActivateSession` and `Subscribe` called twice per connection - once in handler before `Register`, once in `onFirstConnect` callback
-- **Solution**: Removed duplicate calls from handler, rely entirely on `onFirstConnect` callback
-- **Impact**: Eliminates 50% of DB queries and Twitch API calls for new sessions, cleaner separation of concerns
-
-**6. OAuth Flow Timeout Protection**
-- **Problem**: OAuth callback handler could hang indefinitely if Twitch OAuth API is slow
-- **Solution**: Added 10-second timeout context for entire OAuth flow (token exchange + user info fetch)
-- **Implementation**: `context.WithTimeout(c.Request().Context(), 10s)` wrapping `exchangeCodeForToken()`
-- **Impact**: Prevents handler goroutine leaks, better reliability under Twitch API issues
-
-**7. Template Rendering Error Handling**
-- **Problem**: Templates executed directly to `c.Response().Writer`, partial HTML sent on template errors
-- **Solution**: Created `renderTemplate()` helper that renders to `bytes.Buffer` first, only sends on success
-- **Implementation**: All handlers now use `renderTemplate(c, tmpl, data)` instead of `tmpl.Execute(c.Response().Writer, data)`
-- **Impact**: No broken pages sent to users, proper 500 errors with no partial content
-
-**8. Session Error Logging**
-- **Problem**: Errors from `session.Get()` silently ignored in OAuth callback and logout handlers
-- **Solution**: Added warning logs and fallback to `session.New()` on errors
-- **Impact**: Better visibility for debugging session store issues
-
-### Input Validation & Code Quality
-
-**9. Comprehensive Config Input Validation**
-- **Problem**: Dashboard config form inputs not validated, could save empty triggers, excessively long strings, invalid decay values
-- **Solution**: Implemented `validateConfig()` with:
-  - Empty checks (trimmed whitespace)
-  - Length limits (500 chars for triggers, 50 for labels)
-  - Decay range validation (0.1-2.0, matching template slider)
-  - Identical trigger prevention (case-insensitive, since vote matching is case-insensitive)
-- **Impact**: Prevents invalid data storage, better UX with clear error messages
-
-**10. Template Variable Fix**
-- **Problem**: Dashboard reset button used `{{.UserID}}` but handler expects `OverlayUUID`
-- **Solution**: Changed template to `{{.OverlayUUID}}`
-- **Impact**: Reset button now works correctly
-
-### Code Quality Improvements
-
-- **Enhanced error messages**: User-facing errors now include actionable guidance (e.g., "clear your browser cookies")
-- **Improved error logging**: Template errors include request path for easier debugging
-- **Fallback error handling**: Logout handler creates new session if `session.Get()` fails, with error logging
-- **Documentation**: Added clear warning to `Engine.Start()` about `SetBroadcaster()` initialization order requirement
-- **Validation**: Prevents users from setting identical "for" and "against" triggers
-
-### Testing & Verification
-
-All bug fixes verified with:
-- ✅ **58/58 unit tests passing** (no regressions)
-- ✅ **Build successful** with all changes
-- ✅ **Manual testing** of error paths (timeout scenarios, invalid inputs, template errors)
-- ✅ **Code review** - approved at 10/10 quality rating
+- **DB Connection Pool**: `MaxOpenConns(25)`, `MaxIdleConns(5)`, `ConnMaxLifetime(5min)`.
+- **Context Propagation**: All DB queries and HTTP calls accept `context.Context` as first parameter for cancellation support.
 
 ## Testability Interfaces
 
 The codebase uses consumer-side interfaces for testability:
+- **`sentiment.SessionStateStore`** — abstracts session state (in-memory or Redis). Two implementations: `InMemoryStore` (with `clockwork.Clock` injection) and `RedisStore`.
 - **`sentiment.ConfigStore`** — extracted from `*database.DB`, only exposes `GetConfig(ctx, userID)`. Allows mocking the DB in engine tests. Called in the caller's goroutine (not the actor), so mocks need a mutex.
-- **`sentiment.Broadcaster`** — implemented by `websocket.Hub`. Allows mocking broadcasts in engine tests. `Broadcast(sessionUUID, value, status)` includes connection status.
-- **`sentiment.TwitchManager`** — implemented by `twitch.EventSubManager`. Allows mocking EventSub in cleanup tests. `Unsubscribe` is called from a background goroutine, so mocks need a mutex.
+- **`sentiment.Broadcaster`** — implemented by `websocket.Hub`. Allows mocking broadcasts in engine tests.
+- **`sentiment.TwitchManager`** — `Unsubscribe(ctx, userID) error`. Used for cleanup tests. Called from a background goroutine, so mocks need a mutex.
 - **`server.dataStore`** — subset of `*database.DB` used by handlers (`GetUserByID`, `GetUserByOverlayUUID`, `GetConfig`, `UpdateConfig`, `UpsertUser`, `RotateOverlayUUID`).
-- **`server.sentimentService`** — subset of `*sentiment.Engine` used by handlers and lifecycle callbacks (`ActivateSession`, `ResetSession`, `MarkDisconnected`, `CleanupOrphans`, `UpdateSessionConfig`).
-- **`server.twitchService`** — subset of `*twitch.EventSubManager` used by handlers (`Subscribe`, `Unsubscribe`, `IsReconnecting`).
-- **`clockwork.Clock`** — injected into `sentiment.Engine` for deterministic time control in tests (debounce, cleanup, decay ticker).
+- **`server.sentimentService`** — subset of `*sentiment.Engine` used by handlers (`ActivateSession`, `ResetSession`, `MarkDisconnected`, `CleanupOrphans`, `UpdateSessionConfig`).
+- **`server.twitchService`** — subset of `*twitch.SubscriptionManager` used by handlers (`Subscribe(ctx, userID, broadcasterUserID)`, `Unsubscribe(ctx, userID)`).
+- **`server.webhookHandler`** — `HandleEventSub(c echo.Context) error`. Nil when webhooks not configured.
+- **`twitch.conduitAPIClient`** — subset of `TwitchClient` used by `ConduitManager` (`CreateConduit`, `GetConduits`, `UpdateConduitShards`, `DeleteConduit`).
+- **`twitch.subscriptionAPIClient`** — subset of `TwitchClient` used by `SubscriptionManager` (`CreateEventSubSubscription`, `DeleteEventSubSubscription`).
+- **`clockwork.Clock`** — injected into `sentiment.Engine` and `sentiment.InMemoryStore` for deterministic time control in tests.
 
 ### Testing with the Actor Pattern
 
@@ -232,7 +233,7 @@ Since fire-and-forget commands (e.g., `ProcessVote`, `MarkDisconnected`) are asy
 
 ## Testing
 
-108 tests across 7 packages. **Overall coverage: 37.4%**. Run with `make test` or `go test ./...`.
+125 tests across 8 packages. Run with `make test` or `go test ./...`.
 
 ### Test Types
 
@@ -244,95 +245,87 @@ Since fire-and-forget commands (e.g., `ProcessVote`, `MarkDisconnected`) are asy
 **Integration tests** (use real infrastructure):
 - Run with `make test` or `go test ./...`
 - Complete in ~15 seconds
-- Use testcontainers for PostgreSQL, real WebSockets, mock HTTP servers for external APIs
+- Use testcontainers for PostgreSQL and Redis, real WebSockets, mock HTTP servers for external APIs
 - Automatically skipped with `-short` flag via `if testing.Short() { t.Skip(...) }`
 
 **Coverage analysis**:
 - Run with `make test-coverage` to generate `coverage.out` and `coverage.html`
-- Race detection: `make test-race` (runs fast tests with `-race`)
+- Race detection: `make test-race` (runs tests with `-race`)
 
 ### Test Files
 
-- `internal/config/config_test.go` — env loading, defaults, validation, encryption key validation (84.0% coverage)
-- `internal/database/postgres_test.go` — **NEW** CRUD operations, token encryption, migrations, health check (71.3% coverage, 28 tests)
-- `internal/database/testhelpers.go` — **NEW** test fixtures for creating users and configs
-- `internal/sentiment/engine_test.go` — vote logic, debounce, clamping, cleanup, reconnect, ticker (85.6% coverage)
-- `internal/websocket/hub_test.go` — register, broadcast, lifecycle callbacks, client cap (87.1% coverage)
-- `internal/server/handlers_unit_test.go` — **NEW** input validation tests (validateConfig: 100% coverage, 12 tests)
-- `internal/twitch/token_test.go` — **EXPANDED** token refresh logic, error handling, HTTP mocking (refreshToken: 91.7% coverage, 11 tests)
-- `internal/twitch/helix_test.go` — **NEW** Helix client orchestration, error propagation (4 tests)
+- `internal/config/config_test.go` — env loading, defaults, validation, encryption key validation, webhook config validation
+- `internal/database/postgres_test.go` — CRUD operations, token encryption, migrations, health check, eventsub subscriptions (testcontainers)
+- `internal/database/testhelpers.go` — test fixtures for creating users and configs
+- `internal/redis/redis_test.go` — test setup: testcontainers Redis, `setupTestClient` helper
+- `internal/redis/session_test.go` — activate, resume, delete, broadcaster mapping, debounce, orphan listing (18 tests)
+- `internal/redis/pubsub_test.go` — publish/subscribe roundtrip, multi-message, session isolation, close (4 tests)
+- `internal/redis/scripts_test.go` — Lua script vote application, clamping, decay with timestamp guard (3 tests)
+- `internal/sentiment/engine_test.go` — vote logic, debounce, clamping, cleanup, reconnect, ticker, config updates (25 tests)
+- `internal/sentiment/trigger_test.go` — MatchTrigger: for/against, case-insensitive, priority, nil config, empty message (7 tests)
+- `internal/websocket/hub_test.go` — register, broadcast, lifecycle callbacks, client cap
+- `internal/server/handlers_unit_test.go` — input validation tests (validateConfig: 100% coverage)
+- `internal/server/handlers_test.go` — handler tests: requireAuth, handleDashboard, handleSaveConfig, handleResetSentiment, handleOverlay, handleRotateOverlayUUID, handleLoginPage, handleLogout (18 tests)
+- `internal/twitch/client_test.go` — TokenRefreshError formatting
+- `internal/twitch/webhook_test.go` — webhook handler tests with HMAC-signed requests: trigger matching, debounce, invalid signature, non-chat events (5 tests)
 
 ### Test Dependencies
 
 - **`stretchr/testify`** — assertions and require helpers
 - **`jonboulle/clockwork`** — fake clock for deterministic time control
-- **`testcontainers-go`** — PostgreSQL container orchestration (v0.40.0)
-- **`testcontainers-go/modules/postgres`** — PostgreSQL module for testcontainers
+- **`testcontainers-go`** — container orchestration (v0.40.0)
+- **`testcontainers-go/modules/postgres`** — PostgreSQL module
+- **`testcontainers-go/modules/redis`** — Redis module
 
 ### Database Integration Tests (testcontainers)
 
 **Setup**: `TestMain()` starts a PostgreSQL 15 container once, reused across all tests (~2-5s overhead total)
 **Cleanup**: Each test uses `setupTestDB(t)` which registers a cleanup function to `TRUNCATE users, configs CASCADE`
-**Performance**: Container startup amortized across test suite, individual tests run in milliseconds
 **Production fidelity**: Real PostgreSQL behavior, real schema, real constraints, real encryption
 
-Tests cover:
-- Connection management (valid/invalid URLs, encryption key validation)
-- Health checks (ping with context cancellation)
-- Schema migrations (idempotency, verification)
-- Token encryption/decryption (AES-256-GCM with/without key, error handling)
-- User CRUD (insert, update, upsert, lookups by ID and overlay UUID)
-- Token refresh flow
-- Config CRUD (default creation, updates)
-- Overlay UUID rotation
+### Redis Integration Tests (testcontainers)
 
-**Timezone handling**: All tests use `time.Now().UTC()` to avoid local timezone issues when comparing with PostgreSQL timestamps
-
-### Twitch API Tests (HTTP mocking)
-
-**Token Refresher** (`internal/twitch/token_test.go`):
-- HTTP mocking with `httptest.Server` for Twitch OAuth endpoint
-- Success flow, error responses (400/401/500), timeout, network errors
-- Malformed JSON, empty responses, context cancellation
-- `refreshToken()` function: **91.7% coverage**
-
-**Helix Client** (`internal/twitch/helix_test.go`):
-- Mock `tokenRefresher` interface for testing orchestration logic
-- Token refresh error propagation for EventSub operations
-- Verifies error handling without calling real Twitch API
+**Setup**: `TestMain()` starts a Redis 7 container once, reused across all tests (~1-2s overhead)
+**Cleanup**: Each test calls `FlushAll` before running
+**Tests cover**: Session CRUD, broadcaster mapping, debounce TTL, orphan scanning, Pub/Sub roundtrip, Lua script atomicity (vote clamping, decay timestamp guard)
 
 ### Server Validation Tests (unit)
 
 **Input Validation** (`internal/server/handlers_unit_test.go`):
-- Empty trigger detection (for/against)
-- Length limits (triggers: 500 chars, labels: 50 chars)
-- Decay range validation (0.1-2.0)
-- Identical trigger prevention (case-insensitive)
-- Valid configuration acceptance (5 test cases)
-- `validateConfig()` function: **100% coverage**
+- Empty trigger detection (for/against), length limits (triggers: 500, labels: 50), decay range (0.1-2.0), identical trigger prevention
 
-### Not Tested (Deferred)
+## Linting
 
-- `twitch/eventsub.go` — 659-line actor with 5-state FSM and WebSocket management (complex, low ROI for unit testing; validated in production)
-- `server/handlers.go` — OAuth flow, dashboard, API endpoints, WebSocket lifecycle (patterns established, can be added incrementally)
-- `cmd/server/main.go` — application wiring (integration tested in production)
+golangci-lint v2 configured via `.golangci.yml` (schema `version: "2"`). Run with `make lint`.
 
-### Test Coverage by Package (February 2026)
+**Enabled linters** (beyond the `standard` default set): bodyclose, durationcheck, errorlint, fatcontext, goconst, gocritic (diagnostic + performance tags), misspell, nilerr, noctx, prealloc, unconvert, unparam, wastedassign.
 
-| Package | Coverage | Key Metrics |
-|---------|----------|-------------|
-| **config** | 84.0% | Env loading, validation |
-| **database** | 71.3% | CRUD, encryption, migrations |
-| **sentiment** | 85.6% | Vote logic, actor pattern |
-| **websocket** | 87.1% | Hub, lifecycle, client cap |
-| **server** | 6.5% | Input validation (100% of validateConfig) |
-| **twitch** | 10.6% | Token refresh (91.7%), helix orchestration |
-| **OVERALL** | **37.4%** | **108 tests total** |
+**Suppressed patterns** (intentional, not bugs):
+- `errcheck` on `Close()`, `SetWriteDeadline()`, `SetReadDeadline()` for standard cleanup patterns
+- `exitAfterDefer` — standard Go pattern in `main()` and `TestMain()`
+- `middleware.Logger` deprecation — replacing requires larger refactor
+- `bodyclose` in test files — false positive on WebSocket `Dial()`
 
 ## Go Module
 
-Module: `github.com/pscheid92/twitch-tow`, Go 1.25.7.
+Module: `github.com/pscheid92/chatpulse`, Go 1.25.7.
 
-Key deps: echo/v4, gorilla/websocket, gorilla/sessions, nicklaw5/helix/v2, lib/pq, google/uuid, joho/godotenv.
+Key deps: echo/v4, gorilla/websocket, gorilla/sessions, Its-donkey/kappopher, lib/pq, redis/go-redis/v9, google/uuid, joho/godotenv, jonboulle/clockwork.
 
-Test deps: stretchr/testify, jonboulle/clockwork, testcontainers-go, testcontainers-go/modules/postgres.
+Test deps: stretchr/testify, jonboulle/clockwork, testcontainers-go, testcontainers-go/modules/postgres, testcontainers-go/modules/redis.
+
+### Dependency Changes (Feb 2026 Architecture Overhaul)
+
+| Removed | Added |
+|---------|-------|
+| `github.com/nicklaw5/helix/v2` | `github.com/Its-donkey/kappopher` v1.1.1 |
+| | `github.com/redis/go-redis/v9` v9.17.3 |
+| | `github.com/testcontainers/testcontainers-go/modules/redis` v0.40.0 |
+
+### Files Deleted / Renamed
+
+- `internal/twitch/eventsub.go` — 660-line EventSub WebSocket actor with 5-state FSM (replaced by webhooks + conduits)
+- `internal/twitch/token.go` — Token refresh middleware (replaced by Kappopher's built-in token management)
+- `internal/twitch/token_test.go` — Tests for deleted token code
+- `internal/twitch/helix.go` → `internal/twitch/client.go` — Renamed `HelixClient` to `TwitchClient`, deleted unused `GetConduitShards`, `GetUsers`, `AppAuthClient` methods
+- `internal/twitch/helix_test.go` → `internal/twitch/client_test.go` — Renamed alongside client

@@ -14,8 +14,10 @@ import (
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
-	"github.com/pscheid92/twitch-tow/internal/models"
+	"github.com/pscheid92/chatpulse/internal/models"
 )
+
+const userColumns = `id, overlay_uuid, twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at`
 
 type DB struct {
 	*sql.DB
@@ -33,7 +35,7 @@ func Connect(databaseURL, encryptionKeyHex string) (*DB, error) {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -57,19 +59,26 @@ func (db *DB) HealthCheck(ctx context.Context) error {
 	return db.PingContext(ctx)
 }
 
+func (db *DB) newGCM() (cipher.AEAD, error) {
+	block, err := aes.NewCipher(db.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+	return aesGCM, nil
+}
+
 func (db *DB) encryptToken(plaintext string) (string, error) {
 	if db.encryptionKey == nil {
 		return plaintext, nil
 	}
 
-	block, err := aes.NewCipher(db.encryptionKey)
+	aesGCM, err := db.newGCM()
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %w", err)
-	}
-
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
+		return "", err
 	}
 
 	nonce := make([]byte, aesGCM.NonceSize())
@@ -91,14 +100,9 @@ func (db *DB) decryptToken(encoded string) (string, error) {
 		return "", fmt.Errorf("failed to decode hex: %w", err)
 	}
 
-	block, err := aes.NewCipher(db.encryptionKey)
+	aesGCM, err := db.newGCM()
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %w", err)
-	}
-
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
+		return "", err
 	}
 
 	nonceSize := aesGCM.NonceSize()
@@ -113,6 +117,19 @@ func (db *DB) decryptToken(encoded string) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+func (db *DB) decryptUserTokens(user *models.User) error {
+	var err error
+	user.AccessToken, err = db.decryptToken(user.AccessToken)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt access token: %w", err)
+	}
+	user.RefreshToken, err = db.decryptToken(user.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt refresh token: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) RunMigrations() error {
@@ -140,10 +157,18 @@ func (db *DB) RunMigrations() error {
 		)`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS overlay_uuid UUID UNIQUE DEFAULT gen_random_uuid()`,
 		`CREATE INDEX IF NOT EXISTS idx_users_overlay_uuid ON users(overlay_uuid)`,
+		`CREATE TABLE IF NOT EXISTS eventsub_subscriptions (
+			user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			broadcaster_user_id TEXT NOT NULL,
+			subscription_id TEXT NOT NULL,
+			conduit_id TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
 	}
 
+	ctx := context.Background()
 	for _, migration := range migrations {
-		if _, err := db.Exec(migration); err != nil {
+		if _, err := db.ExecContext(ctx, migration); err != nil {
 			return fmt.Errorf("failed to run migration: %w", err)
 		}
 	}
@@ -173,7 +198,7 @@ func (db *DB) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, acce
 			refresh_token = EXCLUDED.refresh_token,
 			token_expiry = EXCLUDED.token_expiry,
 			updated_at = NOW()
-		RETURNING id, overlay_uuid, twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at
+		RETURNING `+userColumns+`
 	`, twitchUserID, twitchUsername, encAccessToken, encRefreshToken, tokenExpiry).Scan(
 		&user.ID, &user.OverlayUUID, &user.TwitchUserID, &user.TwitchUsername, &user.AccessToken,
 		&user.RefreshToken, &user.TokenExpiry, &user.CreatedAt, &user.UpdatedAt,
@@ -183,14 +208,8 @@ func (db *DB) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, acce
 		return nil, fmt.Errorf("failed to upsert user: %w", err)
 	}
 
-	// Decrypt tokens for in-memory use
-	user.AccessToken, err = db.decryptToken(user.AccessToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt access token: %w", err)
-	}
-	user.RefreshToken, err = db.decryptToken(user.RefreshToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
+	if err := db.decryptUserTokens(&user); err != nil {
+		return nil, err
 	}
 
 	// Ensure user has a default config
@@ -210,7 +229,7 @@ func (db *DB) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, acce
 func (db *DB) GetUserByID(ctx context.Context, userID uuid.UUID) (*models.User, error) {
 	var user models.User
 	err := db.QueryRowContext(ctx, `
-		SELECT id, overlay_uuid, twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at
+		SELECT `+userColumns+`
 		FROM users
 		WHERE id = $1
 	`, userID).Scan(
@@ -222,13 +241,8 @@ func (db *DB) GetUserByID(ctx context.Context, userID uuid.UUID) (*models.User, 
 		return nil, err
 	}
 
-	user.AccessToken, err = db.decryptToken(user.AccessToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt access token: %w", err)
-	}
-	user.RefreshToken, err = db.decryptToken(user.RefreshToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
+	if err := db.decryptUserTokens(&user); err != nil {
+		return nil, err
 	}
 
 	return &user, nil
@@ -284,7 +298,7 @@ func (db *DB) UpdateConfig(ctx context.Context, userID uuid.UUID, forTrigger, ag
 func (db *DB) GetUserByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*models.User, error) {
 	var user models.User
 	err := db.QueryRowContext(ctx, `
-		SELECT id, overlay_uuid, twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at
+		SELECT `+userColumns+`
 		FROM users
 		WHERE overlay_uuid = $1
 	`, overlayUUID).Scan(
@@ -296,13 +310,8 @@ func (db *DB) GetUserByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (
 		return nil, err
 	}
 
-	user.AccessToken, err = db.decryptToken(user.AccessToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt access token: %w", err)
-	}
-	user.RefreshToken, err = db.decryptToken(user.RefreshToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
+	if err := db.decryptUserTokens(&user); err != nil {
+		return nil, err
 	}
 
 	return &user, nil
@@ -322,4 +331,57 @@ func (db *DB) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUI
 	}
 
 	return newUUID, nil
+}
+
+// --- EventSub Subscription CRUD ---
+
+func (db *DB) CreateEventSubSubscription(ctx context.Context, userID uuid.UUID, broadcasterUserID, subscriptionID, conduitID string) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO eventsub_subscriptions (user_id, broadcaster_user_id, subscription_id, conduit_id, created_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			broadcaster_user_id = EXCLUDED.broadcaster_user_id,
+			subscription_id = EXCLUDED.subscription_id,
+			conduit_id = EXCLUDED.conduit_id
+	`, userID, broadcasterUserID, subscriptionID, conduitID)
+	return err
+}
+
+func (db *DB) GetEventSubSubscription(ctx context.Context, userID uuid.UUID) (*models.EventSubSubscription, error) {
+	var sub models.EventSubSubscription
+	err := db.QueryRowContext(ctx, `
+		SELECT user_id, broadcaster_user_id, subscription_id, conduit_id, created_at
+		FROM eventsub_subscriptions
+		WHERE user_id = $1
+	`, userID).Scan(&sub.UserID, &sub.BroadcasterUserID, &sub.SubscriptionID, &sub.ConduitID, &sub.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &sub, nil
+}
+
+func (db *DB) DeleteEventSubSubscription(ctx context.Context, userID uuid.UUID) error {
+	_, err := db.ExecContext(ctx, `DELETE FROM eventsub_subscriptions WHERE user_id = $1`, userID)
+	return err
+}
+
+func (db *DB) ListEventSubSubscriptions(ctx context.Context) ([]models.EventSubSubscription, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT user_id, broadcaster_user_id, subscription_id, conduit_id, created_at
+		FROM eventsub_subscriptions
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []models.EventSubSubscription
+	for rows.Next() {
+		var sub models.EventSubSubscription
+		if err := rows.Scan(&sub.UserID, &sub.BroadcasterUserID, &sub.SubscriptionID, &sub.ConduitID, &sub.CreatedAt); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
 }

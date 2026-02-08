@@ -1,32 +1,42 @@
-# Twitch Sentiment Overlay
+# ChatPulse
 
-A real-time sentiment tracking overlay for Twitch streamers. Monitor your chat's sentiment during polls, debates, or Q&A sessions with a beautiful glassmorphism overlay for OBS.
+A real-time chat sentiment tracking overlay for Twitch streamers. Monitor your chat's mood during polls, debates, or Q&A sessions with a glassmorphism overlay for OBS.
+
+A dedicated bot account reads chat on behalf of all streamers, making this a multi-tenant SaaS that supports horizontal scaling via Redis.
 
 ## Features
 
-- **Real-time sentiment tracking** from Twitch chat messages
+- **Real-time sentiment tracking** from Twitch chat messages via EventSub webhooks
 - **Customizable triggers** for "for" and "against" votes
-- **Beautiful glassmorphism overlay** for OBS
-- **Configurable decay speed** to smoothly center the sentiment
-- **Automatic reconnection** handling for both EventSub and overlay clients
-- **Single binary deployment** with Docker support
+- **Glassmorphism overlay** for OBS browser sources
+- **Configurable decay speed** to smoothly return the bar to center
+- **Multi-instance scaling** with Redis (optional) for horizontal deployment
+- **Bot account architecture** — streamers only grant `channel:bot` scope; a single bot reads all channels
+- **Token encryption at rest** with AES-256-GCM (optional)
+- **Overlay URL rotation** to invalidate old URLs
 
 ## Prerequisites
 
-1. **Twitch Application**: Register your app at https://dev.twitch.tv/console/apps
+1. **Twitch Application**: Register at https://dev.twitch.tv/console/apps
    - Get your Client ID and Client Secret
-   - Set the OAuth Redirect URL to `http://localhost:8080/auth/callback` (or your domain)
+   - Set the OAuth Redirect URL to `http://localhost:8080/auth/callback` (or your production domain)
 
-2. **PostgreSQL**: Version 15 or higher
+2. **Twitch Bot Account**: A dedicated Twitch account that will read chat
+   - Authorize the bot with `user:read:chat` and `user:bot` scopes (one-time setup)
+   - Note the bot's Twitch user ID for `BOT_USER_ID`
 
-3. **Go**: Version 1.22 or higher (for local development)
+3. **PostgreSQL**: Version 15 or higher
+
+4. **Public HTTPS URL**: Required for EventSub webhook delivery (use [ngrok](https://ngrok.com/) for local development)
+
+5. **Go**: Version 1.25+ (for local development only)
 
 ## Quick Start with Docker
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/pscheid92/twitch-tow.git
-cd twitch-tow
+git clone https://github.com/pscheid92/chatpulse.git
+cd chatpulse
 ```
 
 2. Create a `.env` file from the example:
@@ -34,32 +44,35 @@ cd twitch-tow
 cp .env.example .env
 ```
 
-3. Edit `.env` and fill in your Twitch credentials:
+3. Edit `.env` with your credentials:
 ```bash
-TWITCH_CLIENT_ID=your_client_id_here
-TWITCH_CLIENT_SECRET=your_client_secret_here
+TWITCH_CLIENT_ID=your_client_id
+TWITCH_CLIENT_SECRET=your_client_secret
 TWITCH_REDIRECT_URI=http://localhost:8080/auth/callback
 SESSION_SECRET=$(openssl rand -hex 32)
+WEBHOOK_CALLBACK_URL=https://your-subdomain.ngrok-free.app/webhooks/eventsub
+WEBHOOK_SECRET=$(openssl rand -hex 16)
+BOT_USER_ID=your_bot_twitch_user_id
 ```
 
 4. Start the application:
 ```bash
-docker compose up -d
+make docker-up
 ```
 
-5. Open your browser and navigate to `http://localhost:8080`
+5. Open `http://localhost:8080` in your browser.
 
 ## Local Development
 
 1. Install dependencies:
 ```bash
-go mod download
+make deps
 ```
 
 2. Start PostgreSQL (or use Docker):
 ```bash
 docker run -d \
-  --name twitch-postgres \
+  --name chatpulse-postgres \
   -e POSTGRES_USER=twitchuser \
   -e POSTGRES_PASSWORD=twitchpass \
   -e POSTGRES_DB=twitchdb \
@@ -67,11 +80,33 @@ docker run -d \
   postgres:15-alpine
 ```
 
-3. Set up your `.env` file as described above.
-
-4. Run the server:
+3. Expose your local server for webhooks:
 ```bash
-go run cmd/server/main.go
+ngrok http 8080
+```
+
+4. Set up your `.env` file as described above (use the ngrok URL for `WEBHOOK_CALLBACK_URL`).
+
+5. Run the server:
+```bash
+make run
+```
+
+### Make Targets
+
+```
+make build          # Build binary -> ./server
+make run            # Build and run locally
+make test           # Run all tests (unit + integration)
+make test-short     # Run unit tests only (fast, no containers)
+make test-race      # Run tests with race detector
+make test-coverage  # Generate coverage report
+make fmt            # Format code
+make lint           # Run golangci-lint
+make deps           # Download and tidy dependencies
+make docker-up      # Start with Docker Compose (app + PostgreSQL + Redis)
+make docker-down    # Stop Docker Compose
+make clean          # Remove build artifacts
 ```
 
 ## Usage
@@ -80,12 +115,10 @@ go run cmd/server/main.go
 
 1. Visit `http://localhost:8080` and log in with your Twitch account
 2. Configure your sentiment triggers:
-   - **For Trigger**: The word/phrase viewers type to vote "for" (e.g., "yes", "agree", "👍")
-   - **Against Trigger**: The word/phrase viewers type to vote "against" (e.g., "no", "disagree", "👎")
-   - **Left Label**: Display label for "against" side (e.g., "Against", "No")
-   - **Right Label**: Display label for "for" side (e.g., "For", "Yes")
+   - **For Trigger**: Word/phrase viewers type to vote "for" (e.g., "yes", "agree")
+   - **Against Trigger**: Word/phrase to vote "against" (e.g., "no", "disagree")
+   - **Left/Right Labels**: Display labels for each side
    - **Decay Speed**: How quickly the bar returns to center (0.1 = slow, 2.0 = fast)
-
 3. Click "Save Configuration"
 
 ### 2. Add to OBS
@@ -93,64 +126,79 @@ go run cmd/server/main.go
 1. Copy your unique overlay URL from the dashboard
 2. In OBS, add a new **Browser Source**
 3. Paste your overlay URL
-4. Set dimensions: 800x100 (or adjust to your preference)
-5. Done! The overlay will show live sentiment from your chat
+4. Set dimensions: 800x100 (adjust to preference)
 
-### 3. Reset During Stream
+### 3. During Your Stream
 
-Use the "Reset to Center" button on the dashboard to reset the sentiment bar to the center position during your stream.
+- Use the **Reset to Center** button on the dashboard to reset the sentiment bar
+- Use **Rotate Overlay URL** to generate a new URL and invalidate the old one
+
+## Environment Variables
+
+See `.env.example` for all variables.
+
+**Required**:
+- `DATABASE_URL` — PostgreSQL connection string
+- `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` — Twitch app credentials
+- `TWITCH_REDIRECT_URI` — OAuth callback URL
+- `SESSION_SECRET` — Secret for session cookies
+
+**Webhook** (all three required together):
+- `WEBHOOK_CALLBACK_URL` — Public HTTPS URL for EventSub webhook delivery
+- `WEBHOOK_SECRET` — HMAC secret for webhook verification (10-100 chars)
+- `BOT_USER_ID` — Twitch user ID of the bot account
+
+**Optional**:
+- `TOKEN_ENCRYPTION_KEY` — 64 hex chars for AES-256-GCM token encryption at rest
+- `REDIS_URL` — Enables multi-instance mode (e.g., `redis://localhost:6379`)
 
 ## How It Works
 
-- **Chat Integration**: Connects to Twitch EventSub WebSocket to receive real-time chat messages
-- **Vote Processing**: Messages containing trigger words are counted as votes (case-insensitive substring match)
+- **Bot Account**: A single bot account reads chat in all connected channels via EventSub webhooks
+- **Webhooks + Conduits**: Chat messages arrive via Twitch EventSub webhooks transported through a Conduit, verified with HMAC-SHA256
+- **Vote Processing**: Messages containing trigger words are counted as votes (case-insensitive substring match, "for" takes priority)
 - **Debouncing**: Each viewer can vote once per second to prevent spam
-- **Decay**: The sentiment bar gradually returns to center based on the configured decay speed
-- **Real-time Updates**: Overlay updates 20 times per second (50ms ticker) for smooth animation
+- **Decay**: The sentiment bar gradually returns to center (50ms tick interval)
+- **Real-time Broadcast**: Updates are pushed to overlay clients via WebSocket
 
 ## Architecture
 
-- **Backend**: Single Go binary serving HTTP, WebSocket, and managing Twitch EventSub
-- **Database**: PostgreSQL for user data and configuration
+- **Backend**: Single Go binary (Echo v4) serving HTTP, WebSocket, and webhook endpoints
+- **Database**: PostgreSQL 15+ with auto-migrations for users, configs, and EventSub subscriptions
+- **Scaling**: Single-instance (in-memory) or multi-instance (Redis with Lua scripts for atomic operations and Pub/Sub for cross-instance broadcasting)
+- **Concurrency**: Actor pattern for the Sentiment Engine and WebSocket Hub — no mutexes on actor-owned state
 - **Frontend**: Minimal HTML/CSS/JS with no external dependencies
-- **Deployment**: Docker Compose with multi-stage build for minimal image size
+
+## Production Deployment
+
+1. Use HTTPS with a reverse proxy (nginx/Caddy) for SSL termination
+2. Set `TWITCH_REDIRECT_URI` to your production domain
+3. Generate strong secrets:
+   ```bash
+   SESSION_SECRET=$(openssl rand -hex 32)
+   WEBHOOK_SECRET=$(openssl rand -hex 16)
+   TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
+   ```
+4. Set `APP_ENV=production` for secure cookies
+5. Optionally set `REDIS_URL` for multi-instance scaling
+6. Configure PostgreSQL backups
 
 ## Troubleshooting
 
 ### Overlay not connecting?
-- Check that your server is running and accessible
-- Verify the overlay URL is correct
+- Verify the server is running and the overlay URL is correct
 - Check browser console for WebSocket errors
 
 ### Chat messages not being tracked?
-- Ensure you've logged in with your Twitch account
-- Verify your Twitch app has the correct OAuth redirect URI
-- Check server logs for EventSub connection status
+- Ensure webhook delivery is working (check server logs for EventSub notifications)
+- Verify the bot account has authorized `user:read:chat` + `user:bot` scopes
+- Confirm `BOT_USER_ID` matches the bot's Twitch user ID
+- Check that `WEBHOOK_CALLBACK_URL` is publicly reachable over HTTPS
 
-### EventSub reconnection issues?
-- The server automatically handles graceful and ungraceful reconnects
-- Check logs for reconnection attempts
-- Verify your internet connection is stable
-
-## Production Deployment
-
-For production, make sure to:
-
-1. Use HTTPS and WSS (secure WebSocket)
-2. Update `TWITCH_REDIRECT_URI` to your production domain
-3. Use a strong `SESSION_SECRET` (generate with `openssl rand -hex 32`)
-4. Set `APP_ENV=production`
-5. Configure proper PostgreSQL backups
-6. Use a reverse proxy (nginx/Caddy) for SSL termination
+### Webhooks not arriving?
+- For local dev, ensure ngrok is running and the URL in `.env` matches
+- Check that `WEBHOOK_SECRET` is at least 10 characters
 
 ## License
 
-MIT License - see LICENSE file for details
-
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.
-
-## Support
-
-For issues and questions, please open an issue on GitHub: https://github.com/pscheid92/twitch-tow/issues
+MIT License - see LICENSE file for details.

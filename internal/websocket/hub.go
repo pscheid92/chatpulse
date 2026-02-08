@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,9 +9,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	iredis "github.com/pscheid92/chatpulse/internal/redis"
 )
 
-const maxClientsPerSession = 50
+const (
+	maxClientsPerSession = 50
+	writeDeadline        = 5 * time.Second
+)
 
 // --- Command types ---
 
@@ -81,7 +86,7 @@ func (cw *clientWriter) run() {
 			if !ok {
 				return
 			}
-			cw.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			cw.conn.SetWriteDeadline(time.Now().Add(writeDeadline))
 			if err := cw.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				return
 			}
@@ -104,6 +109,8 @@ type Hub struct {
 	pendingClients   map[uuid.UUID][]cmdRegister
 	onFirstConnect   func(uuid.UUID) error
 	onLastDisconnect func(uuid.UUID)
+	pubsub           *iredis.PubSub
+	subscriptions    map[uuid.UUID]*iredis.Subscription
 }
 
 func NewHub(onFirstConnect func(uuid.UUID) error, onLastDisconnect func(uuid.UUID)) *Hub {
@@ -113,9 +120,17 @@ func NewHub(onFirstConnect func(uuid.UUID) error, onLastDisconnect func(uuid.UUI
 		pendingClients:   make(map[uuid.UUID][]cmdRegister),
 		onFirstConnect:   onFirstConnect,
 		onLastDisconnect: onLastDisconnect,
+		subscriptions:    make(map[uuid.UUID]*iredis.Subscription),
 	}
 	go hub.run()
 	return hub
+}
+
+// SetPubSub enables Redis Pub/Sub for cross-instance broadcasting.
+// When set, the Hub subscribes to Redis channels for each active session
+// and forwards updates to local WebSocket clients.
+func (h *Hub) SetPubSub(ps *iredis.PubSub) {
+	h.pubsub = ps
 }
 
 func (h *Hub) run() {
@@ -180,6 +195,7 @@ func (h *Hub) handleRegister(c cmdRegister) {
 	h.clients[c.sessionUUID] = clients
 	cw := newClientWriter(c.conn)
 	clients[c.conn] = cw
+	h.subscribePubSub(c.sessionUUID)
 	log.Printf("Client registered for session %s (total clients: %d)", c.sessionUUID, len(clients))
 	c.errCh <- nil
 }
@@ -208,6 +224,7 @@ func (h *Hub) handleFirstConnectResult(c cmdFirstConnectResult) {
 		log.Printf("Client registered for session %s (total clients: %d)", c.sessionUUID, len(clients))
 		p.errCh <- nil
 	}
+	h.subscribePubSub(c.sessionUUID)
 }
 
 func (h *Hub) handleUnregister(sessionUUID uuid.UUID, conn *websocket.Conn) {
@@ -226,6 +243,7 @@ func (h *Hub) handleUnregister(sessionUUID uuid.UUID, conn *websocket.Conn) {
 
 	if len(clients) == 0 {
 		delete(h.clients, sessionUUID)
+		h.unsubscribePubSub(sessionUUID)
 		if h.onLastDisconnect != nil {
 			h.onLastDisconnect(sessionUUID)
 		}
@@ -264,6 +282,7 @@ func (h *Hub) handleStop() {
 			cw.stop()
 		}
 		delete(h.clients, sessionUUID)
+		h.unsubscribePubSub(sessionUUID)
 	}
 	for sessionUUID, pending := range h.pendingClients {
 		for _, p := range pending {
@@ -272,6 +291,40 @@ func (h *Hub) handleStop() {
 		}
 		delete(h.pendingClients, sessionUUID)
 	}
+}
+
+// subscribePubSub starts a Redis Pub/Sub listener for a session.
+// Updates from Redis are forwarded to local WebSocket clients via the Hub's command channel.
+func (h *Hub) subscribePubSub(sessionUUID uuid.UUID) {
+	if h.pubsub == nil {
+		return
+	}
+	if _, exists := h.subscriptions[sessionUUID]; exists {
+		return
+	}
+
+	sub := h.pubsub.SubscribeSession(context.Background(), sessionUUID)
+	h.subscriptions[sessionUUID] = sub
+
+	go func() {
+		for update := range sub.Ch {
+			data, err := json.Marshal(map[string]interface{}{"value": update.Value, "status": update.Status})
+			if err != nil {
+				continue
+			}
+			h.cmdCh <- cmdBroadcast{sessionUUID: sessionUUID, data: data}
+		}
+	}()
+}
+
+// unsubscribePubSub closes a Redis Pub/Sub subscription for a session.
+func (h *Hub) unsubscribePubSub(sessionUUID uuid.UUID) {
+	sub, exists := h.subscriptions[sessionUUID]
+	if !exists {
+		return
+	}
+	sub.Close()
+	delete(h.subscriptions, sessionUUID)
 }
 
 // --- Public API ---

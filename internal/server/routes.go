@@ -23,6 +23,11 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/reset/:uuid", s.handleResetSentiment, s.requireAuth)
 	s.echo.POST("/api/rotate-overlay-uuid", s.handleRotateOverlayUUID, s.requireAuth)
 
+	// Webhook route (EventSub notifications from Twitch)
+	if s.webhook != nil {
+		s.echo.POST("/webhooks/eventsub", s.webhook.HandleEventSub)
+	}
+
 	// Public routes (overlay and WebSocket)
 	s.echo.GET("/overlay/:uuid", s.handleOverlay)
 	s.echo.GET("/ws/overlay/:uuid", s.handleWebSocket)

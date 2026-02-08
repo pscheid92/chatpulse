@@ -1,20 +1,24 @@
-version: '3.8'
-
 services:
   app:
     build: .
     ports:
       - "8080:8080"
     environment:
-      - APP_ENV=production
+      - APP_ENV=${APP_ENV:-development}
       - PORT=8080
       - DATABASE_URL=postgres://twitchuser:twitchpass@db:5432/twitchdb?sslmode=disable
       - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
       - TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET}
       - TWITCH_REDIRECT_URI=${TWITCH_REDIRECT_URI}
       - SESSION_SECRET=${SESSION_SECRET}
+      - WEBHOOK_CALLBACK_URL=${WEBHOOK_CALLBACK_URL}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - BOT_USER_ID=${BOT_USER_ID}
+      - REDIS_URL=redis://redis:6379
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
 
@@ -28,6 +32,17 @@ services:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U twitchuser -d twitchdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
