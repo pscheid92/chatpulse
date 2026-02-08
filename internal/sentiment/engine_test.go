@@ -107,7 +107,7 @@ func newTestEngine(t *testing.T, cfg *models.Config) *testEngine {
 	configStore := &mockConfigStore{config: cfg}
 	memStore := NewInMemoryStore(fakeClock)
 	broadcaster := &mockBroadcaster{}
-	engine := NewEngine(memStore, configStore, fakeClock)
+	engine := NewEngine(memStore, configStore, fakeClock, true)
 	engine.broadcaster = broadcaster
 	// Start the actor goroutine (required for command processing)
 	go engine.run()

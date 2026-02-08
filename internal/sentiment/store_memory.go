@@ -182,6 +182,12 @@ func (s *InMemoryStore) PruneDebounce(_ context.Context) error {
 	return nil
 }
 
-func (s *InMemoryStore) NeedsBroadcast() bool {
-	return true
+func clamp(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }

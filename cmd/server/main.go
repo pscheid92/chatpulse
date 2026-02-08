@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,7 +15,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/database"
-	iredis "github.com/pscheid92/chatpulse/internal/redis"
+	"github.com/pscheid92/chatpulse/internal/redis"
 	"github.com/pscheid92/chatpulse/internal/sentiment"
 	"github.com/pscheid92/chatpulse/internal/server"
 	"github.com/pscheid92/chatpulse/internal/twitch"
@@ -22,8 +24,8 @@ import (
 
 type storeResult struct {
 	store  sentiment.SessionStateStore
-	client *iredis.Client
-	pubSub *iredis.PubSub
+	client *redis.Client
+	pubSub *redis.PubSub
 }
 
 type webhookResult struct {
@@ -38,7 +40,7 @@ func initStore(cfg *config.Config, clock clockwork.Clock) (*storeResult, error) 
 		return &storeResult{store: sentiment.NewInMemoryStore(clock)}, nil
 	}
 
-	redisClient, err := iredis.NewClient(cfg.RedisURL)
+	redisClient, err := redis.NewClient(cfg.RedisURL)
 	if err != nil {
 		return nil, err
 	}
@@ -50,10 +52,10 @@ func initStore(cfg *config.Config, clock clockwork.Clock) (*storeResult, error) 
 	}
 	log.Println("Connected to Redis")
 
-	sessionStore := iredis.NewSessionStore(redisClient)
-	scriptRunner := iredis.NewScriptRunner(redisClient)
-	redisPubSub := iredis.NewPubSub(redisClient)
-	store := sentiment.NewRedisStore(sessionStore, scriptRunner)
+	sessionStore := redis.NewSessionStore(redisClient)
+	scriptRunner := redis.NewScriptRunner(redisClient)
+	redisPubSub := redis.NewPubSub(redisClient)
+	store := sentiment.NewRedisStore(sessionStore, scriptRunner, clock)
 
 	return &storeResult{store: store, client: redisClient, pubSub: redisPubSub}, nil
 }
@@ -105,7 +107,8 @@ func newHubCallbacks(db *database.DB, engine *sentiment.Engine, subMgr *twitch.S
 	return onFirstConnect, onLastDisconnect
 }
 
-func runGracefulShutdown(srv *server.Server, engine *sentiment.Engine, hub *websocket.Hub, conduitMgr *twitch.ConduitManager) {
+func runGracefulShutdown(srv *server.Server, engine *sentiment.Engine, hub *websocket.Hub, conduitMgr *twitch.ConduitManager) <-chan struct{} {
+	done := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -129,8 +132,10 @@ func runGracefulShutdown(srv *server.Server, engine *sentiment.Engine, hub *webs
 			}
 		}
 
-		os.Exit(0)
+		close(done)
 	}()
+
+	return done
 }
 
 func main() {
@@ -158,7 +163,7 @@ func main() {
 	}
 
 	// Create Twitch client (gets app access token for conduit management)
-	twitchClient, err := twitch.NewTwitchClient(db, cfg.TwitchClientID, cfg.TwitchClientSecret)
+	twitchClient, err := twitch.NewTwitchClient(cfg.TwitchClientID, cfg.TwitchClientSecret)
 	if err != nil {
 		log.Fatalf("Failed to create Twitch client: %v", err)
 	}
@@ -174,7 +179,8 @@ func main() {
 	}
 
 	// Create sentiment engine (hub will be wired up after creation)
-	engine := sentiment.NewEngine(sr.store, db, clock)
+	broadcastAfterDecay := sr.pubSub == nil // No pubsub = in-memory = need broadcast
+	engine := sentiment.NewEngine(sr.store, db, clock, broadcastAfterDecay)
 
 	// Set up conduit + webhook if configured
 	wh, err := initWebhooks(cfg, twitchClient, sr.store, db)
@@ -204,11 +210,13 @@ func main() {
 	}
 
 	// Handle graceful shutdown
-	runGracefulShutdown(srv, engine, hub, wh.conduitManager)
+	done := runGracefulShutdown(srv, engine, hub, wh.conduitManager)
 
-	// Start the server (blocking)
+	// Start the server (blocking until shutdown)
 	log.Printf("Starting server on port %s", cfg.Port)
-	if err := srv.Start(); err != nil {
+	if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Server error: %v", err)
 	}
+
+	<-done
 }

@@ -17,11 +17,12 @@ import (
 	"github.com/pscheid92/chatpulse/internal/models"
 )
 
+// userColumns must match the Scan order in scanUser.
 const userColumns = `id, overlay_uuid, twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at`
 
 type DB struct {
 	*sql.DB
-	encryptionKey []byte // 32 bytes for AES-256; nil means no encryption
+	gcm cipher.AEAD // cached AES-256-GCM cipher; nil means no encryption
 }
 
 func Connect(databaseURL, encryptionKeyHex string) (*DB, error) {
@@ -49,7 +50,15 @@ func Connect(databaseURL, encryptionKeyHex string) (*DB, error) {
 		if len(key) != 32 {
 			return nil, fmt.Errorf("encryption key must be 32 bytes, got %d", len(key))
 		}
-		d.encryptionKey = key
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create cipher: %w", err)
+		}
+		aesGCM, err := cipher.NewGCM(block)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GCM: %w", err)
+		}
+		d.gcm = aesGCM
 	}
 
 	return d, nil
@@ -59,39 +68,22 @@ func (db *DB) HealthCheck(ctx context.Context) error {
 	return db.PingContext(ctx)
 }
 
-func (db *DB) newGCM() (cipher.AEAD, error) {
-	block, err := aes.NewCipher(db.encryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create cipher: %w", err)
-	}
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GCM: %w", err)
-	}
-	return aesGCM, nil
-}
-
 func (db *DB) encryptToken(plaintext string) (string, error) {
-	if db.encryptionKey == nil {
+	if db.gcm == nil {
 		return plaintext, nil
 	}
 
-	aesGCM, err := db.newGCM()
-	if err != nil {
-		return "", err
-	}
-
-	nonce := make([]byte, aesGCM.NonceSize())
+	nonce := make([]byte, db.gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ciphertext := aesGCM.Seal(nonce, nonce, []byte(plaintext), nil)
+	ciphertext := db.gcm.Seal(nonce, nonce, []byte(plaintext), nil)
 	return hex.EncodeToString(ciphertext), nil
 }
 
 func (db *DB) decryptToken(encoded string) (string, error) {
-	if db.encryptionKey == nil {
+	if db.gcm == nil {
 		return encoded, nil
 	}
 
@@ -100,18 +92,13 @@ func (db *DB) decryptToken(encoded string) (string, error) {
 		return "", fmt.Errorf("failed to decode hex: %w", err)
 	}
 
-	aesGCM, err := db.newGCM()
-	if err != nil {
-		return "", err
-	}
-
-	nonceSize := aesGCM.NonceSize()
+	nonceSize := db.gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
 		return "", fmt.Errorf("ciphertext too short")
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := aesGCM.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := db.gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to decrypt: %w", err)
 	}
@@ -130,6 +117,22 @@ func (db *DB) decryptUserTokens(user *models.User) error {
 		return fmt.Errorf("failed to decrypt refresh token: %w", err)
 	}
 	return nil
+}
+
+func (db *DB) scanUser(row *sql.Row) (*models.User, error) {
+	var user models.User
+	err := row.Scan(
+		&user.ID, &user.OverlayUUID, &user.TwitchUserID, &user.TwitchUsername,
+		&user.AccessToken, &user.RefreshToken, &user.TokenExpiry,
+		&user.CreatedAt, &user.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.decryptUserTokens(&user); err != nil {
+		return nil, err
+	}
+	return &user, nil
 }
 
 func (db *DB) RunMigrations() error {
@@ -187,9 +190,13 @@ func (db *DB) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, acce
 		return nil, fmt.Errorf("failed to encrypt refresh token: %w", err)
 	}
 
-	var user models.User
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	err = db.QueryRowContext(ctx, `
+	user, err := db.scanUser(tx.QueryRowContext(ctx, `
 		INSERT INTO users (twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
 		ON CONFLICT (twitch_user_id) DO UPDATE SET
@@ -199,53 +206,30 @@ func (db *DB) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, acce
 			token_expiry = EXCLUDED.token_expiry,
 			updated_at = NOW()
 		RETURNING `+userColumns+`
-	`, twitchUserID, twitchUsername, encAccessToken, encRefreshToken, tokenExpiry).Scan(
-		&user.ID, &user.OverlayUUID, &user.TwitchUserID, &user.TwitchUsername, &user.AccessToken,
-		&user.RefreshToken, &user.TokenExpiry, &user.CreatedAt, &user.UpdatedAt,
-	)
-
+	`, twitchUserID, twitchUsername, encAccessToken, encRefreshToken, tokenExpiry))
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert user: %w", err)
 	}
 
-	if err := db.decryptUserTokens(&user); err != nil {
-		return nil, err
-	}
-
-	// Ensure user has a default config
-	_, err = db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO configs (user_id, created_at, updated_at)
 		VALUES ($1, NOW(), NOW())
 		ON CONFLICT (user_id) DO NOTHING
 	`, user.ID)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create default config: %w", err)
 	}
 
-	return &user, nil
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return user, nil
 }
 
 func (db *DB) GetUserByID(ctx context.Context, userID uuid.UUID) (*models.User, error) {
-	var user models.User
-	err := db.QueryRowContext(ctx, `
-		SELECT `+userColumns+`
-		FROM users
-		WHERE id = $1
-	`, userID).Scan(
-		&user.ID, &user.OverlayUUID, &user.TwitchUserID, &user.TwitchUsername, &user.AccessToken,
-		&user.RefreshToken, &user.TokenExpiry, &user.CreatedAt, &user.UpdatedAt,
-	)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if err := db.decryptUserTokens(&user); err != nil {
-		return nil, err
-	}
-
-	return &user, nil
+	return db.scanUser(db.QueryRowContext(ctx,
+		`SELECT `+userColumns+` FROM users WHERE id = $1`, userID))
 }
 
 func (db *DB) UpdateUserTokens(ctx context.Context, userID uuid.UUID, accessToken, refreshToken string, tokenExpiry time.Time) error {
@@ -296,25 +280,8 @@ func (db *DB) UpdateConfig(ctx context.Context, userID uuid.UUID, forTrigger, ag
 }
 
 func (db *DB) GetUserByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*models.User, error) {
-	var user models.User
-	err := db.QueryRowContext(ctx, `
-		SELECT `+userColumns+`
-		FROM users
-		WHERE overlay_uuid = $1
-	`, overlayUUID).Scan(
-		&user.ID, &user.OverlayUUID, &user.TwitchUserID, &user.TwitchUsername, &user.AccessToken,
-		&user.RefreshToken, &user.TokenExpiry, &user.CreatedAt, &user.UpdatedAt,
-	)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if err := db.decryptUserTokens(&user); err != nil {
-		return nil, err
-	}
-
-	return &user, nil
+	return db.scanUser(db.QueryRowContext(ctx,
+		`SELECT `+userColumns+` FROM users WHERE overlay_uuid = $1`, overlayUUID))
 }
 
 func (db *DB) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {

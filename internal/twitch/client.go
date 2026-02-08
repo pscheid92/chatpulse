@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Its-donkey/kappopher/helix"
-	"github.com/pscheid92/chatpulse/internal/database"
 )
 
 const appTokenTimeout = 15 * time.Second
@@ -34,10 +33,7 @@ type TwitchClient struct {
 
 // NewTwitchClient creates a TwitchClient with app-level capabilities.
 // It obtains an app access token (client credentials) for conduit management.
-// The db parameter is accepted for interface compatibility but is not currently used.
-func NewTwitchClient(db *database.DB, clientID, clientSecret string) (*TwitchClient, error) {
-	_ = db // reserved for future user-scoped token management
-
+func NewTwitchClient(clientID, clientSecret string) (*TwitchClient, error) {
 	appAuth := helix.NewAuthClient(helix.AuthConfig{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,

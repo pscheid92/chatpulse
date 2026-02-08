@@ -5,20 +5,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/models"
 	iredis "github.com/pscheid92/chatpulse/internal/redis"
 )
 
 // RedisStore provides Redis-backed session state for multi-instance mode.
 // Vote and decay operations use Lua scripts for atomicity and include PUBLISH
-// so the Hub's Pub/Sub listener handles broadcasting (NeedsBroadcast returns false).
+// so the Hub's Pub/Sub listener handles broadcasting.
 type RedisStore struct {
 	sessions *iredis.SessionStore
 	scripts  *iredis.ScriptRunner
+	clock    clockwork.Clock
 }
 
-func NewRedisStore(sessions *iredis.SessionStore, scripts *iredis.ScriptRunner) *RedisStore {
-	return &RedisStore{sessions: sessions, scripts: scripts}
+func NewRedisStore(sessions *iredis.SessionStore, scripts *iredis.ScriptRunner, clock clockwork.Clock) *RedisStore {
+	return &RedisStore{sessions: sessions, scripts: scripts, clock: clock}
 }
 
 func (s *RedisStore) ActivateSession(ctx context.Context, sessionUUID uuid.UUID, broadcasterUserID string, config models.ConfigSnapshot) error {
@@ -78,7 +80,7 @@ func (s *RedisStore) ResetValue(ctx context.Context, sessionUUID uuid.UUID) erro
 }
 
 func (s *RedisStore) MarkDisconnected(ctx context.Context, sessionUUID uuid.UUID) error {
-	return s.sessions.MarkDisconnected(ctx, sessionUUID, time.Now())
+	return s.sessions.MarkDisconnected(ctx, sessionUUID, s.clock.Now())
 }
 
 func (s *RedisStore) UpdateConfig(ctx context.Context, sessionUUID uuid.UUID, config models.ConfigSnapshot) error {
@@ -87,12 +89,4 @@ func (s *RedisStore) UpdateConfig(ctx context.Context, sessionUUID uuid.UUID, co
 
 func (s *RedisStore) ListOrphans(ctx context.Context, maxAge time.Duration) ([]uuid.UUID, error) {
 	return s.sessions.ListOrphanSessions(ctx, maxAge)
-}
-
-func (s *RedisStore) PruneDebounce(_ context.Context) error {
-	return nil // Redis handles TTL expiry automatically
-}
-
-func (s *RedisStore) NeedsBroadcast() bool {
-	return false // Lua scripts PUBLISH via Pub/Sub; Hub's listener handles broadcasting
 }

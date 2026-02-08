@@ -134,19 +134,21 @@ type Engine struct {
 	clock clockwork.Clock
 	// localSessions tracks sessions activated on this instance (for tick/decay).
 	// Maps session UUID to cached config (needed for decay factor calculation).
-	localSessions map[uuid.UUID]models.ConfigSnapshot
-	broadcaster   Broadcaster
-	stopCh        chan struct{}
+	localSessions       map[uuid.UUID]models.ConfigSnapshot
+	broadcaster         Broadcaster
+	broadcastAfterDecay bool
+	stopCh              chan struct{}
 }
 
-func NewEngine(store SessionStateStore, db ConfigStore, clock clockwork.Clock) *Engine {
+func NewEngine(store SessionStateStore, db ConfigStore, clock clockwork.Clock, broadcastAfterDecay bool) *Engine {
 	return &Engine{
-		cmdCh:         make(chan engineCmd, 512),
-		db:            db,
-		store:         store,
-		clock:         clock,
-		localSessions: make(map[uuid.UUID]models.ConfigSnapshot),
-		stopCh:        make(chan struct{}),
+		cmdCh:               make(chan engineCmd, 512),
+		db:                  db,
+		store:               store,
+		clock:               clock,
+		localSessions:       make(map[uuid.UUID]models.ConfigSnapshot),
+		broadcastAfterDecay: broadcastAfterDecay,
+		stopCh:              make(chan struct{}),
 	}
 }
 
@@ -211,8 +213,10 @@ func (e *Engine) run() {
 			e.handleTick(ctx)
 			tickCount++
 			if tickCount%pruneDebounceEvery == 0 {
-				if err := e.store.PruneDebounce(ctx); err != nil {
-					log.Printf("PruneDebounce error: %v", err)
+				if pruner, ok := e.store.(DebouncePruner); ok {
+					if err := pruner.PruneDebounce(ctx); err != nil {
+						log.Printf("PruneDebounce error: %v", err)
+					}
 				}
 			}
 
@@ -266,32 +270,10 @@ func (e *Engine) run() {
 }
 
 func (e *Engine) handleProcessVote(ctx context.Context, c cmdProcessVote) {
-	sessionUUID, found, err := e.store.GetSessionByBroadcaster(ctx, c.broadcasterUserID)
-	if err != nil || !found {
-		return
+	newValue, applied := ProcessVote(ctx, e.store, c.broadcasterUserID, c.twitchUserID, c.messageText)
+	if applied {
+		log.Printf("Vote processed: user=%s, new value=%.2f", c.twitchUserID, newValue)
 	}
-
-	config, err := e.store.GetSessionConfig(ctx, sessionUUID)
-	if err != nil || config == nil {
-		return
-	}
-
-	delta := MatchTrigger(c.messageText, config)
-	if delta == 0 {
-		return
-	}
-
-	allowed, err := e.store.CheckDebounce(ctx, sessionUUID, c.twitchUserID)
-	if err != nil || !allowed {
-		return
-	}
-
-	newValue, err := e.store.ApplyVote(ctx, sessionUUID, delta)
-	if err != nil {
-		log.Printf("ApplyVote error: %v", err)
-		return
-	}
-	log.Printf("Vote processed: user=%s, delta=%.0f, new value=%.2f", c.twitchUserID, delta, newValue)
 }
 
 func (e *Engine) handleTick(ctx context.Context) {
@@ -303,7 +285,7 @@ func (e *Engine) handleTick(ctx context.Context) {
 			log.Printf("Decay error for session %s: %v", id, err)
 			continue
 		}
-		if e.store.NeedsBroadcast() {
+		if e.broadcastAfterDecay {
 			e.broadcaster.Broadcast(id, newValue, "active")
 		}
 	}
@@ -425,14 +407,4 @@ func (e *Engine) Stop() {
 	doneCh := make(chan struct{})
 	e.cmdCh <- cmdStop{doneCh: doneCh}
 	<-doneCh
-}
-
-func clamp(value, min, max float64) float64 {
-	if value < min {
-		return min
-	}
-	if value > max {
-		return max
-	}
-	return value
 }

@@ -61,6 +61,7 @@ type Server struct {
 	twitch            twitchService
 	hub               *websocket.Hub
 	webhook           webhookHandler
+	oauthClient       twitchOAuthClient
 	sessionStore      *sessions.CookieStore
 	cleanupTimer      *time.Ticker
 	cleanupStopCh     chan struct{}
@@ -110,6 +111,7 @@ func NewServer(cfg *config.Config, db dataStore, sentiment sentimentService, twi
 		twitch:            twitch,
 		hub:               hub,
 		webhook:           webhook,
+		oauthClient:       newTwitchOAuthClient(cfg.TwitchClientID, cfg.TwitchClientSecret, cfg.TwitchRedirectURI),
 		sessionStore:      sessionStore,
 		cleanupStopCh:     make(chan struct{}),
 		loginTemplate:     loginTmpl,

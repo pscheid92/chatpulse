@@ -1,0 +1,71 @@
+package server
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/stretchr/testify/assert"
+)
+
+// --- handleOverlay tests ---
+
+func TestHandleOverlay_BadUUID(t *testing.T) {
+	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	e := srv.echo
+
+	req := httptest.NewRequest(http.MethodGet, "/overlay/not-a-uuid", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("uuid")
+	c.SetParamValues("not-a-uuid")
+
+	err := srv.handleOverlay(c)
+	assert.NoError(t, err)
+	assert.Equal(t, 400, rec.Code)
+}
+
+func TestHandleOverlay_NotFound(t *testing.T) {
+	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	e := srv.echo
+
+	overlayUUID := uuid.New()
+	req := httptest.NewRequest(http.MethodGet, "/overlay/"+overlayUUID.String(), nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("uuid")
+	c.SetParamValues(overlayUUID.String())
+
+	err := srv.handleOverlay(c)
+	assert.NoError(t, err)
+	assert.Equal(t, 404, rec.Code)
+}
+
+func TestHandleOverlay_Success(t *testing.T) {
+	userID := uuid.New()
+	overlayUUID := uuid.New()
+
+	db := &mockDataStore{
+		getUserByOverlayFn: func(_ context.Context, _ uuid.UUID) (*models.User, error) {
+			return &models.User{ID: userID, OverlayUUID: overlayUUID}, nil
+		},
+	}
+
+	srv := newTestServer(t, db, &mockSentimentService{})
+	e := srv.echo
+
+	req := httptest.NewRequest(http.MethodGet, "/overlay/"+overlayUUID.String(), nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("uuid")
+	c.SetParamValues(overlayUUID.String())
+
+	err := srv.handleOverlay(c)
+	assert.NoError(t, err)
+	assert.Equal(t, 200, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Against")
+	assert.Contains(t, rec.Body.String(), "For")
+}

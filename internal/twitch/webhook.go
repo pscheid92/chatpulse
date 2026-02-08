@@ -20,7 +20,7 @@ type WebhookHandler struct {
 // NewWebhookHandler creates a new WebhookHandler with HMAC signature verification.
 // Votes are processed directly through the store for minimal latency:
 // broadcaster lookup → trigger match → debounce check → atomic vote application.
-func NewWebhookHandler(secret string, store sentiment.SessionStateStore) *WebhookHandler {
+func NewWebhookHandler(secret string, store sentiment.VoteStore) *WebhookHandler {
 	handler := helix.NewEventSubWebhookHandler(
 		helix.WithWebhookSecret(secret),
 		helix.WithNotificationHandler(func(msg *helix.EventSubWebhookMessage) {
@@ -35,41 +35,10 @@ func NewWebhookHandler(secret string, store sentiment.SessionStateStore) *Webhoo
 			}
 
 			ctx := context.Background()
-			broadcasterUserID := event.BroadcasterUserID
-			chatterUserID := event.ChatterUserID
-			messageText := event.Message.Text
-
-			// Look up session by broadcaster
-			sessionUUID, found, err := store.GetSessionByBroadcaster(ctx, broadcasterUserID)
-			if err != nil || !found {
-				return
+			newValue, applied := sentiment.ProcessVote(ctx, store, event.BroadcasterUserID, event.ChatterUserID, event.Message.Text)
+			if applied {
+				log.Printf("Vote processed via webhook: user=%s, new value=%.2f", event.ChatterUserID, newValue)
 			}
-
-			// Get config for trigger matching
-			config, err := store.GetSessionConfig(ctx, sessionUUID)
-			if err != nil || config == nil {
-				return
-			}
-
-			// Match trigger
-			delta := sentiment.MatchTrigger(messageText, config)
-			if delta == 0 {
-				return
-			}
-
-			// Check debounce
-			allowed, err := store.CheckDebounce(ctx, sessionUUID, chatterUserID)
-			if err != nil || !allowed {
-				return
-			}
-
-			// Apply vote atomically (Lua script publishes via Pub/Sub in Redis mode)
-			newValue, err := store.ApplyVote(ctx, sessionUUID, delta)
-			if err != nil {
-				log.Printf("ApplyVote error: %v", err)
-				return
-			}
-			log.Printf("Vote processed via webhook: user=%s, delta=%.0f, new value=%.2f", chatterUserID, delta, newValue)
 		}),
 		helix.WithVerificationHandler(func(msg *helix.EventSubWebhookMessage) bool {
 			log.Printf("EventSub webhook verification for subscription type: %s", msg.SubscriptionType)

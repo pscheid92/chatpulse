@@ -29,11 +29,10 @@ type SessionStateStore interface {
 	MarkDisconnected(ctx context.Context, sessionUUID uuid.UUID) error
 	UpdateConfig(ctx context.Context, sessionUUID uuid.UUID, config models.ConfigSnapshot) error
 	ListOrphans(ctx context.Context, maxAge time.Duration) ([]uuid.UUID, error)
+}
 
-	// PruneDebounce removes stale debounce entries. No-op for Redis (TTL handles it).
+// DebouncePruner is optionally implemented by stores that need periodic debounce cleanup.
+// Redis stores use TTL-based expiry and don't need this.
+type DebouncePruner interface {
 	PruneDebounce(ctx context.Context) error
-
-	// NeedsBroadcast returns true if the Engine should call Broadcast after state changes.
-	// In-memory: true (no Pub/Sub). Redis: false (Lua scripts publish via Pub/Sub).
-	NeedsBroadcast() bool
 }
