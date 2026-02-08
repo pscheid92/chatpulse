@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentiment Overlay</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: transparent;
+            width: 800px;
+            height: 100px;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+
+        .container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .glassmorphism {
+            width: 700px;
+            height: 80px;
+            background: rgba(15, 15, 25, 0.85);
+            backdrop-filter: blur(10px);
+            border-radius: 40px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .track {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 650px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.4);
+            border-radius: 2px;
+        }
+
+        .bar {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            transition: left 0.2s ease-out;
+            box-shadow: 0 4px 16px rgba(100, 65, 165, 0.6);
+            border: 3px solid white;
+        }
+
+        .bar.disconnected {
+            opacity: 0.5;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 0.7; }
+        }
+
+        .label {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 18px;
+            font-weight: 700;
+            color: white;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+        }
+
+        .label-left {
+            left: 25px;
+        }
+
+        .label-right {
+            right: 25px;
+        }
+
+        .center-mark {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 2px;
+            height: 20px;
+            background: rgba(255, 255, 255, 0.6);
+        }
+
+        .status-indicator {
+            position: absolute;
+            bottom: 6px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.6);
+            display: none;
+        }
+
+        .status-indicator.visible {
+            display: block;
+            animation: pulse 1.5s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="glassmorphism">
+            <div class="track"></div>
+            <div class="center-mark"></div>
+            <div class="bar" id="bar"></div>
+            <div class="label label-left">{{.LeftLabel}}</div>
+            <div class="label label-right">{{.RightLabel}}</div>
+            <div class="status-indicator" id="status-indicator">reconnecting...</div>
+        </div>
+    </div>
+
+    <script>
+        const bar = document.getElementById('bar');
+        const statusIndicator = document.getElementById('status-indicator');
+        let ws;
+        let reconnectAttempts = 0;
+        const maxReconnectDelay = 30000;
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsURL = `${protocol}//{{.WSHost}}/ws/overlay/{{.SessionUUID}}`;
+
+            ws = new WebSocket(wsURL);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                reconnectAttempts = 0;
+                bar.classList.remove('disconnected');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateBar(data.value);
+                    updateStatus(data.status);
+                } catch (error) {
+                    console.error('Failed to parse message:', error);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                bar.classList.add('disconnected');
+                reconnect();
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function reconnect() {
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay);
+            reconnectAttempts++;
+            console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+            setTimeout(connect, delay);
+        }
+
+        function updateBar(value) {
+            // Map value from [-100, 100] to [0%, 100%] of the track width
+            // -100 = 0% (left), 0 = 50% (center), 100 = 100% (right)
+            const percentage = ((value + 100) / 200) * 100;
+            bar.style.left = `${percentage}%`;
+        }
+
+        function updateStatus(status) {
+            if (status !== 'active') {
+                statusIndicator.classList.add('visible');
+                bar.classList.add('disconnected');
+            } else {
+                statusIndicator.classList.remove('visible');
+                bar.classList.remove('disconnected');
+            }
+        }
+
+        // Initialize
+        connect();
+    </script>
+</body>
+</html>

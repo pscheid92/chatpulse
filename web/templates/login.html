@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Sentiment Overlay - Login</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 480px;
+            width: 100%;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            text-align: center;
+        }
+
+        .header {
+            background: #6441a5;
+            color: white;
+            padding: 30px;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 40px 30px;
+        }
+
+        .content p {
+            color: #555;
+            margin-bottom: 24px;
+            line-height: 1.6;
+        }
+
+        .button-twitch {
+            display: inline-block;
+            background: #6441a5;
+            color: white;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+
+        .button-twitch:hover {
+            background: #7d5bbe;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(100, 65, 165, 0.4);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Twitch Sentiment Overlay</h1>
+            <p>Real-time chat sentiment for your stream</p>
+        </div>
+        <div class="content">
+            <p>Connect your Twitch account to set up a live sentiment overlay for your stream.</p>
+            <a href="{{.TwitchAuthURL}}" class="button-twitch">Login with Twitch</a>
+        </div>
+    </div>
+</body>
+</html>

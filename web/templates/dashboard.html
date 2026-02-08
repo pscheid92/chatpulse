@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Sentiment Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: #6441a5;
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+        }
+
+        .header-actions {
+            margin-top: 12px;
+        }
+
+        .button-logout {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            color: white;
+            padding: 6px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .button-logout:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: white;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 500;
+            color: #555;
+            margin-bottom: 8px;
+        }
+
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #6441a5;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #e0e0e0;
+            outline: none;
+        }
+
+        .slider-value {
+            display: inline-block;
+            margin-left: 10px;
+            font-weight: 600;
+            color: #6441a5;
+        }
+
+        .button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .button-primary {
+            background: #6441a5;
+            color: white;
+        }
+
+        .button-primary:hover {
+            background: #7d5bbe;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(100, 65, 165, 0.4);
+        }
+
+        .button-secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+
+        .button-secondary:hover {
+            background: #d0d0d0;
+        }
+
+        .overlay-box {
+            background: #f8f9fa;
+            border: 2px dashed #6441a5;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 10px;
+        }
+
+        .overlay-url {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .overlay-url input {
+            flex: 1;
+            font-family: monospace;
+            background: white;
+        }
+
+        .instructions {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Twitch Sentiment Overlay</h1>
+            <p>Welcome, {{.Username}}!</p>
+            <div class="header-actions">
+                <form method="POST" action="/auth/logout" style="display:inline">
+                    <button type="submit" class="button-logout">Logout</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="content">
+            <!-- Configuration Section -->
+            <div class="section">
+                <h2 class="section-title">Configuration</h2>
+                <form method="POST" action="/dashboard/config">
+                    <div class="form-group">
+                        <label for="for_trigger">For Trigger Word:</label>
+                        <input type="text" id="for_trigger" name="for_trigger" value="{{.ForTrigger}}" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="against_trigger">Against Trigger Word:</label>
+                        <input type="text" id="against_trigger" name="against_trigger" value="{{.AgainstTrigger}}" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="left_label">Left Label (Against):</label>
+                        <input type="text" id="left_label" name="left_label" value="{{.LeftLabel}}" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="right_label">Right Label (For):</label>
+                        <input type="text" id="right_label" name="right_label" value="{{.RightLabel}}" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="decay_speed">
+                            Decay Speed: <span class="slider-value" id="decay_value">{{.DecaySpeed}}</span>
+                        </label>
+                        <input type="range" id="decay_speed" name="decay_speed" min="0.1" max="2.0" step="0.1" value="{{.DecaySpeed}}"
+                               oninput="document.getElementById('decay_value').textContent = this.value">
+                    </div>
+
+                    <button type="submit" class="button button-primary">Save Configuration</button>
+                </form>
+            </div>
+
+            <!-- Overlay URL Section -->
+            <div class="section">
+                <h2 class="section-title">Overlay URL</h2>
+                <div class="overlay-box">
+                    <div class="overlay-url">
+                        <input type="text" id="overlay_url" value="{{.OverlayURL}}" readonly>
+                        <button class="button button-secondary" onclick="copyURL()">Copy</button>
+                        <button class="button button-secondary" onclick="rotateURL()">Rotate URL</button>
+                    </div>
+                    <div class="instructions">
+                        <strong>How to use:</strong><br>
+                        1. Copy the URL above<br>
+                        2. In OBS, add a Browser Source<br>
+                        3. Paste the URL and set dimensions (e.g., 800x100)<br>
+                        4. Done! The overlay will show live sentiment
+                    </div>
+                </div>
+            </div>
+
+            <!-- Reset Section -->
+            <div class="section">
+                <h2 class="section-title">Reset Overlay</h2>
+                <button class="button button-secondary" onclick="resetOverlay()">Reset to Center</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function copyURL() {
+            const urlInput = document.getElementById('overlay_url');
+            urlInput.select();
+            document.execCommand('copy');
+            alert('Overlay URL copied to clipboard!');
+        }
+
+        async function rotateURL() {
+            if (!confirm('This will generate a new overlay URL. Your current URL will stop working. Continue?')) {
+                return;
+            }
+            try {
+                const response = await fetch('/api/rotate-overlay-uuid', { method: 'POST' });
+                if (response.ok) {
+                    window.location.reload();
+                } else {
+                    alert('Failed to rotate overlay URL');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        async function resetOverlay() {
+            try {
+                const response = await fetch('/api/reset/{{.OverlayUUID}}', { method: 'POST' });
+                if (response.ok) {
+                    alert('Overlay reset successfully!');
+                } else {
+                    alert('Failed to reset overlay');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>
