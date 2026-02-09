@@ -3,7 +3,7 @@ package sentiment
 import (
 	"strings"
 
-	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/domain"
 )
 
 const voteDelta = 10.0
@@ -11,7 +11,7 @@ const voteDelta = 10.0
 // MatchTrigger checks if a message matches any configured trigger.
 // Returns +voteDelta for the "for" trigger, -voteDelta for the "against" trigger, or 0 for no match.
 // Matching is case-insensitive substring matching. The "for" trigger takes priority.
-func MatchTrigger(messageText string, config *models.ConfigSnapshot) float64 {
+func MatchTrigger(messageText string, config *domain.ConfigSnapshot) float64 {
 	if config == nil {
 		return 0
 	}

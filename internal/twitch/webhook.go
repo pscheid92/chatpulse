@@ -7,6 +7,7 @@ import (
 
 	"github.com/Its-donkey/kappopher/helix"
 	"github.com/labstack/echo/v4"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/sentiment"
 )
 
@@ -20,7 +21,7 @@ type WebhookHandler struct {
 // NewWebhookHandler creates a new WebhookHandler with HMAC signature verification.
 // Votes are processed directly through the store for minimal latency:
 // broadcaster lookup → trigger match → debounce check → atomic vote application.
-func NewWebhookHandler(secret string, store sentiment.VoteStore) *WebhookHandler {
+func NewWebhookHandler(secret string, store domain.VoteStore) *WebhookHandler {
 	handler := helix.NewEventSubWebhookHandler(
 		helix.WithWebhookSecret(secret),
 		helix.WithNotificationHandler(func(msg *helix.EventSubWebhookMessage) {

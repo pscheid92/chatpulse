@@ -22,7 +22,7 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
-	user, err := s.db.GetUserByID(ctx, userID)
+	user, err := s.app.GetUserByID(ctx, userID)
 	if err != nil {
 		return c.JSON(500, map[string]string{"error": "Failed to load user"})
 	}
@@ -31,7 +31,11 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 		return c.JSON(403, map[string]string{"error": "Forbidden"})
 	}
 
-	s.sentiment.ResetSession(overlayUUID)
+	if err := s.app.ResetSentiment(ctx, overlayUUID); err != nil {
+		log.Printf("Failed to reset sentiment: %v", err)
+		return c.JSON(500, map[string]string{"error": "Failed to reset"})
+	}
+
 	return c.JSON(200, map[string]string{"status": "ok"})
 }
 
@@ -42,7 +46,7 @@ func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 
-	newUUID, err := s.db.RotateOverlayUUID(ctx, userID)
+	newUUID, err := s.app.RotateOverlayUUID(ctx, userID)
 	if err != nil {
 		log.Printf("Failed to rotate overlay UUID: %v", err)
 		return c.JSON(500, map[string]string{"error": "Failed to rotate URL"})

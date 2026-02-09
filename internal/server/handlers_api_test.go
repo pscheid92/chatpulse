@@ -8,14 +8,14 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 )
 
 // --- handleResetSentiment tests ---
 
 func TestHandleResetSentiment_BadUUID(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodPost, "/api/reset/not-a-uuid", nil)
@@ -35,13 +35,13 @@ func TestHandleResetSentiment_WrongUser(t *testing.T) {
 	overlayUUID := uuid.New()
 	differentOverlay := uuid.New()
 
-	db := &mockDataStore{
-		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*models.User, error) {
-			return &models.User{ID: userID, OverlayUUID: overlayUUID}, nil
+	app := &mockAppService{
+		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
+			return &domain.User{ID: userID, OverlayUUID: overlayUUID}, nil
 		},
 	}
 
-	srv := newTestServer(t, db, &mockSentimentService{})
+	srv := newTestServer(t, app)
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodPost, "/api/reset/"+differentOverlay.String(), nil)
@@ -61,19 +61,18 @@ func TestHandleResetSentiment_Success(t *testing.T) {
 	overlayUUID := uuid.New()
 	var resetCalled bool
 
-	db := &mockDataStore{
-		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*models.User, error) {
-			return &models.User{ID: userID, OverlayUUID: overlayUUID}, nil
+	app := &mockAppService{
+		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
+			return &domain.User{ID: userID, OverlayUUID: overlayUUID}, nil
 		},
-	}
-	sent := &mockSentimentService{
-		resetSessionFn: func(id uuid.UUID) {
+		resetSentimentFn: func(_ context.Context, id uuid.UUID) error {
 			resetCalled = true
 			assert.Equal(t, overlayUUID, id)
+			return nil
 		},
 	}
 
-	srv := newTestServer(t, db, sent)
+	srv := newTestServer(t, app)
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodPost, "/api/reset/"+overlayUUID.String(), nil)
@@ -92,13 +91,13 @@ func TestHandleResetSentiment_Success(t *testing.T) {
 // --- handleRotateOverlayUUID tests ---
 
 func TestHandleRotateOverlayUUID_DBError(t *testing.T) {
-	db := &mockDataStore{
+	app := &mockAppService{
 		rotateOverlayUUIDFn: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
 			return uuid.Nil, fmt.Errorf("db error")
 		},
 	}
 
-	srv := newTestServer(t, db, &mockSentimentService{})
+	srv := newTestServer(t, app)
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodPost, "/api/rotate-overlay-uuid", nil)
@@ -113,13 +112,13 @@ func TestHandleRotateOverlayUUID_DBError(t *testing.T) {
 
 func TestHandleRotateOverlayUUID_Success(t *testing.T) {
 	newUUID := uuid.New()
-	db := &mockDataStore{
+	app := &mockAppService{
 		rotateOverlayUUIDFn: func(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
 			return newUUID, nil
 		},
 	}
 
-	srv := newTestServer(t, db, &mockSentimentService{})
+	srv := newTestServer(t, app)
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodPost, "/api/rotate-overlay-uuid", nil)

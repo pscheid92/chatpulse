@@ -15,6 +15,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("TWITCH_REDIRECT_URI", "http://localhost:8080/auth/callback")
 	t.Setenv("SESSION_SECRET", "test-session-secret")
 	t.Setenv("TOKEN_ENCRYPTION_KEY", "")
+	t.Setenv("REDIS_URL", "redis://localhost:6379")
 }
 
 func TestLoad_AllRequiredVarsSet(t *testing.T) {
@@ -41,6 +42,7 @@ func TestLoad_MissingRequired(t *testing.T) {
 		{"missing TWITCH_CLIENT_SECRET", "TWITCH_CLIENT_SECRET", "TWITCH_CLIENT_SECRET is required"},
 		{"missing TWITCH_REDIRECT_URI", "TWITCH_REDIRECT_URI", "TWITCH_REDIRECT_URI is required"},
 		{"missing SESSION_SECRET", "SESSION_SECRET", "SESSION_SECRET is required"},
+		{"missing REDIS_URL", "REDIS_URL", "REDIS_URL is required"},
 	}
 
 	for _, tt := range tests {

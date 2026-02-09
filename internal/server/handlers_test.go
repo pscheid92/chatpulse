@@ -13,105 +13,96 @@ import (
 	"github.com/gorilla/sessions"
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/config"
-	"github.com/pscheid92/chatpulse/internal/models"
-	"github.com/pscheid92/chatpulse/internal/sentiment"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
 
 // --- Mock implementations ---
 
-type mockDataStore struct {
-	getUserByIDFn       func(ctx context.Context, userID uuid.UUID) (*models.User, error)
-	getUserByOverlayFn  func(ctx context.Context, overlayUUID uuid.UUID) (*models.User, error)
-	getConfigFn         func(ctx context.Context, userID uuid.UUID) (*models.Config, error)
-	updateConfigFn      func(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64) error
-	upsertUserFn        func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*models.User, error)
-	rotateOverlayUUIDFn func(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
+type mockAppService struct {
+	getUserByIDFn         func(ctx context.Context, userID uuid.UUID) (*domain.User, error)
+	getUserByOverlayFn    func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error)
+	getConfigFn           func(ctx context.Context, userID uuid.UUID) (*domain.Config, error)
+	upsertUserFn          func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error)
+	ensureSessionActiveFn func(ctx context.Context, overlayUUID uuid.UUID) error
+	incrRefCountFn        func(ctx context.Context, sessionUUID uuid.UUID) error
+	onSessionEmptyFn      func(ctx context.Context, sessionUUID uuid.UUID)
+	resetSentimentFn      func(ctx context.Context, overlayUUID uuid.UUID) error
+	saveConfigFn          func(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, overlayUUID uuid.UUID) error
+	rotateOverlayUUIDFn   func(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
 }
 
-func (m *mockDataStore) GetUserByID(ctx context.Context, userID uuid.UUID) (*models.User, error) {
+func (m *mockAppService) GetUserByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
 	if m.getUserByIDFn != nil {
 		return m.getUserByIDFn(ctx, userID)
 	}
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockDataStore) GetUserByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*models.User, error) {
+func (m *mockAppService) GetUserByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
 	if m.getUserByOverlayFn != nil {
 		return m.getUserByOverlayFn(ctx, overlayUUID)
 	}
 	return nil, sql.ErrNoRows
 }
 
-func (m *mockDataStore) GetConfig(ctx context.Context, userID uuid.UUID) (*models.Config, error) {
+func (m *mockAppService) GetConfig(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 	if m.getConfigFn != nil {
 		return m.getConfigFn(ctx, userID)
 	}
-	return &models.Config{
+	return &domain.Config{
 		ForTrigger: "yes", AgainstTrigger: "no",
 		LeftLabel: "Against", RightLabel: "For", DecaySpeed: 1.0,
 	}, nil
 }
 
-func (m *mockDataStore) UpdateConfig(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64) error {
-	if m.updateConfigFn != nil {
-		return m.updateConfigFn(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed)
-	}
-	return nil
-}
-
-func (m *mockDataStore) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*models.User, error) {
+func (m *mockAppService) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error) {
 	if m.upsertUserFn != nil {
 		return m.upsertUserFn(ctx, twitchUserID, twitchUsername, accessToken, refreshToken, tokenExpiry)
 	}
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockDataStore) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
-	if m.rotateOverlayUUIDFn != nil {
-		return m.rotateOverlayUUIDFn(ctx, userID)
-	}
-	return uuid.New(), nil
-}
-
-type mockSentimentService struct {
-	activateSessionFn  func(ctx context.Context, sessionUUID uuid.UUID, userID uuid.UUID, broadcasterUserID string) error
-	resetSessionFn     func(sessionUUID uuid.UUID)
-	markDisconnectedFn func(sessionUUID uuid.UUID)
-	cleanupOrphansFn   func(twitchManager sentiment.TwitchManager)
-	updateSessionCfgFn func(sessionUUID uuid.UUID, snapshot models.ConfigSnapshot)
-}
-
-func (m *mockSentimentService) ActivateSession(ctx context.Context, sessionUUID uuid.UUID, userID uuid.UUID, broadcasterUserID string) error {
-	if m.activateSessionFn != nil {
-		return m.activateSessionFn(ctx, sessionUUID, userID, broadcasterUserID)
+func (m *mockAppService) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID) error {
+	if m.ensureSessionActiveFn != nil {
+		return m.ensureSessionActiveFn(ctx, overlayUUID)
 	}
 	return nil
 }
 
-func (m *mockSentimentService) ResetSession(sessionUUID uuid.UUID) {
-	if m.resetSessionFn != nil {
-		m.resetSessionFn(sessionUUID)
+func (m *mockAppService) IncrRefCount(ctx context.Context, sessionUUID uuid.UUID) error {
+	if m.incrRefCountFn != nil {
+		return m.incrRefCountFn(ctx, sessionUUID)
+	}
+	return nil
+}
+
+func (m *mockAppService) OnSessionEmpty(ctx context.Context, sessionUUID uuid.UUID) {
+	if m.onSessionEmptyFn != nil {
+		m.onSessionEmptyFn(ctx, sessionUUID)
 	}
 }
 
-func (m *mockSentimentService) MarkDisconnected(sessionUUID uuid.UUID) {
-	if m.markDisconnectedFn != nil {
-		m.markDisconnectedFn(sessionUUID)
+func (m *mockAppService) ResetSentiment(ctx context.Context, overlayUUID uuid.UUID) error {
+	if m.resetSentimentFn != nil {
+		return m.resetSentimentFn(ctx, overlayUUID)
 	}
+	return nil
 }
 
-func (m *mockSentimentService) CleanupOrphans(twitchManager sentiment.TwitchManager) {
-	if m.cleanupOrphansFn != nil {
-		m.cleanupOrphansFn(twitchManager)
+func (m *mockAppService) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, overlayUUID uuid.UUID) error {
+	if m.saveConfigFn != nil {
+		return m.saveConfigFn(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, overlayUUID)
 	}
+	return nil
 }
 
-func (m *mockSentimentService) UpdateSessionConfig(sessionUUID uuid.UUID, snapshot models.ConfigSnapshot) {
-	if m.updateSessionCfgFn != nil {
-		m.updateSessionCfgFn(sessionUUID, snapshot)
+func (m *mockAppService) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	if m.rotateOverlayUUIDFn != nil {
+		return m.rotateOverlayUUIDFn(ctx, userID)
 	}
+	return uuid.New(), nil
 }
 
 type mockOAuthClient struct {
@@ -125,7 +116,7 @@ func (m *mockOAuthClient) ExchangeCodeForToken(_ context.Context, _ string) (*tw
 
 // --- Test helpers ---
 
-func newTestServer(t *testing.T, db dataStore, sent sentimentService, opts ...func(*Server)) *Server {
+func newTestServer(t *testing.T, app domain.AppService, opts ...func(*Server)) *Server {
 	t.Helper()
 
 	loginTmpl := template.Must(template.New("login.html").Parse(`Login {{.TwitchAuthURL}}`))
@@ -141,8 +132,7 @@ func newTestServer(t *testing.T, db dataStore, sent sentimentService, opts ...fu
 	srv := &Server{
 		echo:              echo.New(),
 		config:            &config.Config{TwitchClientID: "test-client-id", TwitchRedirectURI: "http://localhost/auth/callback"},
-		db:                db,
-		sentiment:         sent,
+		app:               app,
 		sessionStore:      store,
 		loginTemplate:     loginTmpl,
 		dashboardTemplate: dashTmpl,

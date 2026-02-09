@@ -3,23 +3,15 @@ package sentiment
 import (
 	"context"
 	"log"
+	"time"
 
-	"github.com/google/uuid"
-	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/domain"
 )
-
-// VoteStore is the subset of SessionStateStore needed for vote processing.
-type VoteStore interface {
-	GetSessionByBroadcaster(ctx context.Context, broadcasterUserID string) (uuid.UUID, bool, error)
-	GetSessionConfig(ctx context.Context, sessionUUID uuid.UUID) (*models.ConfigSnapshot, error)
-	CheckDebounce(ctx context.Context, sessionUUID uuid.UUID, twitchUserID string) (bool, error)
-	ApplyVote(ctx context.Context, sessionUUID uuid.UUID, delta float64) (float64, error)
-}
 
 // ProcessVote runs the complete vote pipeline: broadcaster lookup → trigger match →
 // debounce check → atomic vote application. Returns the new value and whether a
 // vote was actually applied.
-func ProcessVote(ctx context.Context, store VoteStore, broadcasterUserID, chatterUserID, messageText string) (float64, bool) {
+func ProcessVote(ctx context.Context, store domain.VoteStore, broadcasterUserID, chatterUserID, messageText string) (float64, bool) {
 	sessionUUID, found, err := store.GetSessionByBroadcaster(ctx, broadcasterUserID)
 	if err != nil || !found {
 		return 0, false
@@ -40,7 +32,8 @@ func ProcessVote(ctx context.Context, store VoteStore, broadcasterUserID, chatte
 		return 0, false
 	}
 
-	newValue, err := store.ApplyVote(ctx, sessionUUID, delta)
+	nowMs := time.Now().UnixMilli()
+	newValue, err := store.ApplyVote(ctx, sessionUUID, delta, config.DecaySpeed, nowMs)
 	if err != nil {
 		log.Printf("ApplyVote error: %v", err)
 		return 0, false

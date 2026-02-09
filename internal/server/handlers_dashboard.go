@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
-	"github.com/pscheid92/chatpulse/internal/models"
 )
 
 const (
@@ -56,12 +55,12 @@ func (s *Server) handleDashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 
-	user, err := s.db.GetUserByID(ctx, userID)
+	user, err := s.app.GetUserByID(ctx, userID)
 	if err != nil {
 		return c.String(500, "Failed to load user")
 	}
 
-	config, err := s.db.GetConfig(ctx, userID)
+	config, err := s.app.GetConfig(ctx, userID)
 	if err != nil {
 		return c.String(500, "Failed to load config")
 	}
@@ -103,23 +102,15 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 		return c.String(400, fmt.Sprintf("Validation error: %v", err))
 	}
 
-	if err := s.db.UpdateConfig(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed); err != nil {
-		log.Printf("Failed to update config: %v", err)
+	user, err := s.app.GetUserByID(ctx, userID)
+	if err != nil {
+		log.Printf("Failed to get user for config save: %v", err)
 		return c.String(500, "Failed to save config")
 	}
 
-	user, err := s.db.GetUserByID(ctx, userID)
-	if err != nil {
-		log.Printf("Failed to get user for live config update: %v", err)
-	} else {
-		snapshot := models.ConfigSnapshot{
-			ForTrigger:     forTrigger,
-			AgainstTrigger: againstTrigger,
-			LeftLabel:      leftLabel,
-			RightLabel:     rightLabel,
-			DecaySpeed:     decaySpeed,
-		}
-		s.sentiment.UpdateSessionConfig(user.OverlayUUID, snapshot)
+	if err := s.app.SaveConfig(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, user.OverlayUUID); err != nil {
+		log.Printf("Failed to save config: %v", err)
+		return c.String(500, "Failed to save config")
 	}
 
 	return c.Redirect(302, "/dashboard")

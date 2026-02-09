@@ -11,19 +11,24 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
 
 const debounceInterval = 1 * time.Second
 
 // Key schema:
-//   session:{overlayUUID}          — hash: value, broadcaster_user_id, config_json, last_disconnect, last_decay
-//   broadcaster:{twitchUserID}     — string → overlayUUID
-//   debounce:{overlayUUID}:{uid}   — key with 1s TTL (auto-expires)
+//   session:{overlayUUID}              — hash: value, broadcaster_user_id, config_json, last_disconnect, last_update
+//   session:{overlayUUID}:ref_count    — integer: tracks how many app instances serve this session
+//   broadcaster:{twitchUserID}         — string → overlayUUID
+//   debounce:{overlayUUID}:{uid}       — key with 1s TTL (auto-expires)
 
 func sessionKey(overlayUUID uuid.UUID) string {
 	return "session:" + overlayUUID.String()
+}
+
+func refCountKey(overlayUUID uuid.UUID) string {
+	return "session:" + overlayUUID.String() + ":ref_count"
 }
 
 func broadcasterKey(twitchUserID string) string {
@@ -45,7 +50,7 @@ func NewSessionStore(client *Client) *SessionStore {
 }
 
 // ActivateSession creates or resumes a session in Redis.
-func (s *SessionStore) ActivateSession(ctx context.Context, overlayUUID uuid.UUID, broadcasterUserID string, config models.ConfigSnapshot) error {
+func (s *SessionStore) ActivateSession(ctx context.Context, overlayUUID uuid.UUID, broadcasterUserID string, config domain.ConfigSnapshot) error {
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -71,7 +76,7 @@ func (s *SessionStore) ActivateSession(ctx context.Context, overlayUUID uuid.UUI
 		"broadcaster_user_id": broadcasterUserID,
 		"config_json":         string(configJSON),
 		"last_disconnect":     "0",
-		"last_decay":          "0",
+		"last_update":         "0",
 	})
 	pipe.Set(ctx, broadcasterKey(broadcasterUserID), overlayUUID.String(), 0)
 	_, err = pipe.Exec(ctx)
@@ -79,7 +84,7 @@ func (s *SessionStore) ActivateSession(ctx context.Context, overlayUUID uuid.UUI
 }
 
 // GetSession returns the current value and config for a session.
-func (s *SessionStore) GetSession(ctx context.Context, overlayUUID uuid.UUID) (float64, *models.ConfigSnapshot, error) {
+func (s *SessionStore) GetSession(ctx context.Context, overlayUUID uuid.UUID) (float64, *domain.ConfigSnapshot, error) {
 	key := sessionKey(overlayUUID)
 	result, err := s.rdb.HGetAll(ctx, key).Result()
 	if err != nil {
@@ -94,7 +99,7 @@ func (s *SessionStore) GetSession(ctx context.Context, overlayUUID uuid.UUID) (f
 		log.Printf("Warning: failed to parse session value for key %s: %v", key, err)
 	}
 
-	var config models.ConfigSnapshot
+	var config domain.ConfigSnapshot
 	if configJSON, ok := result["config_json"]; ok {
 		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
 			return 0, nil, fmt.Errorf("failed to unmarshal config: %w", err)
@@ -104,7 +109,7 @@ func (s *SessionStore) GetSession(ctx context.Context, overlayUUID uuid.UUID) (f
 	return value, &config, nil
 }
 
-// DeleteSession removes a session and its broadcaster mapping.
+// DeleteSession removes a session, its broadcaster mapping, and its ref count.
 func (s *SessionStore) DeleteSession(ctx context.Context, overlayUUID uuid.UUID) error {
 	key := sessionKey(overlayUUID)
 
@@ -116,6 +121,7 @@ func (s *SessionStore) DeleteSession(ctx context.Context, overlayUUID uuid.UUID)
 
 	pipe := s.rdb.Pipeline()
 	pipe.Del(ctx, key)
+	pipe.Del(ctx, refCountKey(overlayUUID))
 	if broadcasterID != "" {
 		pipe.Del(ctx, broadcasterKey(broadcasterID))
 	}
@@ -175,12 +181,24 @@ func (s *SessionStore) ClearDisconnected(ctx context.Context, overlayUUID uuid.U
 }
 
 // UpdateConfig updates the session's config in Redis.
-func (s *SessionStore) UpdateConfig(ctx context.Context, overlayUUID uuid.UUID, config models.ConfigSnapshot) error {
+func (s *SessionStore) UpdateConfig(ctx context.Context, overlayUUID uuid.UUID, config domain.ConfigSnapshot) error {
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 	return s.rdb.HSet(ctx, sessionKey(overlayUUID), "config_json", string(configJSON)).Err()
+}
+
+// IncrRefCount atomically increments the reference count for a session.
+// Returns the new count.
+func (s *SessionStore) IncrRefCount(ctx context.Context, overlayUUID uuid.UUID) (int64, error) {
+	return s.rdb.Incr(ctx, refCountKey(overlayUUID)).Result()
+}
+
+// DecrRefCount atomically decrements the reference count for a session.
+// Returns the new count.
+func (s *SessionStore) DecrRefCount(ctx context.Context, overlayUUID uuid.UUID) (int64, error) {
+	return s.rdb.Decr(ctx, refCountKey(overlayUUID)).Result()
 }
 
 // ListOrphanSessions scans for sessions with a last_disconnect older than maxAge.
@@ -196,6 +214,11 @@ func (s *SessionStore) ListOrphanSessions(ctx context.Context, maxAge time.Durat
 		}
 
 		for _, key := range keys {
+			// Skip ref_count keys (session:{uuid}:ref_count)
+			if strings.Count(key, ":") > 1 {
+				continue
+			}
+
 			disconnectStr, err := s.rdb.HGet(ctx, key, "last_disconnect").Result()
 			if err != nil || disconnectStr == "0" || disconnectStr == "" {
 				continue

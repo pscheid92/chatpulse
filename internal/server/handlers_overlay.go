@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -29,7 +30,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
-	user, err := s.db.GetUserByOverlayUUID(ctx, overlayUUID)
+	user, err := s.app.GetUserByOverlayUUID(ctx, overlayUUID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c.String(404, "Overlay not found")
 	}
@@ -38,7 +39,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 		return c.String(500, "Failed to load overlay")
 	}
 
-	config, err := s.db.GetConfig(ctx, user.ID)
+	config, err := s.app.GetConfig(ctx, user.ID)
 	if err != nil {
 		log.Printf("Failed to load config: %v", err)
 		return c.String(500, "Failed to load config")
@@ -63,7 +64,7 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
-	user, err := s.db.GetUserByOverlayUUID(ctx, overlayUUID)
+	user, err := s.app.GetUserByOverlayUUID(ctx, overlayUUID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c.String(404, "Session not found")
 	}
@@ -72,24 +73,37 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 		return c.String(500, "Internal error")
 	}
 
+	// Ensure session is active in Redis (activate or resume)
+	if err := s.app.EnsureSessionActive(ctx, user.OverlayUUID); err != nil {
+		log.Printf("Failed to ensure session active: %v", err)
+		return c.String(500, "Failed to activate session")
+	}
+
+	// Increment ref count (tracks how many instances serve this session)
+	if err := s.app.IncrRefCount(ctx, user.OverlayUUID); err != nil {
+		log.Printf("Failed to increment ref count: %v", err)
+		return c.String(500, "Internal error")
+	}
+
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to upgrade WebSocket: %w", err)
 	}
 
-	if err := s.hub.Register(user.OverlayUUID, conn); err != nil {
-		log.Printf("Failed to register with hub: %v", err)
+	if err := s.broadcaster.Register(user.OverlayUUID, conn); err != nil {
+		log.Printf("Failed to register with broadcaster: %v", err)
 		return nil
 	}
 
+	// Read pump — blocks until connection closes
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			break
 		}
 	}
 
-	s.hub.Unregister(user.OverlayUUID, conn)
-	s.sentiment.MarkDisconnected(user.OverlayUUID)
+	s.broadcaster.Unregister(user.OverlayUUID, conn)
+	s.app.OnSessionEmpty(context.Background(), user.OverlayUUID)
 
 	return nil //nolint:nilerr // ReadMessage err is block-scoped; outer err is nil
 }

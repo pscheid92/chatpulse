@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
-	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 // --- requireAuth tests ---
 
 func TestRequireAuth_NoSession(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
@@ -36,7 +36,7 @@ func TestRequireAuth_NoSession(t *testing.T) {
 }
 
 func TestRequireAuth_InvalidUUID(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
@@ -66,7 +66,7 @@ func TestRequireAuth_InvalidUUID(t *testing.T) {
 }
 
 func TestRequireAuth_ValidSession(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 	userID := uuid.New()
 
@@ -97,7 +97,7 @@ func TestRequireAuth_ValidSession(t *testing.T) {
 // --- handleLoginPage tests ---
 
 func TestHandleLoginPage_Success(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
@@ -114,7 +114,7 @@ func TestHandleLoginPage_Success(t *testing.T) {
 // --- handleLogout tests ---
 
 func TestHandleLogout_Success(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
@@ -154,9 +154,9 @@ func setupOAuthCallbackRequest(t *testing.T, srv *Server, code, state string) (e
 
 func TestHandleOAuthCallback_Success(t *testing.T) {
 	userID := uuid.New()
-	db := &mockDataStore{
-		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*models.User, error) {
-			return &models.User{ID: userID, TwitchUsername: "testuser"}, nil
+	app := &mockAppService{
+		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
+			return &domain.User{ID: userID, TwitchUsername: "testuser"}, nil
 		},
 	}
 	oauth := &mockOAuthClient{
@@ -169,7 +169,7 @@ func TestHandleOAuthCallback_Success(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, db, &mockSentimentService{}, withOAuthClient(oauth))
+	srv := newTestServer(t, app, withOAuthClient(oauth))
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 
@@ -180,7 +180,7 @@ func TestHandleOAuthCallback_Success(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_MissingCode(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/callback", nil)
@@ -194,7 +194,7 @@ func TestHandleOAuthCallback_MissingCode(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_InvalidState(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 
 	// Set up session with one state, but send a different state in the request
 	setupReq := httptest.NewRequest(http.MethodGet, "/auth/callback", nil)
@@ -222,7 +222,7 @@ func TestHandleOAuthCallback_ExchangeError(t *testing.T) {
 		err: fmt.Errorf("exchange failed"),
 	}
 
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{}, withOAuthClient(oauth))
+	srv := newTestServer(t, &mockAppService{}, withOAuthClient(oauth))
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 
@@ -233,8 +233,8 @@ func TestHandleOAuthCallback_ExchangeError(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_DBError(t *testing.T) {
-	db := &mockDataStore{
-		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*models.User, error) {
+	app := &mockAppService{
+		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
 			return nil, fmt.Errorf("db error")
 		},
 	}
@@ -248,7 +248,7 @@ func TestHandleOAuthCallback_DBError(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, db, &mockSentimentService{}, withOAuthClient(oauth))
+	srv := newTestServer(t, app, withOAuthClient(oauth))
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 

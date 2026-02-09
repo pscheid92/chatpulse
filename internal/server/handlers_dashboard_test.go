@@ -10,14 +10,14 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 )
 
 // --- handleSaveConfig tests ---
 
 func TestHandleSaveConfig_BadDecay(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	form := url.Values{}
@@ -40,7 +40,7 @@ func TestHandleSaveConfig_BadDecay(t *testing.T) {
 }
 
 func TestHandleSaveConfig_ValidationError(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	form := url.Values{}
@@ -66,14 +66,13 @@ func TestHandleSaveConfig_Success(t *testing.T) {
 	userID := uuid.New()
 	overlayUUID := uuid.New()
 
-	db := &mockDataStore{
-		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*models.User, error) {
-			return &models.User{ID: userID, OverlayUUID: overlayUUID}, nil
+	app := &mockAppService{
+		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
+			return &domain.User{ID: userID, OverlayUUID: overlayUUID}, nil
 		},
 	}
-	sent := &mockSentimentService{}
 
-	srv := newTestServer(t, db, sent)
+	srv := newTestServer(t, app)
 	e := srv.echo
 
 	form := url.Values{}
@@ -98,13 +97,13 @@ func TestHandleSaveConfig_Success(t *testing.T) {
 // --- handleDashboard tests ---
 
 func TestHandleDashboard_DBError(t *testing.T) {
-	db := &mockDataStore{
-		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*models.User, error) {
+	app := &mockAppService{
+		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
 			return nil, fmt.Errorf("db error")
 		},
 	}
 
-	srv := newTestServer(t, db, &mockSentimentService{})
+	srv := newTestServer(t, app)
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
@@ -121,13 +120,13 @@ func TestHandleDashboard_Success(t *testing.T) {
 	userID := uuid.New()
 	overlayUUID := uuid.New()
 
-	db := &mockDataStore{
-		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*models.User, error) {
-			return &models.User{ID: userID, OverlayUUID: overlayUUID, TwitchUsername: "testuser"}, nil
+	app := &mockAppService{
+		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
+			return &domain.User{ID: userID, OverlayUUID: overlayUUID, TwitchUsername: "testuser"}, nil
 		},
 	}
 
-	srv := newTestServer(t, db, &mockSentimentService{})
+	srv := newTestServer(t, app)
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)

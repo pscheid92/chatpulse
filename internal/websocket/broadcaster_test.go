@@ -1,29 +1,51 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	ws "github.com/gorilla/websocket"
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// testHub sets up a Hub with a test HTTP server that upgrades connections to WebSocket.
-// Returns the hub, a dial function to connect clients, and a cleanup function.
-func testHub(t *testing.T, onFirst func(uuid.UUID) error, onLast func(uuid.UUID)) (*Hub, func(sessionUUID uuid.UUID) *ws.Conn) {
+// mockScaleProvider returns a fixed value for all sessions.
+type mockScaleProvider struct {
+	mu    sync.Mutex
+	value float64
+}
+
+func (m *mockScaleProvider) GetCurrentValue(_ context.Context, _ uuid.UUID) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.value, nil
+}
+
+func (m *mockScaleProvider) setValue(v float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.value = v
+}
+
+// testBroadcaster sets up an OverlayBroadcaster with a test HTTP server.
+func testBroadcaster(t *testing.T, engine *mockScaleProvider, onSessionEmpty func(uuid.UUID)) (*OverlayBroadcaster, func(sessionUUID uuid.UUID) *ws.Conn) {
 	t.Helper()
 
-	hub := NewHub(onFirst, onLast)
-	t.Cleanup(func() { hub.Stop() })
+	if engine == nil {
+		engine = &mockScaleProvider{}
+	}
+
+	broadcaster := NewOverlayBroadcaster(engine, onSessionEmpty, clockwork.NewRealClock())
+	t.Cleanup(func() { broadcaster.Stop() })
 
 	upgrader := ws.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
@@ -33,11 +55,10 @@ func testHub(t *testing.T, onFirst func(uuid.UUID) error, onLast func(uuid.UUID)
 			t.Fatalf("upgrade failed: %v", err)
 		}
 		sessionUUID := uuid.MustParse(r.URL.Query().Get("session"))
-		_ = hub.Register(sessionUUID, conn)
+		_ = broadcaster.Register(sessionUUID, conn)
 
-		// Read loop to detect disconnects
 		go func() {
-			defer hub.Unregister(sessionUUID, conn)
+			defer broadcaster.Unregister(sessionUUID, conn)
 			for {
 				if _, _, err := conn.ReadMessage(); err != nil {
 					break
@@ -45,7 +66,6 @@ func testHub(t *testing.T, onFirst func(uuid.UUID) error, onLast func(uuid.UUID)
 			}
 		}()
 	}))
-
 	t.Cleanup(func() { server.Close() })
 
 	dial := func(sessionUUID uuid.UUID) *ws.Conn {
@@ -57,13 +77,12 @@ func testHub(t *testing.T, onFirst func(uuid.UUID) error, onLast func(uuid.UUID)
 		return conn
 	}
 
-	return hub, dial
+	return broadcaster, dial
 }
 
-// waitForClientCount polls until the hub has the expected count for a session.
-func waitForClientCount(hub *Hub, sessionUUID uuid.UUID, expected int) bool {
+func waitForClientCount(b *OverlayBroadcaster, sessionUUID uuid.UUID, expected int) bool {
 	for range 100 {
-		if hub.GetClientCount(sessionUUID) == expected {
+		if b.GetClientCount(sessionUUID) == expected {
 			return true
 		}
 		time.Sleep(time.Millisecond)
@@ -71,15 +90,15 @@ func waitForClientCount(hub *Hub, sessionUUID uuid.UUID, expected int) bool {
 	return false
 }
 
-func TestHub_RegisterAndBroadcast(t *testing.T) {
-	hub, dial := testHub(t, nil, nil)
+func TestBroadcaster_RegisterAndReceiveTick(t *testing.T) {
+	engine := &mockScaleProvider{value: 42.5}
+	broadcaster, dial := testBroadcaster(t, engine, nil)
 	sessionUUID := uuid.New()
 
 	conn := dial(sessionUUID)
-	require.True(t, waitForClientCount(hub, sessionUUID, 1))
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
 
-	hub.Broadcast(sessionUUID, 42.5, "active")
-
+	// Wait for a tick to deliver the value
 	conn.SetReadDeadline(time.Now().Add(time.Second))
 	_, msg, err := conn.ReadMessage()
 	require.NoError(t, err)
@@ -90,17 +109,16 @@ func TestHub_RegisterAndBroadcast(t *testing.T) {
 	assert.Equal(t, "active", result["status"])
 }
 
-func TestHub_MultipleClients(t *testing.T) {
-	hub, dial := testHub(t, nil, nil)
+func TestBroadcaster_MultipleClients(t *testing.T) {
+	engine := &mockScaleProvider{value: 77.0}
+	broadcaster, dial := testBroadcaster(t, engine, nil)
 	sessionUUID := uuid.New()
 
 	conn1 := dial(sessionUUID)
 	conn2 := dial(sessionUUID)
-	require.True(t, waitForClientCount(hub, sessionUUID, 2))
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 2))
 
-	hub.Broadcast(sessionUUID, 77.0, "active")
-
-	// Both clients should receive the message
+	// Both clients should receive values via tick
 	for _, conn := range []*ws.Conn{conn1, conn2} {
 		conn.SetReadDeadline(time.Now().Add(time.Second))
 		_, msg, err := conn.ReadMessage()
@@ -113,56 +131,34 @@ func TestHub_MultipleClients(t *testing.T) {
 	}
 }
 
-func TestHub_OnFirstConnect(t *testing.T) {
-	var connectCount atomic.Int32
-	onFirst := func(id uuid.UUID) error {
-		connectCount.Add(1)
-		return nil
-	}
-
-	hub, dial := testHub(t, onFirst, nil)
-	sessionUUID := uuid.New()
-
-	// First client — triggers onFirstConnect
-	dial(sessionUUID)
-	require.True(t, waitForClientCount(hub, sessionUUID, 1))
-	assert.Equal(t, int32(1), connectCount.Load())
-
-	// Second client — should NOT trigger onFirstConnect
-	dial(sessionUUID)
-	require.True(t, waitForClientCount(hub, sessionUUID, 2))
-	assert.Equal(t, int32(1), connectCount.Load())
-}
-
-func TestHub_OnLastDisconnect(t *testing.T) {
+func TestBroadcaster_OnSessionEmpty(t *testing.T) {
 	var mu sync.Mutex
 	var disconnectedSessions []uuid.UUID
-	onLast := func(id uuid.UUID) {
+	onEmpty := func(id uuid.UUID) {
 		mu.Lock()
 		defer mu.Unlock()
 		disconnectedSessions = append(disconnectedSessions, id)
 	}
 
-	hub, dial := testHub(t, nil, onLast)
+	broadcaster, dial := testBroadcaster(t, nil, onEmpty)
 	sessionUUID := uuid.New()
 
 	conn1 := dial(sessionUUID)
-	require.True(t, waitForClientCount(hub, sessionUUID, 1))
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
 
 	conn2 := dial(sessionUUID)
-	require.True(t, waitForClientCount(hub, sessionUUID, 2))
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 2))
 
 	// Close first — still one client left, no callback
 	conn1.Close()
-	require.True(t, waitForClientCount(hub, sessionUUID, 1))
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
 	mu.Lock()
 	assert.Empty(t, disconnectedSessions)
 	mu.Unlock()
 
 	// Close second — last client, callback fires
 	conn2.Close()
-	require.True(t, waitForClientCount(hub, sessionUUID, 0))
-	// Wait a bit for the callback to fire
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 0))
 	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	require.Len(t, disconnectedSessions, 1)
@@ -170,63 +166,51 @@ func TestHub_OnLastDisconnect(t *testing.T) {
 	mu.Unlock()
 }
 
-func TestHub_GetClientCount(t *testing.T) {
-	hub, dial := testHub(t, nil, nil)
+func TestBroadcaster_GetClientCount(t *testing.T) {
+	broadcaster, dial := testBroadcaster(t, nil, nil)
 	sessionUUID := uuid.New()
 
-	assert.Equal(t, 0, hub.GetClientCount(sessionUUID))
+	assert.Equal(t, 0, broadcaster.GetClientCount(sessionUUID))
 
 	conn1 := dial(sessionUUID)
-	require.True(t, waitForClientCount(hub, sessionUUID, 1))
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
 
 	dial(sessionUUID)
-	require.True(t, waitForClientCount(hub, sessionUUID, 2))
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 2))
 
 	conn1.Close()
-	require.True(t, waitForClientCount(hub, sessionUUID, 1))
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
 }
 
-func TestHub_BroadcastNoClients(t *testing.T) {
-	hub, _ := testHub(t, nil, nil)
-	// Should not panic
-	hub.Broadcast(uuid.New(), 50.0, "active")
-}
-
-func TestHub_MaxClientsPerSession(t *testing.T) {
-	hub := NewHub(nil, nil)
-	t.Cleanup(func() { hub.Stop() })
+func TestBroadcaster_MaxClientsPerSession(t *testing.T) {
+	engine := &mockScaleProvider{}
+	broadcaster := NewOverlayBroadcaster(engine, nil, clockwork.NewRealClock())
+	t.Cleanup(func() { broadcaster.Stop() })
 
 	sessionUUID := uuid.New()
 
-	// Register maxClientsPerSession clients — all should succeed
 	conns := make([]*ws.Conn, 0, maxClientsPerSession)
 	for i := 0; i < maxClientsPerSession; i++ {
 		server, client := newTestConnPair(t)
-		errCh := make(chan error, 1)
-		hub.cmdCh <- cmdRegister{sessionUUID: sessionUUID, conn: server, errCh: errCh}
-		err := <-errCh
+		err := broadcaster.Register(sessionUUID, server)
 		require.NoError(t, err, "client %d should register successfully", i)
 		conns = append(conns, client)
 	}
 
-	assert.Equal(t, maxClientsPerSession, hub.GetClientCount(sessionUUID))
+	assert.Equal(t, maxClientsPerSession, broadcaster.GetClientCount(sessionUUID))
 
 	// The next client should be rejected
 	server, client := newTestConnPair(t)
-	errCh := make(chan error, 1)
-	hub.cmdCh <- cmdRegister{sessionUUID: sessionUUID, conn: server, errCh: errCh}
-	err := <-errCh
+	err := broadcaster.Register(sessionUUID, server)
 	assert.Error(t, err, "client beyond max should be rejected")
 	assert.Contains(t, err.Error(), "max clients per session")
 
-	// Clean up
 	_ = client
 	for _, c := range conns {
 		c.Close()
 	}
 }
 
-// newTestConnPair creates a connected pair of WebSocket connections for testing.
 func newTestConnPair(t *testing.T) (server *ws.Conn, client *ws.Conn) {
 	t.Helper()
 	upgrader := ws.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -252,21 +236,39 @@ func newTestConnPair(t *testing.T) (server *ws.Conn, client *ws.Conn) {
 	return serverConn, clientConn
 }
 
-func TestHub_OnFirstConnectError(t *testing.T) {
-	onFirst := func(id uuid.UUID) error {
-		return fmt.Errorf("activation failed")
-	}
+func TestBroadcaster_NoClientsNoPanic(t *testing.T) {
+	engine := &mockScaleProvider{value: 50.0}
+	_ = NewOverlayBroadcaster(engine, nil, clockwork.NewRealClock())
+	// Just verify no panic with ticks running and no clients
+	time.Sleep(100 * time.Millisecond)
+}
 
-	hub, dial := testHub(t, onFirst, nil)
+func TestBroadcaster_ValueUpdates(t *testing.T) {
+	engine := &mockScaleProvider{value: 10.0}
+	broadcaster, dial := testBroadcaster(t, engine, nil)
 	sessionUUID := uuid.New()
 
 	conn := dial(sessionUUID)
+	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
 
-	// The hub should close the connection when onFirstConnect fails
+	// Read first tick
 	conn.SetReadDeadline(time.Now().Add(time.Second))
-	_, _, err := conn.ReadMessage()
-	assert.Error(t, err, "connection should be closed after onFirstConnect error")
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(msg, &result))
+	assert.Equal(t, 10.0, result["value"])
 
-	// Session should not exist in hub
-	assert.Equal(t, 0, hub.GetClientCount(sessionUUID))
+	// Update value
+	engine.setValue(55.0)
+
+	// Read next tick
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, msg, err = conn.ReadMessage()
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(msg, &result))
+	assert.Equal(t, 55.0, result["value"])
 }
+
+// Suppress unused import warning for fmt
+var _ = fmt.Sprintf

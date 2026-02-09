@@ -116,7 +116,7 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 	}
 
 	tokenExpiry := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
-	user, err := s.db.UpsertUser(ctx, result.UserID, result.Username, result.AccessToken, result.RefreshToken, tokenExpiry)
+	user, err := s.app.UpsertUser(ctx, result.UserID, result.Username, result.AccessToken, result.RefreshToken, tokenExpiry)
 	if err != nil {
 		log.Printf("Failed to save user: %v", err)
 		return c.String(500, "Failed to save user")

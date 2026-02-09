@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
 	"github.com/jonboulle/clockwork"
+	"github.com/pscheid92/chatpulse/internal/app"
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/database"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/redis"
 	"github.com/pscheid92/chatpulse/internal/sentiment"
 	"github.com/pscheid92/chatpulse/internal/server"
@@ -22,92 +23,29 @@ import (
 	"github.com/pscheid92/chatpulse/internal/websocket"
 )
 
-type storeResult struct {
-	store  sentiment.SessionStateStore
-	client *redis.Client
-	pubSub *redis.PubSub
-}
-
 type webhookResult struct {
-	conduitManager      *twitch.ConduitManager
-	subscriptionManager *twitch.SubscriptionManager
-	webhookHandler      *twitch.WebhookHandler
+	eventsubManager *twitch.EventSubManager
+	webhookHandler  *twitch.WebhookHandler
 }
 
-func initStore(cfg *config.Config, clock clockwork.Clock) (*storeResult, error) {
-	if cfg.RedisURL == "" {
-		log.Println("Using in-memory session store (single-instance mode)")
-		return &storeResult{store: sentiment.NewInMemoryStore(clock)}, nil
-	}
-
-	redisClient, err := redis.NewClient(cfg.RedisURL)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := redisClient.Ping(ctx); err != nil {
-		return nil, err
-	}
-	log.Println("Connected to Redis")
-
-	sessionStore := redis.NewSessionStore(redisClient)
-	scriptRunner := redis.NewScriptRunner(redisClient)
-	redisPubSub := redis.NewPubSub(redisClient)
-	store := sentiment.NewRedisStore(sessionStore, scriptRunner, clock)
-
-	return &storeResult{store: store, client: redisClient, pubSub: redisPubSub}, nil
-}
-
-func initWebhooks(cfg *config.Config, twitchClient *twitch.TwitchClient, store sentiment.SessionStateStore, db *database.DB) (*webhookResult, error) {
-	if cfg.WebhookCallbackURL == "" || cfg.WebhookSecret == "" {
-		return &webhookResult{}, nil
-	}
-
-	conduitManager := twitch.NewConduitManager(twitchClient, cfg.WebhookCallbackURL, cfg.WebhookSecret)
+func initWebhooks(cfg *config.Config, twitchClient *twitch.TwitchClient, store domain.SessionStateStore, eventSubRepo domain.EventSubRepository) webhookResult {
+	eventsubManager := twitch.NewEventSubManager(twitchClient, eventSubRepo, cfg.WebhookCallbackURL, cfg.WebhookSecret, cfg.BotUserID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	conduitID, err := conduitManager.Setup(ctx)
-	if err != nil {
-		return nil, err
+	if err := eventsubManager.Setup(ctx); err != nil {
+		log.Fatalf("failed to setup webhook conduit: %v", err)
 	}
 
-	subscriptionManager := twitch.NewSubscriptionManager(twitchClient, db, conduitID, cfg.BotUserID)
 	webhookHandler := twitch.NewWebhookHandler(cfg.WebhookSecret, store)
 
-	return &webhookResult{
-		conduitManager:      conduitManager,
-		subscriptionManager: subscriptionManager,
-		webhookHandler:      webhookHandler,
-	}, nil
+	return webhookResult{
+		eventsubManager: eventsubManager,
+		webhookHandler:  webhookHandler,
+	}
 }
 
-func newHubCallbacks(db *database.DB, engine *sentiment.Engine, subMgr *twitch.SubscriptionManager) (func(uuid.UUID) error, func(uuid.UUID)) {
-	onFirstConnect := func(sessionUUID uuid.UUID) error {
-		ctx := context.Background()
-		user, err := db.GetUserByOverlayUUID(ctx, sessionUUID)
-		if err != nil {
-			return err
-		}
-		if err := engine.ActivateSession(ctx, user.OverlayUUID, user.ID, user.TwitchUserID); err != nil {
-			return err
-		}
-		if subMgr != nil {
-			return subMgr.Subscribe(ctx, user.ID, user.TwitchUserID)
-		}
-		return nil
-	}
-
-	onLastDisconnect := func(sessionUUID uuid.UUID) {
-		engine.MarkDisconnected(sessionUUID)
-	}
-
-	return onFirstConnect, onLastDisconnect
-}
-
-func runGracefulShutdown(srv *server.Server, engine *sentiment.Engine, hub *websocket.Hub, conduitMgr *twitch.ConduitManager) <-chan struct{} {
+func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *websocket.OverlayBroadcaster, conduitMgr *twitch.EventSubManager) <-chan struct{} {
 	done := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -121,8 +59,8 @@ func runGracefulShutdown(srv *server.Server, engine *sentiment.Engine, hub *webs
 			log.Printf("Server shutdown error: %v", err)
 		}
 
-		engine.Stop()
-		hub.Stop()
+		appSvc.Stop()
+		broadcaster.Stop()
 
 		if conduitMgr != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -138,81 +76,79 @@ func runGracefulShutdown(srv *server.Server, engine *sentiment.Engine, hub *webs
 	return done
 }
 
-func main() {
-	// Load environment variables from .env file
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables")
-	}
-
-	// Load configuration
+func setupConfig() *config.Config {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	return cfg
+}
 
-	// Connect to database
+func setupDB(cfg *config.Config) *database.DB {
 	db, err := database.Connect(cfg.DatabaseURL, cfg.TokenEncryptionKey)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close()
 
-	// Run migrations
 	if err := db.RunMigrations(); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
-	// Create Twitch client (gets app access token for conduit management)
+	return db
+}
+
+func setupTwitchClient(cfg *config.Config) *twitch.TwitchClient {
 	twitchClient, err := twitch.NewTwitchClient(cfg.TwitchClientID, cfg.TwitchClientSecret)
 	if err != nil {
 		log.Fatalf("Failed to create Twitch client: %v", err)
 	}
+	return twitchClient
+}
 
-	// Set up session state store (Redis or in-memory)
+func setupRedis(cfg *config.Config) *redis.Client {
+	client, err := redis.NewClient(cfg.RedisURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	return client
+}
+
+func main() {
 	clock := clockwork.NewRealClock()
-	sr, err := initStore(cfg, clock)
-	if err != nil {
-		log.Fatalf("Failed to initialize store: %v", err)
-	}
-	if sr.client != nil {
-		defer sr.client.Close()
-	}
 
-	// Create sentiment engine (hub will be wired up after creation)
-	broadcastAfterDecay := sr.pubSub == nil // No pubsub = in-memory = need broadcast
-	engine := sentiment.NewEngine(sr.store, db, clock, broadcastAfterDecay)
+	cfg := setupConfig()
+	db := setupDB(cfg)
+	twitchClient := setupTwitchClient(cfg)
 
-	// Set up conduit + webhook if configured
-	wh, err := initWebhooks(cfg, twitchClient, sr.store, db)
-	if err != nil {
-		log.Fatalf("Failed to set up webhooks: %v", err)
-	}
+	redisClient := setupRedis(cfg)
+	defer redisClient.Close()
 
-	// Create WebSocket hub with lifecycle callbacks
-	onFirstConnect, onLastDisconnect := newHubCallbacks(db, engine, wh.subscriptionManager)
-	hub := websocket.NewHub(onFirstConnect, onLastDisconnect)
+	sessionStore := redis.NewSessionStore(redisClient)
+	scriptRunner := redis.NewScriptRunner(redisClient)
+	store := redis.NewSentimentStore(sessionStore, scriptRunner, clock)
 
-	// Set up Redis Pub/Sub listener on Hub if Redis is available
-	if sr.pubSub != nil {
-		hub.SetPubSub(sr.pubSub)
-	}
+	engine := sentiment.NewEngine(store, clock)
 
-	// Wire up the broadcaster for the engine now that hub exists
-	engine.SetBroadcaster(hub)
+	// Construct repositories
+	userRepo := database.NewUserRepo(db)
+	configRepo := database.NewConfigRepo(db)
+	eventSubRepo := database.NewEventSubRepo(db)
 
-	// Start background actors
-	engine.Start()
+	wh := initWebhooks(cfg, twitchClient, store, eventSubRepo)
+
+	appSvc := app.NewService(userRepo, configRepo, store, wh.eventsubManager, clock)
+
+	onSessionEmpty := func(sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(context.Background(), sessionUUID) }
+	broadcaster := websocket.NewOverlayBroadcaster(engine, onSessionEmpty, clock)
 
 	// Create and start the HTTP server
-	srv, err := server.NewServer(cfg, db, engine, wh.subscriptionManager, hub, wh.webhookHandler)
+	srv, err := server.NewServer(cfg, appSvc, broadcaster, wh.webhookHandler)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
-	// Handle graceful shutdown
-	done := runGracefulShutdown(srv, engine, hub, wh.conduitManager)
+	done := runGracefulShutdown(srv, appSvc, broadcaster, wh.eventsubManager)
 
-	// Start the server (blocking until shutdown)
 	log.Printf("Starting server on port %s", cfg.Port)
 	if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Server error: %v", err)

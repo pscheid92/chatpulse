@@ -10,21 +10,108 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Its-donkey/kappopher/helix"
-	"github.com/jonboulle/clockwork"
-	"github.com/pscheid92/chatpulse/internal/models"
-	"github.com/pscheid92/chatpulse/internal/sentiment"
+	"github.com/google/uuid"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 const (
 	testWebhookSecret = "test-webhook-secret-1234567890"
 	testChatterID     = "chatter-1"
 )
+
+// testVoteStore is a minimal in-memory VoteStore for webhook tests.
+type testVoteStore struct {
+	mu                   sync.Mutex
+	sessions             map[uuid.UUID]*testSession
+	broadcasterToSession map[string]uuid.UUID
+	debounced            map[string]bool // "uuid:userID" -> true means already debounced
+}
+
+type testSession struct {
+	Value  float64
+	Config domain.ConfigSnapshot
+}
+
+func newTestVoteStore() *testVoteStore {
+	return &testVoteStore{
+		sessions:             make(map[uuid.UUID]*testSession),
+		broadcasterToSession: make(map[string]uuid.UUID),
+		debounced:            make(map[string]bool),
+	}
+}
+
+func (s *testVoteStore) addSession(sessionUUID uuid.UUID, broadcasterID string, config domain.ConfigSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[sessionUUID] = &testSession{Value: 0, Config: config}
+	s.broadcasterToSession[broadcasterID] = sessionUUID
+}
+
+func (s *testVoteStore) GetSessionByBroadcaster(_ context.Context, broadcasterUserID string) (uuid.UUID, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.broadcasterToSession[broadcasterUserID]
+	return id, ok, nil
+}
+
+func (s *testVoteStore) GetSessionConfig(_ context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[sessionUUID]
+	if !ok {
+		return nil, nil
+	}
+	cfg := sess.Config
+	return &cfg, nil
+}
+
+func (s *testVoteStore) CheckDebounce(_ context.Context, sessionUUID uuid.UUID, twitchUserID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := sessionUUID.String() + ":" + twitchUserID
+	if s.debounced[key] {
+		return false, nil
+	}
+	s.debounced[key] = true
+	return true, nil
+}
+
+func (s *testVoteStore) ApplyVote(_ context.Context, sessionUUID uuid.UUID, delta, _ float64, _ int64) (float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[sessionUUID]
+	if !ok {
+		return 0, nil
+	}
+	sess.Value = clamp(sess.Value+delta, -100, 100)
+	return sess.Value, nil
+}
+
+func (s *testVoteStore) getValue(sessionUUID uuid.UUID) float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[sessionUUID]
+	if !ok {
+		return 0
+	}
+	return sess.Value
+}
+
+func clamp(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
 
 func signWebhookRequest(secret, messageID, timestamp, body string) string {
 	message := messageID + timestamp + body
@@ -91,14 +178,16 @@ func makeSignedNotification(secret, body string) *http.Request {
 	return req
 }
 
-func setupWebhookTest(t *testing.T) (*WebhookHandler, *sentiment.InMemoryStore, string) {
+// deterministic UUID for tests
+var testSessionUUID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+func setupWebhookTest(t *testing.T) (*WebhookHandler, *testVoteStore, string) {
 	t.Helper()
 
-	clock := clockwork.NewFakeClock()
-	store := sentiment.NewInMemoryStore(clock)
+	store := newTestVoteStore()
 
 	broadcasterID := "broadcaster-123"
-	config := models.ConfigSnapshot{
+	config := domain.ConfigSnapshot{
 		ForTrigger:     "yes",
 		AgainstTrigger: "no",
 		LeftLabel:      "Against",
@@ -106,19 +195,10 @@ func setupWebhookTest(t *testing.T) (*WebhookHandler, *sentiment.InMemoryStore, 
 		DecaySpeed:     1.0,
 	}
 
-	sessionUUID := mustNewUUID(t)
-	err := store.ActivateSession(context.Background(), sessionUUID, broadcasterID, config)
-	require.NoError(t, err)
+	store.addSession(testSessionUUID, broadcasterID, config)
 
 	handler := NewWebhookHandler(testWebhookSecret, store)
 	return handler, store, broadcasterID
-}
-
-func mustNewUUID(t *testing.T) (id [16]byte) {
-	t.Helper()
-	// Create a deterministic UUID for testing
-	copy(id[:], "test-session-uuid")
-	return id
 }
 
 func TestWebhook_MatchingTrigger(t *testing.T) {
@@ -131,12 +211,7 @@ func TestWebhook_MatchingTrigger(t *testing.T) {
 	handler.HTTPHandler().ServeHTTP(rec, req)
 
 	assert.Equal(t, 204, rec.Code)
-
-	sessionUUID := mustNewUUID(t)
-	value, exists, err := store.GetSessionValue(context.Background(), sessionUUID)
-	require.NoError(t, err)
-	assert.True(t, exists)
-	assert.Equal(t, 10.0, value)
+	assert.Equal(t, 10.0, store.getValue(testSessionUUID))
 }
 
 func TestWebhook_NoTriggerMatch(t *testing.T) {
@@ -149,12 +224,7 @@ func TestWebhook_NoTriggerMatch(t *testing.T) {
 	handler.HTTPHandler().ServeHTTP(rec, req)
 
 	assert.Equal(t, 204, rec.Code)
-
-	sessionUUID := mustNewUUID(t)
-	value, exists, err := store.GetSessionValue(context.Background(), sessionUUID)
-	require.NoError(t, err)
-	assert.True(t, exists)
-	assert.Equal(t, 0.0, value)
+	assert.Equal(t, 0.0, store.getValue(testSessionUUID))
 }
 
 func TestWebhook_DebouncedVote(t *testing.T) {
@@ -174,10 +244,7 @@ func TestWebhook_DebouncedVote(t *testing.T) {
 	handler.HTTPHandler().ServeHTTP(rec2, req2)
 	assert.Equal(t, 204, rec2.Code)
 
-	sessionUUID := mustNewUUID(t)
-	value, _, err := store.GetSessionValue(context.Background(), sessionUUID)
-	require.NoError(t, err)
-	assert.Equal(t, 10.0, value, "debounced vote should not apply twice")
+	assert.Equal(t, 10.0, store.getValue(testSessionUUID), "debounced vote should not apply twice")
 }
 
 func TestWebhook_InvalidSignature(t *testing.T) {
@@ -238,9 +305,5 @@ func TestWebhook_NonChatSubscriptionType(t *testing.T) {
 	assert.Equal(t, 204, rec.Code)
 
 	// Store value should remain 0
-	sessionUUID := mustNewUUID(t)
-	value, exists, err := store.GetSessionValue(context.Background(), sessionUUID)
-	require.NoError(t, err)
-	assert.True(t, exists)
-	assert.Equal(t, 0.0, value)
+	assert.Equal(t, 0.0, store.getValue(testSessionUUID))
 }

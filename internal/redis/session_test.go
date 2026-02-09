@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ func TestActivateSession_NewSession(t *testing.T) {
 
 	overlayUUID := uuid.New()
 	broadcasterID := "12345"
-	config := models.ConfigSnapshot{
+	config := domain.ConfigSnapshot{
 		ForTrigger:     "PogChamp",
 		AgainstTrigger: "BabyRage",
 		LeftLabel:      "Negative",
@@ -51,7 +51,7 @@ func TestActivateSession_ResumeExisting(t *testing.T) {
 
 	overlayUUID := uuid.New()
 	broadcasterID := "12345"
-	config := models.ConfigSnapshot{ForTrigger: "PogChamp", AgainstTrigger: "BabyRage", DecaySpeed: 1.0}
+	config := domain.ConfigSnapshot{ForTrigger: "PogChamp", AgainstTrigger: "BabyRage", DecaySpeed: 1.0}
 
 	// Create session
 	err := store.ActivateSession(ctx, overlayUUID, broadcasterID, config)
@@ -93,7 +93,7 @@ func TestDeleteSession(t *testing.T) {
 
 	overlayUUID := uuid.New()
 	broadcasterID := "12345"
-	config := models.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
+	config := domain.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
 
 	err := store.ActivateSession(ctx, overlayUUID, broadcasterID, config)
 	require.NoError(t, err)
@@ -152,7 +152,7 @@ func TestUpdateAndGetValue(t *testing.T) {
 	ctx := context.Background()
 
 	overlayUUID := uuid.New()
-	config := models.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
+	config := domain.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
 
 	err := store.ActivateSession(ctx, overlayUUID, "broadcaster1", config)
 	require.NoError(t, err)
@@ -182,7 +182,7 @@ func TestMarkAndClearDisconnected(t *testing.T) {
 	ctx := context.Background()
 
 	overlayUUID := uuid.New()
-	config := models.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
+	config := domain.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
 
 	err := store.ActivateSession(ctx, overlayUUID, "broadcaster1", config)
 	require.NoError(t, err)
@@ -201,12 +201,12 @@ func TestUpdateConfig(t *testing.T) {
 	ctx := context.Background()
 
 	overlayUUID := uuid.New()
-	config := models.ConfigSnapshot{ForTrigger: "old", AgainstTrigger: "old2", DecaySpeed: 1.0}
+	config := domain.ConfigSnapshot{ForTrigger: "old", AgainstTrigger: "old2", DecaySpeed: 1.0}
 
 	err := store.ActivateSession(ctx, overlayUUID, "broadcaster1", config)
 	require.NoError(t, err)
 
-	newConfig := models.ConfigSnapshot{ForTrigger: "new", AgainstTrigger: "new2", DecaySpeed: 2.0}
+	newConfig := domain.ConfigSnapshot{ForTrigger: "new", AgainstTrigger: "new2", DecaySpeed: 2.0}
 	err = store.UpdateConfig(ctx, overlayUUID, newConfig)
 	require.NoError(t, err)
 
@@ -222,7 +222,7 @@ func TestListOrphanSessions(t *testing.T) {
 	store := NewSessionStore(client)
 	ctx := context.Background()
 
-	config := models.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
+	config := domain.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
 
 	// Active session (no disconnect)
 	activeUUID := uuid.New()

@@ -3,88 +3,84 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
-	"os"
+	"log"
+
+	"github.com/joho/godotenv"
+	"go-simpler.org/env"
 )
 
 type Config struct {
-	AppEnv             string
-	Port               string
-	DatabaseURL        string
-	TwitchClientID     string
-	TwitchClientSecret string
-	TwitchRedirectURI  string
-	SessionSecret      string
-	TokenEncryptionKey string
-	WebhookCallbackURL string
-	WebhookSecret      string
-	BotUserID          string
-	RedisURL           string
+	AppEnv             string `env:"APP_ENV" default:"development"`
+	Port               string `env:"PORT" default:"8080"`
+	DatabaseURL        string `env:"DATABASE_URL"`
+	TwitchClientID     string `env:"TWITCH_CLIENT_ID"`
+	TwitchClientSecret string `env:"TWITCH_CLIENT_SECRET"`
+	TwitchRedirectURI  string `env:"TWITCH_REDIRECT_URI"`
+	SessionSecret      string `env:"SESSION_SECRET"`
+	TokenEncryptionKey string `env:"TOKEN_ENCRYPTION_KEY"`
+	WebhookCallbackURL string `env:"WEBHOOK_CALLBACK_URL"`
+	WebhookSecret      string `env:"WEBHOOK_SECRET"`
+	BotUserID          string `env:"BOT_USER_ID"`
+	RedisURL           string `env:"REDIS_URL"`
 }
 
 func Load() (*Config, error) {
-	cfg := &Config{
-		AppEnv:             getEnv("APP_ENV", "development"),
-		Port:               getEnv("PORT", "8080"),
-		DatabaseURL:        getEnv("DATABASE_URL", ""),
-		TwitchClientID:     getEnv("TWITCH_CLIENT_ID", ""),
-		TwitchClientSecret: getEnv("TWITCH_CLIENT_SECRET", ""),
-		TwitchRedirectURI:  getEnv("TWITCH_REDIRECT_URI", ""),
-		SessionSecret:      getEnv("SESSION_SECRET", ""),
-		TokenEncryptionKey: getEnv("TOKEN_ENCRYPTION_KEY", ""),
-		WebhookCallbackURL: getEnv("WEBHOOK_CALLBACK_URL", ""),
-		WebhookSecret:      getEnv("WEBHOOK_SECRET", ""),
-		BotUserID:          getEnv("BOT_USER_ID", ""),
-		RedisURL:           getEnv("REDIS_URL", ""),
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using environment variables")
 	}
 
-	if cfg.DatabaseURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL is required")
+	var cfg Config
+	if err := env.Load(&cfg, nil); err != nil {
+		return nil, err
 	}
-	if cfg.TwitchClientID == "" {
-		return nil, fmt.Errorf("TWITCH_CLIENT_ID is required")
+
+	if err := validate(&cfg); err != nil {
+		return nil, err
 	}
-	if cfg.TwitchClientSecret == "" {
-		return nil, fmt.Errorf("TWITCH_CLIENT_SECRET is required")
+
+	return &cfg, nil
+}
+
+func validate(cfg *Config) error {
+	required := map[string]string{
+		"DATABASE_URL":         cfg.DatabaseURL,
+		"TWITCH_CLIENT_ID":     cfg.TwitchClientID,
+		"TWITCH_CLIENT_SECRET": cfg.TwitchClientSecret,
+		"TWITCH_REDIRECT_URI":  cfg.TwitchRedirectURI,
+		"SESSION_SECRET":       cfg.SessionSecret,
+		"REDIS_URL":            cfg.RedisURL,
 	}
-	if cfg.TwitchRedirectURI == "" {
-		return nil, fmt.Errorf("TWITCH_REDIRECT_URI is required")
-	}
-	if cfg.SessionSecret == "" {
-		return nil, fmt.Errorf("SESSION_SECRET is required")
+	for name, value := range required {
+		if value == "" {
+			return fmt.Errorf("%s is required", name)
+		}
 	}
 
 	// Webhook config: all three must be set together
 	if cfg.WebhookCallbackURL != "" || cfg.WebhookSecret != "" {
 		if cfg.WebhookCallbackURL == "" {
-			return nil, fmt.Errorf("WEBHOOK_CALLBACK_URL is required when WEBHOOK_SECRET is set")
+			return fmt.Errorf("WEBHOOK_CALLBACK_URL is required when WEBHOOK_SECRET is set")
 		}
 		if cfg.WebhookSecret == "" {
-			return nil, fmt.Errorf("WEBHOOK_SECRET is required when WEBHOOK_CALLBACK_URL is set")
+			return fmt.Errorf("WEBHOOK_SECRET is required when WEBHOOK_CALLBACK_URL is set")
 		}
 		if len(cfg.WebhookSecret) < 10 || len(cfg.WebhookSecret) > 100 {
-			return nil, fmt.Errorf("WEBHOOK_SECRET must be between 10 and 100 characters")
+			return fmt.Errorf("WEBHOOK_SECRET must be between 10 and 100 characters")
 		}
 		if cfg.BotUserID == "" {
-			return nil, fmt.Errorf("BOT_USER_ID is required when WEBHOOK_CALLBACK_URL is set")
+			return fmt.Errorf("BOT_USER_ID is required when WEBHOOK_CALLBACK_URL is set")
 		}
 	}
 
 	if cfg.TokenEncryptionKey != "" {
 		keyBytes, err := hex.DecodeString(cfg.TokenEncryptionKey)
 		if err != nil {
-			return nil, fmt.Errorf("TOKEN_ENCRYPTION_KEY must be valid hex: %w", err)
+			return fmt.Errorf("TOKEN_ENCRYPTION_KEY must be valid hex: %w", err)
 		}
 		if len(keyBytes) != 32 {
-			return nil, fmt.Errorf("TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes), got %d bytes", len(keyBytes))
+			return fmt.Errorf("TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes), got %d bytes", len(keyBytes))
 		}
 	}
 
-	return cfg, nil
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
+	return nil
 }

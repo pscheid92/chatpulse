@@ -7,14 +7,14 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/pscheid92/chatpulse/internal/models"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 )
 
 // --- handleOverlay tests ---
 
 func TestHandleOverlay_BadUUID(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/overlay/not-a-uuid", nil)
@@ -29,7 +29,7 @@ func TestHandleOverlay_BadUUID(t *testing.T) {
 }
 
 func TestHandleOverlay_NotFound(t *testing.T) {
-	srv := newTestServer(t, &mockDataStore{}, &mockSentimentService{})
+	srv := newTestServer(t, &mockAppService{})
 	e := srv.echo
 
 	overlayUUID := uuid.New()
@@ -48,13 +48,13 @@ func TestHandleOverlay_Success(t *testing.T) {
 	userID := uuid.New()
 	overlayUUID := uuid.New()
 
-	db := &mockDataStore{
-		getUserByOverlayFn: func(_ context.Context, _ uuid.UUID) (*models.User, error) {
-			return &models.User{ID: userID, OverlayUUID: overlayUUID}, nil
+	app := &mockAppService{
+		getUserByOverlayFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
+			return &domain.User{ID: userID, OverlayUUID: overlayUUID}, nil
 		},
 	}
 
-	srv := newTestServer(t, db, &mockSentimentService{})
+	srv := newTestServer(t, app)
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/overlay/"+overlayUUID.String(), nil)
