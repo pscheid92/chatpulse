@@ -2,11 +2,11 @@ package database
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +42,7 @@ func TestGetConfig_NotFound(t *testing.T) {
 	config, err := configRepo.GetByUserID(ctx, randomID)
 
 	assert.Error(t, err)
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.ErrorIs(t, err, domain.ErrConfigNotFound)
 	assert.Nil(t, config)
 }
 

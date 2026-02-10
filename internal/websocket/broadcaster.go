@@ -57,18 +57,21 @@ type OverlayBroadcaster struct {
 	clock          clockwork.Clock
 	activeClients  map[uuid.UUID]sessionClients
 	engine         domain.ScaleProvider
+	onFirstClient  func(sessionUUID uuid.UUID)
 	onSessionEmpty func(sessionUUID uuid.UUID)
 }
 
 // NewOverlayBroadcaster creates a new broadcaster.
 // engine is used to pull current values on each tick.
+// onFirstClient is called when the first client connects to a session on this instance.
 // onSessionEmpty is called when the last client disconnects from a session.
-func NewOverlayBroadcaster(engine domain.ScaleProvider, onSessionEmpty func(uuid.UUID), clock clockwork.Clock) *OverlayBroadcaster {
+func NewOverlayBroadcaster(engine domain.ScaleProvider, onFirstClient func(uuid.UUID), onSessionEmpty func(uuid.UUID), clock clockwork.Clock) *OverlayBroadcaster {
 	b := &OverlayBroadcaster{
 		cmdCh:          make(chan broadcasterCmd, 256),
 		clock:          clock,
 		activeClients:  make(map[uuid.UUID]sessionClients),
 		engine:         engine,
+		onFirstClient:  onFirstClient,
 		onSessionEmpty: onSessionEmpty,
 	}
 	go b.run()
@@ -138,6 +141,10 @@ func (b *OverlayBroadcaster) handleRegister(c registerCmd) {
 		c.connection.Close()
 		c.errorChannel <- fmt.Errorf("max clients per session (%d) reached", maxClientsPerSession)
 		return
+	}
+
+	if !exists && b.onFirstClient != nil {
+		b.onFirstClient(c.sessionUUID)
 	}
 
 	cw := newClientWriter(c.connection, b.clock)
@@ -210,5 +217,8 @@ func (b *OverlayBroadcaster) handleStop() {
 			cw.stop()
 		}
 		delete(b.activeClients, sessionUUID)
+		if b.onSessionEmpty != nil {
+			b.onSessionEmpty(sessionUUID)
+		}
 	}
 }

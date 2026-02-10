@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,8 @@ type Service struct {
 	activationGroup singleflight.Group
 	clock           clockwork.Clock
 	cleanupStopCh   chan struct{}
+	stopOnce        sync.Once
+	cleanupWg       sync.WaitGroup
 }
 
 // NewService creates the application layer service.
@@ -67,7 +70,7 @@ func (s *Service) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, 
 // EnsureSessionActive activates a session if not already active, or resumes it.
 // Uses singleflight to collapse concurrent activations for the same session.
 func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID) error {
-	_, err, _ := s.activationGroup.Do(overlayUUID.String(), func() (interface{}, error) {
+	_, err, _ := s.activationGroup.Do(overlayUUID.String(), func() (any, error) {
 		exists, err := s.store.SessionExists(ctx, overlayUUID)
 		if err != nil {
 			return nil, err
@@ -102,6 +105,9 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 
 		if s.twitch != nil {
 			if err := s.twitch.Subscribe(ctx, user.ID, user.TwitchUserID); err != nil {
+				if delErr := s.store.DeleteSession(ctx, overlayUUID); delErr != nil {
+					log.Printf("Failed to rollback session %s after subscribe failure: %v", overlayUUID, delErr)
+				}
 				return nil, err
 			}
 		}
@@ -182,15 +188,21 @@ func (s *Service) CleanupOrphans(ctx context.Context) {
 	}
 
 	if s.twitch != nil {
-		go func() {
+		s.cleanupWg.Go(func() {
 			bgCtx := context.Background()
-			for _, id := range orphans {
-				if err := s.twitch.Unsubscribe(bgCtx, id); err != nil {
-					log.Printf("Failed to unsubscribe orphan session %s: %v", id, err)
+			for _, overlayUUID := range orphans {
+				user, err := s.users.GetByOverlayUUID(bgCtx, overlayUUID)
+				if err != nil {
+					log.Printf("Failed to look up user for orphan session %s: %v", overlayUUID, err)
+					continue
 				}
-				log.Printf("Cleaned up orphan session %s", id)
+				if err := s.twitch.Unsubscribe(bgCtx, user.ID); err != nil {
+					log.Printf("Failed to unsubscribe orphan session %s: %v", overlayUUID, err)
+					continue
+				}
+				log.Printf("Cleaned up orphan session %s", overlayUUID)
 			}
-		}()
+		})
 	}
 }
 
@@ -210,7 +222,10 @@ func (s *Service) startCleanupTimer() {
 	log.Println("Cleanup timer started (30s interval)")
 }
 
-// Stop stops the cleanup timer.
+// Stop stops the cleanup timer and waits for in-flight cleanup goroutines to finish.
 func (s *Service) Stop() {
-	close(s.cleanupStopCh)
+	s.stopOnce.Do(func() {
+		close(s.cleanupStopCh)
+	})
+	s.cleanupWg.Wait()
 }

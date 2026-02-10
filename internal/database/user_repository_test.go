@@ -2,11 +2,11 @@ package database
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +16,8 @@ func TestEncryptDecrypt_WithKey(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	db, err := Connect(testDatabaseURL, testEncryptionKey)
+	ctx := context.Background()
+	db, err := Connect(ctx, testDatabaseURL, testEncryptionKey)
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -40,7 +41,8 @@ func TestEncryptDecrypt_WithoutKey(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	db, err := Connect(testDatabaseURL, "")
+	ctx := context.Background()
+	db, err := Connect(ctx, testDatabaseURL, "")
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -62,7 +64,8 @@ func TestEncryptDecrypt_DecryptInvalidCiphertext(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	db, err := Connect(testDatabaseURL, testEncryptionKey)
+	ctx := context.Background()
+	db, err := Connect(ctx, testDatabaseURL, testEncryptionKey)
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -141,15 +144,15 @@ func TestUpsertUser_TokenEncryption(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	db, err := Connect(testDatabaseURL, testEncryptionKey)
+	ctx := context.Background()
+	db, err := Connect(ctx, testDatabaseURL, testEncryptionKey)
 	require.NoError(t, err)
 	defer db.Close()
 
 	repo := NewUserRepo(db)
-	ctx := context.Background()
 
 	// Truncate tables
-	_, err = db.ExecContext(ctx, "TRUNCATE users, configs CASCADE")
+	_, err = db.Exec(ctx, "TRUNCATE users, configs CASCADE")
 	require.NoError(t, err)
 
 	expiry := time.Now().UTC().Add(1 * time.Hour)
@@ -158,7 +161,7 @@ func TestUpsertUser_TokenEncryption(t *testing.T) {
 
 	// Query raw tokens from database
 	var rawAccess, rawRefresh string
-	err = db.QueryRowContext(ctx, "SELECT access_token, refresh_token FROM users WHERE id = $1", user.ID).Scan(&rawAccess, &rawRefresh)
+	err = db.QueryRow(ctx, "SELECT access_token, refresh_token FROM users WHERE id = $1", user.ID).Scan(&rawAccess, &rawRefresh)
 	require.NoError(t, err)
 
 	// Tokens should be encrypted (not equal to plaintext)
@@ -200,7 +203,7 @@ func TestGetUserByID_NotFound(t *testing.T) {
 	user, err := repo.GetByID(ctx, randomID)
 
 	assert.Error(t, err)
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.ErrorIs(t, err, domain.ErrUserNotFound)
 	assert.Nil(t, user)
 }
 
@@ -209,15 +212,15 @@ func TestGetUserByID_TokenDecryption(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	db, err := Connect(testDatabaseURL, testEncryptionKey)
+	ctx := context.Background()
+	db, err := Connect(ctx, testDatabaseURL, testEncryptionKey)
 	require.NoError(t, err)
 	defer db.Close()
 
 	repo := NewUserRepo(db)
-	ctx := context.Background()
 
 	// Truncate tables
-	_, err = db.ExecContext(ctx, "TRUNCATE users, configs CASCADE")
+	_, err = db.Exec(ctx, "TRUNCATE users, configs CASCADE")
 	require.NoError(t, err)
 
 	expiry := time.Now().UTC().Add(1 * time.Hour)
@@ -258,7 +261,7 @@ func TestGetUserByOverlayUUID_NotFound(t *testing.T) {
 	user, err := repo.GetByOverlayUUID(ctx, randomUUID)
 
 	assert.Error(t, err)
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.ErrorIs(t, err, domain.ErrUserNotFound)
 	assert.Nil(t, user)
 }
 
@@ -306,7 +309,7 @@ func TestRotateOverlayUUID(t *testing.T) {
 	// Verify old UUID no longer works
 	_, err = repo.GetByOverlayUUID(ctx, oldOverlayUUID)
 	assert.Error(t, err)
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.ErrorIs(t, err, domain.ErrUserNotFound)
 
 	// Verify new UUID works
 	userByNewUUID, err := repo.GetByOverlayUUID(ctx, newOverlayUUID)

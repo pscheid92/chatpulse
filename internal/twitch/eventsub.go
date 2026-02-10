@@ -2,7 +2,6 @@ package twitch
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -130,7 +129,7 @@ func (m *EventSubManager) Cleanup(ctx context.Context) error {
 func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broadcasterUserID string) error {
 	// Check if subscription already exists
 	existing, err := m.db.GetByUserID(ctx, userID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, domain.ErrSubscriptionNotFound) {
 		return fmt.Errorf("failed to check existing subscription: %w", err)
 	}
 	if existing != nil {
@@ -143,8 +142,7 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 	if err != nil {
 		// 409 Conflict means the subscription already exists on Twitch (e.g. DB record
 		// was lost but Twitch still has it). Treat as success — the subscription is active.
-		var apiErr *helix.APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+		if apiErr, ok := errors.AsType[*helix.APIError](err); ok && apiErr.StatusCode == http.StatusConflict {
 			log.Printf("EventSub subscription already exists on Twitch for broadcaster %s, treating as success", broadcasterUserID)
 			return nil
 		}
@@ -167,7 +165,7 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 // Unsubscribe removes an EventSub subscription for a user.
 func (m *EventSubManager) Unsubscribe(ctx context.Context, userID uuid.UUID) error {
 	sub, err := m.db.GetByUserID(ctx, userID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrSubscriptionNotFound) {
 		return nil // Nothing to unsubscribe
 	}
 	if err != nil {

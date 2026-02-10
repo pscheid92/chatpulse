@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -44,7 +43,7 @@ func (m *mockAppService) GetUserByOverlayUUID(ctx context.Context, overlayUUID u
 	if m.getUserByOverlayFn != nil {
 		return m.getUserByOverlayFn(ctx, overlayUUID)
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrUserNotFound
 }
 
 func (m *mockAppService) GetConfig(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {

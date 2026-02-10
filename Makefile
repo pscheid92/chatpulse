@@ -1,4 +1,4 @@
-.PHONY: build run docker-build docker-up docker-down clean test test-short test-coverage test-race
+.PHONY: build run docker-build docker-up docker-down clean test test-short test-coverage test-race sqlc
 
 # Build the Go binary
 build:
@@ -55,3 +55,7 @@ fmt:
 # Run linter
 lint:
 	golangci-lint run
+
+# Generate sqlc code
+sqlc:
+	sqlc generate

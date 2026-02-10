@@ -11,20 +11,6 @@ import (
 
 const appTokenTimeout = 15 * time.Second
 
-// TokenRefreshError indicates a token refresh failure, with Revoked set
-// when the token has been definitively invalidated (invalid refresh token).
-type TokenRefreshError struct {
-	Revoked bool
-	Err     error
-}
-
-func (e *TokenRefreshError) Error() string {
-	if e.Revoked {
-		return fmt.Sprintf("token revoked: %v", e.Err)
-	}
-	return fmt.Sprintf("token refresh failed: %v", e.Err)
-}
-
 // TwitchClient wraps a Kappopher helix client for Twitch API operations.
 // Uses app-scoped client credentials for conduit management and EventSub CRUD.
 type TwitchClient struct {

@@ -32,15 +32,16 @@ linters:
       check-exported: false
     errcheck:
       exclude-functions:
-        # Close errors are generally ignorable for cleanup
-        - (*database/sql.DB).Close
-        - (*database/sql.Rows).Close
+        # Close/Rollback errors are generally ignorable for cleanup
         - (io.ReadCloser).Close
+        - (github.com/jackc/pgx/v5.Tx).Rollback
         - (*github.com/gorilla/websocket.Conn).Close
         - (*github.com/gorilla/websocket.Conn).SetWriteDeadline
         - (*github.com/gorilla/websocket.Conn).SetReadDeadline
         - (*github.com/pscheid92/chatpulse/internal/redis.Client).Close
   exclusions:
+    paths:
+      - internal/database/sqlcgen
     rules:
       # Deprecated middleware.Logger — replacing requires larger refactor
       - linters: [staticcheck]

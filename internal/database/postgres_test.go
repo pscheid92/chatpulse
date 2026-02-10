@@ -55,7 +55,7 @@ func TestMain(m *testing.M) {
 	testDatabaseURL = connStr
 
 	// Connect to database
-	testDB, err = Connect(testDatabaseURL, "")
+	testDB, err = Connect(ctx, testDatabaseURL, "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to test database: %v\n", err)
 		os.Exit(1)
@@ -63,7 +63,7 @@ func TestMain(m *testing.M) {
 	defer testDB.Close()
 
 	// Run migrations
-	if err := testDB.RunMigrations(); err != nil {
+	if err := testDB.RunMigrations(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to run migrations: %v\n", err)
 		os.Exit(1)
 	}
@@ -82,7 +82,7 @@ func setupTestDB(t *testing.T) *DB {
 
 	t.Cleanup(func() {
 		ctx := context.Background()
-		_, err := testDB.ExecContext(ctx, "TRUNCATE users, configs CASCADE")
+		_, err := testDB.Exec(ctx, "TRUNCATE users, configs CASCADE")
 		if err != nil {
 			t.Logf("Failed to truncate tables: %v", err)
 		}
@@ -96,14 +96,14 @@ func TestConnect_Success(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	db, err := Connect(testDatabaseURL, "")
+	ctx := context.Background()
+	db, err := Connect(ctx, testDatabaseURL, "")
 	require.NoError(t, err)
 	require.NotNil(t, db)
 	defer db.Close()
 
 	// Verify connection works
-	ctx := context.Background()
-	err = db.PingContext(ctx)
+	err = db.Ping(ctx)
 	require.NoError(t, err)
 }
 
@@ -112,7 +112,8 @@ func TestConnect_InvalidURL(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	db, err := Connect("postgres://invalid:invalid@localhost:9999/nonexistent", "")
+	ctx := context.Background()
+	db, err := Connect(ctx, "postgres://invalid:invalid@localhost:9999/nonexistent", "")
 	assert.Error(t, err)
 	assert.Nil(t, db)
 }
@@ -154,9 +155,10 @@ func TestConnect_EncryptionKeyValidation(t *testing.T) {
 		},
 	}
 
+	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, err := Connect(testDatabaseURL, tt.keyHex)
+			db, err := Connect(ctx, testDatabaseURL, tt.keyHex)
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, db)
@@ -194,15 +196,16 @@ func TestRunMigrations_Idempotency(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	db, err := Connect(testDatabaseURL, "")
+	ctx := context.Background()
+	db, err := Connect(ctx, testDatabaseURL, "")
 	require.NoError(t, err)
 	defer db.Close()
 
 	// Run migrations twice - should not error
-	err = db.RunMigrations()
+	err = db.RunMigrations(ctx)
 	require.NoError(t, err)
 
-	err = db.RunMigrations()
+	err = db.RunMigrations(ctx)
 	require.NoError(t, err)
 }
 
@@ -212,7 +215,7 @@ func TestRunMigrations_SchemaVerification(t *testing.T) {
 
 	// Verify users table exists with expected columns
 	var exists bool
-	err := db.QueryRowContext(ctx, `
+	err := db.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT FROM information_schema.tables
 			WHERE table_name = 'users'
@@ -222,7 +225,7 @@ func TestRunMigrations_SchemaVerification(t *testing.T) {
 	assert.True(t, exists)
 
 	// Verify configs table exists
-	err = db.QueryRowContext(ctx, `
+	err = db.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT FROM information_schema.tables
 			WHERE table_name = 'configs'
@@ -232,7 +235,7 @@ func TestRunMigrations_SchemaVerification(t *testing.T) {
 	assert.True(t, exists)
 
 	// Verify overlay_uuid column exists in users table
-	err = db.QueryRowContext(ctx, `
+	err = db.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT FROM information_schema.columns
 			WHERE table_name = 'users' AND column_name = 'overlay_uuid'

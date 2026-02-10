@@ -2,34 +2,42 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
 
+// Sentinel errors for not-found lookups.
+var (
+	ErrUserNotFound         = errors.New("user not found")
+	ErrConfigNotFound       = errors.New("config not found")
+	ErrSubscriptionNotFound = errors.New("subscription not found")
+)
+
 // --- Model types ---
 
 type User struct {
-	ID             uuid.UUID `db:"id"`
-	OverlayUUID    uuid.UUID `db:"overlay_uuid"`
-	TwitchUserID   string    `db:"twitch_user_id"`
-	TwitchUsername string    `db:"twitch_username"`
-	AccessToken    string    `db:"access_token"`
-	RefreshToken   string    `db:"refresh_token"`
-	TokenExpiry    time.Time `db:"token_expiry"`
-	CreatedAt      time.Time `db:"created_at"`
-	UpdatedAt      time.Time `db:"updated_at"`
+	ID             uuid.UUID
+	OverlayUUID    uuid.UUID
+	TwitchUserID   string
+	TwitchUsername string
+	AccessToken    string
+	RefreshToken   string
+	TokenExpiry    time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type Config struct {
-	UserID         uuid.UUID `db:"user_id"`
-	ForTrigger     string    `db:"for_trigger"`
-	AgainstTrigger string    `db:"against_trigger"`
-	LeftLabel      string    `db:"left_label"`
-	RightLabel     string    `db:"right_label"`
-	DecaySpeed     float64   `db:"decay_speed"`
-	CreatedAt      time.Time `db:"created_at"`
-	UpdatedAt      time.Time `db:"updated_at"`
+	UserID         uuid.UUID
+	ForTrigger     string
+	AgainstTrigger string
+	LeftLabel      string
+	RightLabel     string
+	DecaySpeed     float64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type ConfigSnapshot struct {
@@ -41,11 +49,11 @@ type ConfigSnapshot struct {
 }
 
 type EventSubSubscription struct {
-	UserID            uuid.UUID `db:"user_id"`
-	BroadcasterUserID string    `db:"broadcaster_user_id"`
-	SubscriptionID    string    `db:"subscription_id"`
-	ConduitID         string    `db:"conduit_id"`
-	CreatedAt         time.Time `db:"created_at"`
+	UserID            uuid.UUID
+	BroadcasterUserID string
+	SubscriptionID    string
+	ConduitID         string
+	CreatedAt         time.Time
 }
 
 // --- Shared value types ---

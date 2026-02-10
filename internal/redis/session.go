@@ -71,7 +71,7 @@ func (s *SessionStore) ActivateSession(ctx context.Context, overlayUUID uuid.UUI
 
 	// Create new session
 	pipe := s.rdb.Pipeline()
-	pipe.HSet(ctx, key, map[string]interface{}{
+	pipe.HSet(ctx, key, map[string]any{
 		"value":               "0",
 		"broadcaster_user_id": broadcasterUserID,
 		"config_json":         string(configJSON),

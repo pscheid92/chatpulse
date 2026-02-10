@@ -28,9 +28,13 @@ Environment is loaded automatically from `.env` via `godotenv` (called inside `c
 ```
 cmd/server/main.go          Entry point (setupConfig, setupDB, setupTwitchClient, setupRedis, initWebhooks, runGracefulShutdown)
 internal/
-  domain/domain.go          All shared types (User, Config, ConfigSnapshot, EventSubSubscription, SessionUpdate) and cross-cutting interfaces (SessionStateStore, VoteStore, ScaleProvider, DataStore, AppService, TwitchService)
+  domain/domain.go          All shared types (User, Config, ConfigSnapshot, EventSubSubscription, SessionUpdate), sentinel errors (ErrUserNotFound, ErrConfigNotFound, ErrSubscriptionNotFound), and cross-cutting interfaces (SessionStateStore, VoteStore, ScaleProvider, UserRepository, ConfigRepository, EventSubRepository, AppService, TwitchService)
   config/config.go          Struct-tag-based env loading (go-simpler/env), .env file support (godotenv), validation
-  database/postgres.go      PostgreSQL connection, migrations, CRUD, token encryption, health check
+  database/
+    postgres.go             PostgreSQL connection, migrations, health check (DB struct holds *sql.DB + GCM cipher)
+    user_repository.go      UserRepo: user CRUD, token encryption/decryption, overlay UUID rotation
+    config_repository.go    ConfigRepo: config read/update
+    eventsub_repository.go  EventSubRepo: EventSub subscription CRUD
   app/service.go            Application layer: orchestrates session lifecycle, cleanup timer, config saves
   redis/
     client.go               Redis connection wrapper (NewClient, Ping, Close)
@@ -197,13 +201,16 @@ Wraps Kappopher client for Twitch API operations. `NewTwitchClient(clientID, cli
 - `EnsureSessionActive`: Uses `singleflight` to collapse concurrent activations. Checks if session exists in Redis; if not, loads user + config from DB, activates in store, and subscribes via Twitch EventSub.
 - `OnSessionEmpty`: Decrements Redis ref count; marks session as disconnected when ref count reaches 0 (no instances serving it).
 - **Cleanup Timer**: 30s ticker calls `CleanupOrphans`, which lists sessions disconnected for >30s, deletes them from Redis, and fires Twitch unsubscribe in a background goroutine.
-- Accepts `domain.DataStore`, `domain.SessionStateStore`, and `domain.TwitchService` (nil-safe for the Twitch dependency when webhooks are not configured).
+- Accepts `domain.UserRepository`, `domain.ConfigRepository`, `domain.SessionStateStore`, and `domain.TwitchService` (nil-safe for the Twitch dependency when webhooks are not configured).
+- Also exposes 4 pass-through read methods (`GetUserByID`, `GetUserByOverlayUUID`, `GetConfig`, `UpsertUser`) so handlers never access repositories directly.
 
 ### Domain Package (`domain/domain.go`)
 
 Single file containing all shared types and cross-cutting interfaces:
 - **Model types**: `User`, `Config`, `ConfigSnapshot`, `EventSubSubscription`, `SessionUpdate`
-- **Interfaces**: `SessionStateStore` (16 methods), `VoteStore` (4 methods), `ScaleProvider` (1 method), `DataStore` (6 methods), `AppService` (6 methods), `TwitchService` (2 methods)
+- **Sentinel errors**: `ErrUserNotFound`, `ErrConfigNotFound`, `ErrSubscriptionNotFound` — returned by repository `Get*` methods when no row matches. Repositories translate `sql.ErrNoRows` into these domain errors so consumers never import `database/sql`. The `database/sql` package is confined to `internal/database/`.
+- **Repository interfaces**: `UserRepository` (5 methods), `ConfigRepository` (2 methods), `EventSubRepository` (4 methods)
+- **Other interfaces**: `SessionStateStore` (16 methods), `VoteStore` (4 methods), `ScaleProvider` (1 method), `AppService` (10 methods), `TwitchService` (2 methods)
 - Imports only stdlib + `github.com/google/uuid` — no internal dependencies, preventing circular imports.
 
 ### Other Architecture Notes
@@ -212,8 +219,8 @@ Single file containing all shared types and cross-cutting interfaces:
 - **Vote Clamping**: Values clamped to [-100, 100].
 - **Debounce**: 1 second per user per session. Redis `SETNX` with 1s TTL (auto-expires, no pruning needed).
 - **Overlay UUID Separation**: The overlay URL uses a separate `overlay_uuid` column (not the user's internal `id`). Users can rotate their overlay UUID via `POST /api/rotate-overlay-uuid` to invalidate old URLs.
-- **Token Encryption at Rest**: AES-256-GCM encryption for access/refresh tokens in PostgreSQL. `Connect(databaseURL, encryptionKeyHex)` accepts a 32-byte hex key. If key is empty, tokens pass through unencrypted (dev/test mode). The GCM cipher is created once in `Connect()` and cached on the `DB` struct for reuse. Nonce prepended to ciphertext, hex-encoded for TEXT column storage.
-- **UpsertUser Transaction**: User creation and default config insertion are wrapped in a single database transaction for atomicity. Uses `scanUser()` helper for consistent row scanning + token decryption.
+- **Token Encryption at Rest**: AES-256-GCM encryption for access/refresh tokens in PostgreSQL. `Connect(databaseURL, encryptionKeyHex)` accepts a 32-byte hex key. If key is empty, tokens pass through unencrypted (dev/test mode). The GCM cipher is created once in `Connect()` and cached on the `DB` struct, then passed to `UserRepo` via its constructor. Nonce prepended to ciphertext, hex-encoded for TEXT column storage.
+- **UpsertUser Transaction**: User creation and default config insertion are wrapped in a single database transaction for atomicity. Lives in `UserRepo.Upsert()`. Uses `scanUser()` helper for consistent row scanning + token decryption.
 - **Connection Status Broadcasting**: Broadcaster sends `{"value": float, "status": "active"}` on each tick. Overlay shows "reconnecting..." indicator when status !== "active".
 - **Health Check**: `db.HealthCheck(ctx)` calls `PingContext` for readiness probes.
 - **DB Connection Pool**: `MaxOpenConns(25)`, `MaxIdleConns(5)`, `ConnMaxLifetime(5min)`.
@@ -227,15 +234,17 @@ The codebase uses consumer-side interfaces for testability. Cross-cutting interf
 - **`domain.SessionStateStore`** — abstracts session state (16 methods). Implemented by `redis.SentimentStore` (with `clockwork.Clock` injection).
 - **`domain.VoteStore`** — narrow 4-method interface (ISP-clean) for the vote processing pipeline: `GetSessionByBroadcaster`, `GetSessionConfig`, `CheckDebounce`, `ApplyVote`. `SessionStateStore` implementations satisfy it.
 - **`domain.ScaleProvider`** — `GetCurrentValue(ctx, uuid) (float64, error)`. Implemented by `sentiment.Engine`. Consumed by `websocket.OverlayBroadcaster`.
-- **`domain.DataStore`** — 6-method subset of `*database.DB` used by both server and app layers (`GetUserByID`, `GetUserByOverlayUUID`, `GetConfig`, `UpsertUser`, `UpdateConfig`, `RotateOverlayUUID`).
-- **`domain.AppService`** — 6-method contract between server and app layer (`EnsureSessionActive`, `IncrRefCount`, `OnSessionEmpty`, `ResetSentiment`, `SaveConfig`, `RotateOverlayUUID`). Implemented by `app.Service`.
+- **`domain.UserRepository`** — 5-method interface (`GetByID`, `GetByOverlayUUID`, `Upsert`, `UpdateTokens`, `RotateOverlayUUID`). Implemented by `database.UserRepo`.
+- **`domain.ConfigRepository`** — 2-method interface (`GetByUserID`, `Update`). Implemented by `database.ConfigRepo`.
+- **`domain.EventSubRepository`** — 4-method interface (`Create`, `GetByUserID`, `Delete`, `List`). Implemented by `database.EventSubRepo`.
+- **`domain.AppService`** — 10-method contract between server and app layer. Includes 4 read pass-throughs (`GetUserByID`, `GetUserByOverlayUUID`, `GetConfig`, `UpsertUser`) + 6 operations (`EnsureSessionActive`, `IncrRefCount`, `OnSessionEmpty`, `ResetSentiment`, `SaveConfig`, `RotateOverlayUUID`). Implemented by `app.Service`. Handlers depend only on this interface — no direct repository access.
 - **`domain.TwitchService`** — `Subscribe`, `Unsubscribe`. Implemented by `twitch.EventSubManager`.
 
 **Package-private interfaces** (single consumer, stay local):
 - **`server.twitchOAuthClient`** — `ExchangeCodeForToken(ctx, code) (*twitchTokenResult, error)`. Production implementation wraps Twitch HTTP APIs; tests use `mockOAuthClient`.
 - **`server.webhookHandler`** — `HandleEventSub(c echo.Context) error`. Nil when webhooks not configured.
 - **`twitch.eventsubAPIClient`** — subset of `TwitchClient` used by `EventSubManager` (6 methods: `CreateConduit`, `GetConduits`, `UpdateConduitShards`, `DeleteConduit`, `CreateEventSubSubscription`, `DeleteEventSubSubscription`).
-- **`twitch.subscriptionStore`** — subset of `*database.DB` used by `EventSubManager`.
+- **`twitch.subscriptionStore`** — 3-method interface (`Create`, `GetByUserID`, `Delete`) satisfied by `database.EventSubRepo`; used by `EventSubManager`.
 - **`clockwork.Clock`** — injected into `sentiment.Engine`, `redis.SentimentStore`, `app.Service`, and `websocket.OverlayBroadcaster` (threaded to `clientWriter` for write deadlines, ping tickers, and pong read deadlines) for deterministic time control in tests.
 
 ### Testing with the Actor Pattern
@@ -266,8 +275,10 @@ The `OverlayBroadcaster` uses an actor pattern. Tests use synchronous queries (e
 ### Test Files
 
 - `internal/config/config_test.go` — env loading, defaults, validation, encryption key validation, webhook config validation
-- `internal/database/postgres_test.go` — CRUD operations, token encryption, migrations, health check, eventsub subscriptions (testcontainers)
-- `internal/database/testhelpers.go` — test fixtures for creating users and configs
+- `internal/database/postgres_test.go` — connection, migrations, health check (testcontainers)
+- `internal/database/user_repository_test.go` — user CRUD, token encryption/decryption, overlay UUID rotation (testcontainers)
+- `internal/database/config_repository_test.go` — config read/update (testcontainers)
+- `internal/database/testhelpers.go` — test fixtures for creating users and configs (constructs repos internally)
 - `internal/redis/redis_test.go` — test setup: testcontainers Redis, `setupTestClient` helper
 - `internal/redis/session_test.go` — activate, resume, delete, broadcaster mapping, debounce, orphan listing (18 tests)
 - `internal/redis/pubsub_test.go` — publish/subscribe roundtrip, multi-message, session isolation, close (4 tests)
@@ -276,7 +287,7 @@ The `OverlayBroadcaster` uses an actor pattern. Tests use synchronous queries (e
 - `internal/sentiment/trigger_test.go` — MatchTrigger: for/against, case-insensitive, priority, nil config, empty message (7 tests)
 - `internal/app/service_test.go` — EnsureSessionActive, OnSessionEmpty, IncrRefCount, ResetSentiment, SaveConfig, RotateOverlayUUID, CleanupOrphans, Stop (14 tests)
 - `internal/websocket/broadcaster_test.go` — register, tick broadcast, multiple clients, session empty callback, client cap, value updates (7 tests)
-- `internal/server/handlers_test.go` — shared test infrastructure: mocks (`mockDataStore`, `mockAppService`, `mockOAuthClient`), helpers (`newTestServer`, `setSessionUserID`, `withOAuthClient`)
+- `internal/server/handlers_test.go` — shared test infrastructure: mocks (`mockAppService`, `mockOAuthClient`), helpers (`newTestServer`, `setSessionUserID`, `withOAuthClient`)
 - `internal/server/handlers_unit_test.go` — input validation tests (validateConfig: 100% coverage)
 - `internal/server/handlers_auth_test.go` — requireAuth middleware, login page, logout, OAuth callback (success, missing code, invalid state, exchange error, DB error) (10 tests)
 - `internal/server/handlers_dashboard_test.go` — handleDashboard, handleSaveConfig (5 tests)
@@ -324,7 +335,7 @@ golangci-lint v2 configured via `.golangci.yml` (schema `version: "2"`). Run wit
 
 ## Go Module
 
-Module: `github.com/pscheid92/chatpulse`, Go 1.25.7.
+Module: `github.com/pscheid92/chatpulse`, Go 1.26.0.
 
 Key deps: echo/v4, gorilla/websocket, gorilla/sessions, Its-donkey/kappopher, lib/pq, redis/go-redis/v9, google/uuid, joho/godotenv, jonboulle/clockwork, go-simpler/env.
 

@@ -18,10 +18,10 @@ func MatchTrigger(messageText string, config *domain.ConfigSnapshot) float64 {
 
 	lowerText := strings.ToLower(messageText)
 
-	if strings.Contains(lowerText, strings.ToLower(config.ForTrigger)) {
+	if config.ForTrigger != "" && strings.Contains(lowerText, strings.ToLower(config.ForTrigger)) {
 		return voteDelta
 	}
-	if strings.Contains(lowerText, strings.ToLower(config.AgainstTrigger)) {
+	if config.AgainstTrigger != "" && strings.Contains(lowerText, strings.ToLower(config.AgainstTrigger)) {
 		return -voteDelta
 	}
 	return 0

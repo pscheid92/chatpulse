@@ -67,7 +67,7 @@ func (s *Server) handleDashboard(c echo.Context) error {
 
 	overlayURL := fmt.Sprintf("%s/overlay/%s", s.getBaseURL(c), user.OverlayUUID)
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"Username":       user.TwitchUsername,
 		"OverlayURL":     overlayURL,
 		"OverlayUUID":    user.OverlayUUID.String(),

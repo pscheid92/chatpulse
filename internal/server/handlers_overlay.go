@@ -1,8 +1,6 @@
 package server
 
 import (
-	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -11,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
+	"github.com/pscheid92/chatpulse/internal/domain"
 )
 
 var upgrader = websocket.Upgrader{
@@ -31,7 +30,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 	ctx := c.Request().Context()
 
 	user, err := s.app.GetUserByOverlayUUID(ctx, overlayUUID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrUserNotFound) {
 		return c.String(404, "Overlay not found")
 	}
 	if err != nil {
@@ -45,7 +44,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 		return c.String(500, "Failed to load config")
 	}
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"LeftLabel":   config.LeftLabel,
 		"RightLabel":  config.RightLabel,
 		"WSHost":      c.Request().Host,
@@ -65,7 +64,7 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 	ctx := c.Request().Context()
 
 	user, err := s.app.GetUserByOverlayUUID(ctx, overlayUUID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrUserNotFound) {
 		return c.String(404, "Session not found")
 	}
 	if err != nil {
@@ -77,12 +76,6 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 	if err := s.app.EnsureSessionActive(ctx, user.OverlayUUID); err != nil {
 		log.Printf("Failed to ensure session active: %v", err)
 		return c.String(500, "Failed to activate session")
-	}
-
-	// Increment ref count (tracks how many instances serve this session)
-	if err := s.app.IncrRefCount(ctx, user.OverlayUUID); err != nil {
-		log.Printf("Failed to increment ref count: %v", err)
-		return c.String(500, "Internal error")
 	}
 
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
@@ -103,7 +96,6 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 	}
 
 	s.broadcaster.Unregister(user.OverlayUUID, conn)
-	s.app.OnSessionEmpty(context.Background(), user.OverlayUUID)
 
 	return nil //nolint:nilerr // ReadMessage err is block-scoped; outer err is nil
 }

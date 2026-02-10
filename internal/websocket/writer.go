@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -19,6 +20,7 @@ type clientWriter struct {
 	clock       clockwork.Clock
 	sendChannel chan []byte
 	doneChannel chan struct{}
+	stopOnce    sync.Once
 }
 
 func newClientWriter(connection *websocket.Conn, clock clockwork.Clock) *clientWriter {
@@ -59,8 +61,10 @@ func (cw *clientWriter) run() {
 }
 
 func (cw *clientWriter) stop() {
-	close(cw.doneChannel)
-	_ = cw.connection.Close()
+	cw.stopOnce.Do(func() {
+		close(cw.doneChannel)
+		_ = cw.connection.Close()
+	})
 }
 
 func (cw *clientWriter) configurePongHandler() {

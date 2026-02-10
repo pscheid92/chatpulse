@@ -19,7 +19,7 @@ import (
 var applyVoteScript = goredis.NewScript(`
 local value = tonumber(redis.call('HGET', KEYS[1], 'value')) or 0
 local last_update = tonumber(redis.call('HGET', KEYS[1], 'last_update')) or tonumber(ARGV[3])
-local dt = (tonumber(ARGV[3]) - last_update) / 1000.0
+local dt = math.max(0, (tonumber(ARGV[3]) - last_update) / 1000.0)
 local decayed = value * math.exp(-tonumber(ARGV[2]) * dt)
 local new_val = math.max(-100, math.min(100, decayed + tonumber(ARGV[1])))
 redis.call('HSET', KEYS[1], 'value', tostring(new_val), 'last_update', ARGV[3])
@@ -32,7 +32,7 @@ return tostring(new_val)
 var getDecayedValueScript = goredis.NewScript(`
 local value = tonumber(redis.call('HGET', KEYS[1], 'value')) or 0
 local last_update = tonumber(redis.call('HGET', KEYS[1], 'last_update')) or tonumber(ARGV[2])
-local dt = (tonumber(ARGV[2]) - last_update) / 1000.0
+local dt = math.max(0, (tonumber(ARGV[2]) - last_update) / 1000.0)
 return tostring(value * math.exp(-tonumber(ARGV[1]) * dt))
 `)
 

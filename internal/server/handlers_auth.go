@@ -80,7 +80,7 @@ func (s *Server) handleLoginPage(c echo.Context) error {
 		url.QueryEscape(state),
 	)
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"TwitchAuthURL": authURL,
 	}
 

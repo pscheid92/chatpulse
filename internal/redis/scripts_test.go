@@ -83,7 +83,7 @@ func TestApplyVote_Clamping(t *testing.T) {
 	now := time.Now().UnixMilli()
 
 	// Push past +100
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		_, err = runner.ApplyVote(ctx, overlayUUID, 10.0, 0.0, now) // decay_rate=0 means no decay
 		require.NoError(t, err)
 	}
@@ -94,7 +94,7 @@ func TestApplyVote_Clamping(t *testing.T) {
 	// Reset and push past -100
 	err = store.UpdateValue(ctx, overlayUUID, 0)
 	require.NoError(t, err)
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		_, err = runner.ApplyVote(ctx, overlayUUID, -10.0, 0.0, now)
 		require.NoError(t, err)
 	}

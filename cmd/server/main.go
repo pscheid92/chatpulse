@@ -54,8 +54,9 @@ func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *w
 		<-sigChan
 		log.Println("Shutdown signal received, cleaning up...")
 
-		ctx := context.Background()
-		if err := srv.Shutdown(ctx); err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("Server shutdown error: %v", err)
 		}
 
@@ -85,12 +86,15 @@ func setupConfig() *config.Config {
 }
 
 func setupDB(cfg *config.Config) *database.DB {
-	db, err := database.Connect(cfg.DatabaseURL, cfg.TokenEncryptionKey)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	db, err := database.Connect(ctx, cfg.DatabaseURL, cfg.TokenEncryptionKey)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	if err := db.RunMigrations(); err != nil {
+	if err := db.RunMigrations(ctx); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
@@ -118,6 +122,7 @@ func main() {
 
 	cfg := setupConfig()
 	db := setupDB(cfg)
+	defer db.Close()
 	twitchClient := setupTwitchClient(cfg)
 
 	redisClient := setupRedis(cfg)
@@ -134,20 +139,42 @@ func main() {
 	configRepo := database.NewConfigRepo(db)
 	eventSubRepo := database.NewEventSubRepo(db)
 
-	wh := initWebhooks(cfg, twitchClient, store, eventSubRepo)
-
-	appSvc := app.NewService(userRepo, configRepo, store, wh.eventsubManager, clock)
-
-	onSessionEmpty := func(sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(context.Background(), sessionUUID) }
-	broadcaster := websocket.NewOverlayBroadcaster(engine, onSessionEmpty, clock)
-
-	// Create and start the HTTP server
-	srv, err := server.NewServer(cfg, appSvc, broadcaster, wh.webhookHandler)
-	if err != nil {
-		log.Fatalf("Failed to create server: %v", err)
+	// Set up webhooks if configured (all three env vars required together)
+	var twitchSvc domain.TwitchService
+	var eventsubMgr *twitch.EventSubManager
+	var webhookHdlr *twitch.WebhookHandler
+	if cfg.WebhookCallbackURL != "" {
+		wh := initWebhooks(cfg, twitchClient, store, eventSubRepo)
+		eventsubMgr = wh.eventsubManager
+		webhookHdlr = wh.webhookHandler
+		twitchSvc = eventsubMgr
 	}
 
-	done := runGracefulShutdown(srv, appSvc, broadcaster, wh.eventsubManager)
+	appSvc := app.NewService(userRepo, configRepo, store, twitchSvc, clock)
+
+	onFirstClient := func(sessionUUID uuid.UUID) {
+		if err := appSvc.IncrRefCount(context.Background(), sessionUUID); err != nil {
+			log.Printf("Failed to increment ref count for session %s: %v", sessionUUID, err)
+		}
+	}
+	onSessionEmpty := func(sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(context.Background(), sessionUUID) }
+	broadcaster := websocket.NewOverlayBroadcaster(engine, onFirstClient, onSessionEmpty, clock)
+
+	// Create and start the HTTP server (pass nil explicitly to avoid typed-nil interface)
+	var (
+		srv    *server.Server
+		srvErr error
+	)
+	if webhookHdlr != nil {
+		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, webhookHdlr)
+	} else {
+		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, nil)
+	}
+	if srvErr != nil {
+		log.Fatalf("Failed to create server: %v", srvErr)
+	}
+
+	done := runGracefulShutdown(srv, appSvc, broadcaster, eventsubMgr)
 
 	log.Printf("Starting server on port %s", cfg.Port)
 	if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {

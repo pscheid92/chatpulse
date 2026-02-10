@@ -16,7 +16,7 @@ const (
 	sessionKeyOAuthState = "oauth_state"
 )
 
-func renderTemplate(c echo.Context, tmpl *template.Template, data interface{}) error {
+func renderTemplate(c echo.Context, tmpl *template.Template, data any) error {
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		log.Printf("Template execution failed for %s: %v", c.Request().URL.Path, err)
@@ -30,7 +30,7 @@ func (s *Server) getBaseURL(c echo.Context) string {
 	if c.Request().TLS != nil {
 		scheme = "https"
 	}
-	if fwdProto := c.Request().Header.Get("X-Forwarded-Proto"); fwdProto != "" {
+	if fwdProto := c.Request().Header.Get("X-Forwarded-Proto"); fwdProto == "http" || fwdProto == "https" {
 		scheme = fwdProto
 	}
 	return fmt.Sprintf("%s://%s", scheme, c.Request().Host)

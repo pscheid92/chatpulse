@@ -53,7 +53,7 @@ func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
 	}
 
 	newURL := fmt.Sprintf("%s/overlay/%s", s.getBaseURL(c), newUUID)
-	return c.JSON(200, map[string]interface{}{
+	return c.JSON(200, map[string]any{
 		"status":   "ok",
 		"new_uuid": newUUID.String(),
 		"new_url":  newURL,

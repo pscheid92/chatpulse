@@ -4,28 +4,27 @@ import (
 	"context"
 	"crypto/cipher"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pscheid92/chatpulse/internal/database/sqlcgen"
 	"github.com/pscheid92/chatpulse/internal/domain"
 )
 
-// userColumns must match the Scan order in scanUser.
-const userColumns = `id, overlay_uuid, twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at`
-
-// UserRepo implements domain.UserRepository backed by PostgreSQL.
 type UserRepo struct {
-	db  *sql.DB
-	gcm cipher.AEAD
+	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
+	gcm  cipher.AEAD
 }
 
-// NewUserRepo creates a UserRepo from the shared DB connection.
 func NewUserRepo(db *DB) *UserRepo {
-	return &UserRepo{db: db.DB, gcm: db.gcm}
+	return &UserRepo{pool: db.Pool, q: sqlcgen.New(db.Pool), gcm: db.gcm}
 }
 
 func (r *UserRepo) encryptToken(plaintext string) (string, error) {
@@ -66,33 +65,48 @@ func (r *UserRepo) decryptToken(encoded string) (string, error) {
 	return string(plaintext), nil
 }
 
-func (r *UserRepo) decryptUserTokens(user *domain.User) error {
-	var err error
-	user.AccessToken, err = r.decryptToken(user.AccessToken)
+func (r *UserRepo) toDomainUser(row sqlcgen.User) (*domain.User, error) {
+	accessToken, err := r.decryptToken(row.AccessToken)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt access token: %w", err)
+		return nil, fmt.Errorf("failed to decrypt access token: %w", err)
 	}
-	user.RefreshToken, err = r.decryptToken(user.RefreshToken)
+	refreshToken, err := r.decryptToken(row.RefreshToken)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt refresh token: %w", err)
+		return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
 	}
-	return nil
+	return &domain.User{
+		ID:             row.ID,
+		OverlayUUID:    row.OverlayUUID,
+		TwitchUserID:   row.TwitchUserID,
+		TwitchUsername: row.TwitchUsername,
+		AccessToken:    accessToken,
+		RefreshToken:   refreshToken,
+		TokenExpiry:    row.TokenExpiry,
+		CreatedAt:      row.CreatedAt,
+		UpdatedAt:      row.UpdatedAt,
+	}, nil
 }
 
-func (r *UserRepo) scanUser(row *sql.Row) (*domain.User, error) {
-	var user domain.User
-	err := row.Scan(
-		&user.ID, &user.OverlayUUID, &user.TwitchUserID, &user.TwitchUsername,
-		&user.AccessToken, &user.RefreshToken, &user.TokenExpiry,
-		&user.CreatedAt, &user.UpdatedAt,
-	)
+func (r *UserRepo) GetByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
+	row, err := r.q.GetUserByID(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrUserNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	if err := r.decryptUserTokens(&user); err != nil {
+	return r.toDomainUser(row)
+}
+
+func (r *UserRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
+	row, err := r.q.GetUserByOverlayUUID(ctx, overlayUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrUserNotFound
+	}
+	if err != nil {
 		return nil, err
 	}
-	return &user, nil
+	return r.toDomainUser(row)
 }
 
 func (r *UserRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error) {
@@ -100,51 +114,40 @@ func (r *UserRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, acc
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt access token: %w", err)
 	}
+
 	encRefreshToken, err := r.encryptToken(refreshToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt refresh token: %w", err)
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after commit
+	defer tx.Rollback(ctx)
 
-	user, err := r.scanUser(tx.QueryRowContext(ctx, `
-		INSERT INTO users (twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-		ON CONFLICT (twitch_user_id) DO UPDATE SET
-			twitch_username = EXCLUDED.twitch_username,
-			access_token = EXCLUDED.access_token,
-			refresh_token = EXCLUDED.refresh_token,
-			token_expiry = EXCLUDED.token_expiry,
-			updated_at = NOW()
-		RETURNING `+userColumns+`
-	`, twitchUserID, twitchUsername, encAccessToken, encRefreshToken, tokenExpiry))
+	qtx := r.q.WithTx(tx)
+
+	row, err := qtx.UpsertUser(ctx, sqlcgen.UpsertUserParams{
+		TwitchUserID:   twitchUserID,
+		TwitchUsername: twitchUsername,
+		AccessToken:    encAccessToken,
+		RefreshToken:   encRefreshToken,
+		TokenExpiry:    tokenExpiry,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert user: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO configs (user_id, created_at, updated_at)
-		VALUES ($1, NOW(), NOW())
-		ON CONFLICT (user_id) DO NOTHING
-	`, user.ID)
-	if err != nil {
+	if err := qtx.InsertDefaultConfig(ctx, row.ID); err != nil {
 		return nil, fmt.Errorf("failed to create default config: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	return user, nil
-}
-
-func (r *UserRepo) GetByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
-	return r.scanUser(r.db.QueryRowContext(ctx,
-		`SELECT `+userColumns+` FROM users WHERE id = $1`, userID))
+	return r.toDomainUser(row)
 }
 
 func (r *UserRepo) UpdateTokens(ctx context.Context, userID uuid.UUID, accessToken, refreshToken string, tokenExpiry time.Time) error {
@@ -152,37 +155,27 @@ func (r *UserRepo) UpdateTokens(ctx context.Context, userID uuid.UUID, accessTok
 	if err != nil {
 		return fmt.Errorf("failed to encrypt access token: %w", err)
 	}
+
 	encRefreshToken, err := r.encryptToken(refreshToken)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt refresh token: %w", err)
 	}
 
-	_, err = r.db.ExecContext(ctx, `
-		UPDATE users
-		SET access_token = $1, refresh_token = $2, token_expiry = $3, updated_at = NOW()
-		WHERE id = $4
-	`, encAccessToken, encRefreshToken, tokenExpiry, userID)
-
-	return err
-}
-
-func (r *UserRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
-	return r.scanUser(r.db.QueryRowContext(ctx,
-		`SELECT `+userColumns+` FROM users WHERE overlay_uuid = $1`, overlayUUID))
+	return r.q.UpdateTokens(ctx, sqlcgen.UpdateTokensParams{
+		AccessToken:  encAccessToken,
+		RefreshToken: encRefreshToken,
+		TokenExpiry:  tokenExpiry,
+		ID:           userID,
+	})
 }
 
 func (r *UserRepo) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
-	var newUUID uuid.UUID
-	err := r.db.QueryRowContext(ctx, `
-		UPDATE users
-		SET overlay_uuid = gen_random_uuid(), updated_at = NOW()
-		WHERE id = $1
-		RETURNING overlay_uuid
-	`, userID).Scan(&newUUID)
-
+	newUUID, err := r.q.RotateOverlayUUID(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, domain.ErrUserNotFound
+	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to rotate overlay UUID: %w", err)
 	}
-
 	return newUUID, nil
 }

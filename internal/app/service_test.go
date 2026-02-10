@@ -541,12 +541,20 @@ func TestCleanupOrphans_DeletesSessions(t *testing.T) {
 }
 
 func TestCleanupOrphans_UnsubscribesTwitch(t *testing.T) {
-	orphan := uuid.New()
+	orphanOverlayUUID := uuid.New()
+	userID := uuid.New()
 	unsubscribed := make(chan uuid.UUID, 1)
+
+	users := &mockUserRepo{
+		getByOverlayUUIDFn: func(_ context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
+			assert.Equal(t, orphanOverlayUUID, overlayUUID)
+			return &domain.User{ID: userID, OverlayUUID: orphanOverlayUUID}, nil
+		},
+	}
 
 	store := &mockStore{
 		listOrphansFn: func(_ context.Context, _ time.Duration) ([]uuid.UUID, error) {
-			return []uuid.UUID{orphan}, nil
+			return []uuid.UUID{orphanOverlayUUID}, nil
 		},
 	}
 
@@ -558,14 +566,14 @@ func TestCleanupOrphans_UnsubscribesTwitch(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, twitch, clock)
+	svc := newTestService(users, &mockConfigRepo{}, store, twitch, clock)
 
 	svc.CleanupOrphans(context.Background())
 
 	// Twitch unsubscribe runs in a background goroutine
 	select {
 	case got := <-unsubscribed:
-		assert.Equal(t, orphan, got)
+		assert.Equal(t, userID, got)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for unsubscribe")
 	}
@@ -591,6 +599,7 @@ func TestStop(t *testing.T) {
 	clock := clockwork.NewFakeClock()
 	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, &mockStore{}, nil, clock)
 
-	// Should not panic
+	// Should not panic, even when called twice
+	svc.Stop()
 	svc.Stop()
 }

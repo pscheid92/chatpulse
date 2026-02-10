@@ -44,7 +44,7 @@ func testBroadcaster(t *testing.T, engine *mockScaleProvider, onSessionEmpty fun
 		engine = &mockScaleProvider{}
 	}
 
-	broadcaster := NewOverlayBroadcaster(engine, onSessionEmpty, clockwork.NewRealClock())
+	broadcaster := NewOverlayBroadcaster(engine, nil, onSessionEmpty, clockwork.NewRealClock())
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	upgrader := ws.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -103,7 +103,7 @@ func TestBroadcaster_RegisterAndReceiveTick(t *testing.T) {
 	_, msg, err := conn.ReadMessage()
 	require.NoError(t, err)
 
-	var result map[string]interface{}
+	var result map[string]any
 	require.NoError(t, json.Unmarshal(msg, &result))
 	assert.Equal(t, 42.5, result["value"])
 	assert.Equal(t, "active", result["status"])
@@ -124,7 +124,7 @@ func TestBroadcaster_MultipleClients(t *testing.T) {
 		_, msg, err := conn.ReadMessage()
 		require.NoError(t, err)
 
-		var result map[string]interface{}
+		var result map[string]any
 		require.NoError(t, json.Unmarshal(msg, &result))
 		assert.Equal(t, 77.0, result["value"])
 		assert.Equal(t, "active", result["status"])
@@ -184,13 +184,13 @@ func TestBroadcaster_GetClientCount(t *testing.T) {
 
 func TestBroadcaster_MaxClientsPerSession(t *testing.T) {
 	engine := &mockScaleProvider{}
-	broadcaster := NewOverlayBroadcaster(engine, nil, clockwork.NewRealClock())
+	broadcaster := NewOverlayBroadcaster(engine, nil, nil, clockwork.NewRealClock())
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	sessionUUID := uuid.New()
 
 	conns := make([]*ws.Conn, 0, maxClientsPerSession)
-	for i := 0; i < maxClientsPerSession; i++ {
+	for i := range maxClientsPerSession {
 		server, client := newTestConnPair(t)
 		err := broadcaster.Register(sessionUUID, server)
 		require.NoError(t, err, "client %d should register successfully", i)
@@ -238,7 +238,7 @@ func newTestConnPair(t *testing.T) (server *ws.Conn, client *ws.Conn) {
 
 func TestBroadcaster_NoClientsNoPanic(t *testing.T) {
 	engine := &mockScaleProvider{value: 50.0}
-	_ = NewOverlayBroadcaster(engine, nil, clockwork.NewRealClock())
+	_ = NewOverlayBroadcaster(engine, nil, nil, clockwork.NewRealClock())
 	// Just verify no panic with ticks running and no clients
 	time.Sleep(100 * time.Millisecond)
 }
@@ -255,7 +255,7 @@ func TestBroadcaster_ValueUpdates(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(time.Second))
 	_, msg, err := conn.ReadMessage()
 	require.NoError(t, err)
-	var result map[string]interface{}
+	var result map[string]any
 	require.NoError(t, json.Unmarshal(msg, &result))
 	assert.Equal(t, 10.0, result["value"])
 
