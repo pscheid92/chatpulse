@@ -8,20 +8,19 @@ import (
 	"github.com/Its-donkey/kappopher/helix"
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/domain"
-	"github.com/pscheid92/chatpulse/internal/sentiment"
 )
 
 // WebhookHandler handles Twitch EventSub webhook notifications.
 // It uses Kappopher's built-in HMAC verification and processes votes
-// directly through the SessionStateStore, bypassing the Engine actor.
+// through the Engine.
 type WebhookHandler struct {
 	handler *helix.EventSubWebhookHandler
 }
 
 // NewWebhookHandler creates a new WebhookHandler with HMAC signature verification.
-// Votes are processed directly through the store for minimal latency:
+// Votes are processed through the Engine:
 // broadcaster lookup → trigger match → debounce check → atomic vote application.
-func NewWebhookHandler(secret string, store domain.VoteStore) *WebhookHandler {
+func NewWebhookHandler(secret string, engine domain.Engine) *WebhookHandler {
 	handler := helix.NewEventSubWebhookHandler(
 		helix.WithWebhookSecret(secret),
 		helix.WithNotificationHandler(func(msg *helix.EventSubWebhookMessage) {
@@ -36,7 +35,7 @@ func NewWebhookHandler(secret string, store domain.VoteStore) *WebhookHandler {
 			}
 
 			ctx := context.Background()
-			newValue, applied := sentiment.ProcessVote(ctx, store, event.BroadcasterUserID, event.ChatterUserID, event.Message.Text)
+			newValue, applied := engine.ProcessVote(ctx, event.BroadcasterUserID, event.ChatterUserID, event.Message.Text)
 			if applied {
 				log.Printf("Vote processed via webhook: user=%s, new value=%.2f", event.ChatterUserID, newValue)
 			}

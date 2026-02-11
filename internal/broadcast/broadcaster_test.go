@@ -1,4 +1,4 @@
-package websocket
+package broadcast
 
 import (
 	"context"
@@ -18,33 +18,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockScaleProvider returns a fixed value for all sessions.
-type mockScaleProvider struct {
+// mockEngine returns a fixed value for all sessions.
+type mockEngine struct {
 	mu    sync.Mutex
 	value float64
 }
 
-func (m *mockScaleProvider) GetCurrentValue(_ context.Context, _ uuid.UUID) (float64, error) {
+func (m *mockEngine) GetCurrentValue(_ context.Context, _ uuid.UUID) (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.value, nil
 }
 
-func (m *mockScaleProvider) setValue(v float64) {
+func (m *mockEngine) ProcessVote(_ context.Context, _, _, _ string) (float64, bool) {
+	return 0, false
+}
+
+func (m *mockEngine) ResetSentiment(_ context.Context, _ uuid.UUID) error {
+	return nil
+}
+
+func (m *mockEngine) setValue(v float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.value = v
 }
 
-// testBroadcaster sets up an OverlayBroadcaster with a test HTTP server.
-func testBroadcaster(t *testing.T, engine *mockScaleProvider, onSessionEmpty func(uuid.UUID)) (*OverlayBroadcaster, func(sessionUUID uuid.UUID) *ws.Conn) {
+// testBroadcaster sets up a Broadcaster with a test HTTP server.
+func testBroadcaster(t *testing.T, engine *mockEngine, onSessionEmpty func(uuid.UUID)) (*Broadcaster, func(sessionUUID uuid.UUID) *ws.Conn) {
 	t.Helper()
 
 	if engine == nil {
-		engine = &mockScaleProvider{}
+		engine = &mockEngine{}
 	}
 
-	broadcaster := NewOverlayBroadcaster(engine, nil, onSessionEmpty, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, onSessionEmpty, clockwork.NewRealClock())
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	upgrader := ws.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -80,7 +88,7 @@ func testBroadcaster(t *testing.T, engine *mockScaleProvider, onSessionEmpty fun
 	return broadcaster, dial
 }
 
-func waitForClientCount(b *OverlayBroadcaster, sessionUUID uuid.UUID, expected int) bool {
+func waitForClientCount(b *Broadcaster, sessionUUID uuid.UUID, expected int) bool {
 	for range 100 {
 		if b.GetClientCount(sessionUUID) == expected {
 			return true
@@ -91,7 +99,7 @@ func waitForClientCount(b *OverlayBroadcaster, sessionUUID uuid.UUID, expected i
 }
 
 func TestBroadcaster_RegisterAndReceiveTick(t *testing.T) {
-	engine := &mockScaleProvider{value: 42.5}
+	engine := &mockEngine{value: 42.5}
 	broadcaster, dial := testBroadcaster(t, engine, nil)
 	sessionUUID := uuid.New()
 
@@ -110,7 +118,7 @@ func TestBroadcaster_RegisterAndReceiveTick(t *testing.T) {
 }
 
 func TestBroadcaster_MultipleClients(t *testing.T) {
-	engine := &mockScaleProvider{value: 77.0}
+	engine := &mockEngine{value: 77.0}
 	broadcaster, dial := testBroadcaster(t, engine, nil)
 	sessionUUID := uuid.New()
 
@@ -183,8 +191,8 @@ func TestBroadcaster_GetClientCount(t *testing.T) {
 }
 
 func TestBroadcaster_MaxClientsPerSession(t *testing.T) {
-	engine := &mockScaleProvider{}
-	broadcaster := NewOverlayBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	engine := &mockEngine{}
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	sessionUUID := uuid.New()
@@ -237,14 +245,14 @@ func newTestConnPair(t *testing.T) (server *ws.Conn, client *ws.Conn) {
 }
 
 func TestBroadcaster_NoClientsNoPanic(t *testing.T) {
-	engine := &mockScaleProvider{value: 50.0}
-	_ = NewOverlayBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	engine := &mockEngine{value: 50.0}
+	_ = NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
 	// Just verify no panic with ticks running and no clients
 	time.Sleep(100 * time.Millisecond)
 }
 
 func TestBroadcaster_ValueUpdates(t *testing.T) {
-	engine := &mockScaleProvider{value: 10.0}
+	engine := &mockEngine{value: 10.0}
 	broadcaster, dial := testBroadcaster(t, engine, nil)
 	sessionUUID := uuid.New()
 

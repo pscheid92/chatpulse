@@ -14,15 +14,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/app"
+	"github.com/pscheid92/chatpulse/internal/broadcast"
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/database"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/pscheid92/chatpulse/internal/redis"
 	"github.com/pscheid92/chatpulse/internal/sentiment"
 	"github.com/pscheid92/chatpulse/internal/server"
 	"github.com/pscheid92/chatpulse/internal/twitch"
-	"github.com/pscheid92/chatpulse/internal/websocket"
 )
 
 type webhookResult struct {
@@ -30,8 +32,11 @@ type webhookResult struct {
 	webhookHandler  *twitch.WebhookHandler
 }
 
-func initWebhooks(cfg *config.Config, twitchClient *twitch.TwitchClient, store domain.SessionStateStore, eventSubRepo domain.EventSubRepository) webhookResult {
-	eventsubManager := twitch.NewEventSubManager(twitchClient, eventSubRepo, cfg.WebhookCallbackURL, cfg.WebhookSecret, cfg.BotUserID)
+func initWebhooks(cfg *config.Config, engine domain.Engine, eventSubRepo domain.EventSubRepository) webhookResult {
+	eventsubManager, err := twitch.NewEventSubManager(cfg.TwitchClientID, cfg.TwitchClientSecret, eventSubRepo, cfg.WebhookCallbackURL, cfg.WebhookSecret, cfg.BotUserID)
+	if err != nil {
+		log.Fatalf("Failed to create EventSub manager: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -39,7 +44,7 @@ func initWebhooks(cfg *config.Config, twitchClient *twitch.TwitchClient, store d
 		log.Fatalf("failed to setup webhook conduit: %v", err)
 	}
 
-	webhookHandler := twitch.NewWebhookHandler(cfg.WebhookSecret, store)
+	webhookHandler := twitch.NewWebhookHandler(cfg.WebhookSecret, engine)
 
 	return webhookResult{
 		eventsubManager: eventsubManager,
@@ -47,7 +52,7 @@ func initWebhooks(cfg *config.Config, twitchClient *twitch.TwitchClient, store d
 	}
 }
 
-func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *websocket.OverlayBroadcaster, conduitMgr *twitch.EventSubManager) <-chan struct{} {
+func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *broadcast.Broadcaster, conduitMgr *twitch.EventSubManager) <-chan struct{} {
 	done := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -103,16 +108,8 @@ func setupDB(cfg *config.Config) *pgxpool.Pool {
 	return db
 }
 
-func setupTwitchClient(cfg *config.Config) *twitch.TwitchClient {
-	twitchClient, err := twitch.NewTwitchClient(cfg.TwitchClientID, cfg.TwitchClientSecret)
-	if err != nil {
-		log.Fatalf("Failed to create Twitch client: %v", err)
-	}
-	return twitchClient
-}
-
-func setupRedis(cfg *config.Config) *redis.Client {
-	client, err := redis.NewClient(cfg.RedisURL)
+func setupRedis(ctx context.Context, cfg *config.Config) *goredis.Client {
+	client, err := redis.NewClient(ctx, cfg.RedisURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
@@ -125,16 +122,15 @@ func main() {
 	cfg := setupConfig()
 	pool := setupDB(cfg)
 	defer pool.Close()
-	twitchClient := setupTwitchClient(cfg)
 
-	redisClient := setupRedis(cfg)
-	defer redisClient.Close()
+	redisClient := setupRedis(context.Background(), cfg)
+	defer func() { _ = redisClient.Close() }()
 
-	sessionStore := redis.NewSessionStore(redisClient)
-	scriptRunner := redis.NewScriptRunner(redisClient)
-	store := redis.NewSentimentStore(sessionStore, scriptRunner, clock)
+	store := redis.NewSessionRepo(redisClient, clock)
+	sentimentStore := redis.NewSentimentStore(redisClient)
+	debouncer := redis.NewDebouncer(redisClient)
 
-	engine := sentiment.NewEngine(store, clock)
+	engine := sentiment.NewEngine(store, sentimentStore, debouncer, clock)
 
 	// Construct repositories
 	var cryptoSvc crypto.Service = crypto.NoopService{}
@@ -155,13 +151,13 @@ func main() {
 	var eventsubMgr *twitch.EventSubManager
 	var webhookHdlr *twitch.WebhookHandler
 	if cfg.WebhookCallbackURL != "" {
-		wh := initWebhooks(cfg, twitchClient, store, eventSubRepo)
+		wh := initWebhooks(cfg, engine, eventSubRepo)
 		eventsubMgr = wh.eventsubManager
 		webhookHdlr = wh.webhookHandler
 		twitchSvc = eventsubMgr
 	}
 
-	appSvc := app.NewService(userRepo, configRepo, store, twitchSvc, clock)
+	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, clock)
 
 	onFirstClient := func(sessionUUID uuid.UUID) {
 		if err := appSvc.IncrRefCount(context.Background(), sessionUUID); err != nil {
@@ -169,7 +165,7 @@ func main() {
 		}
 	}
 	onSessionEmpty := func(sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(context.Background(), sessionUUID) }
-	broadcaster := websocket.NewOverlayBroadcaster(engine, onFirstClient, onSessionEmpty, clock)
+	broadcaster := broadcast.NewBroadcaster(engine, onFirstClient, onSessionEmpty, clock)
 
 	// Create and start the HTTP server (pass nil explicitly to avoid typed-nil interface)
 	var (

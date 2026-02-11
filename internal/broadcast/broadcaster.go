@@ -1,4 +1,4 @@
-package websocket
+package broadcast
 
 import (
 	"context"
@@ -20,7 +20,7 @@ const (
 
 type sessionClients map[*websocket.Conn]*clientWriter
 
-// broadcasterCmd is the command interface for the OverlayBroadcaster actor.
+// broadcasterCmd is the command interface for the Broadcaster actor.
 type broadcasterCmd interface{ isBroadcasterCmd() }
 
 type baseBroadcasterCmd struct{}
@@ -50,23 +50,23 @@ type stopCmd struct {
 	baseBroadcasterCmd
 }
 
-// OverlayBroadcaster manages WebSocket connections and pulls sentiment values
+// Broadcaster manages WebSocket connections and pulls sentiment values
 // from the Engine on a tick loop, broadcasting to all connected clients.
-type OverlayBroadcaster struct {
+type Broadcaster struct {
 	cmdCh          chan broadcasterCmd
 	clock          clockwork.Clock
 	activeClients  map[uuid.UUID]sessionClients
-	engine         domain.ScaleProvider
+	engine         domain.Engine
 	onFirstClient  func(sessionUUID uuid.UUID)
 	onSessionEmpty func(sessionUUID uuid.UUID)
 }
 
-// NewOverlayBroadcaster creates a new broadcaster.
+// NewBroadcaster creates a new broadcaster.
 // engine is used to pull current values on each tick.
 // onFirstClient is called when the first client connects to a session on this instance.
 // onSessionEmpty is called when the last client disconnects from a session.
-func NewOverlayBroadcaster(engine domain.ScaleProvider, onFirstClient func(uuid.UUID), onSessionEmpty func(uuid.UUID), clock clockwork.Clock) *OverlayBroadcaster {
-	b := &OverlayBroadcaster{
+func NewBroadcaster(engine domain.Engine, onFirstClient func(uuid.UUID), onSessionEmpty func(uuid.UUID), clock clockwork.Clock) *Broadcaster {
+	b := &Broadcaster{
 		cmdCh:          make(chan broadcasterCmd, 256),
 		clock:          clock,
 		activeClients:  make(map[uuid.UUID]sessionClients),
@@ -80,30 +80,30 @@ func NewOverlayBroadcaster(engine domain.ScaleProvider, onFirstClient func(uuid.
 
 // Register adds a client to a session. Non-blocking — just adds to the map.
 // Returns error only if max clients per session is reached.
-func (b *OverlayBroadcaster) Register(sessionUUID uuid.UUID, conn *websocket.Conn) error {
+func (b *Broadcaster) Register(sessionUUID uuid.UUID, conn *websocket.Conn) error {
 	errCh := make(chan error, 1)
 	b.cmdCh <- registerCmd{sessionUUID: sessionUUID, connection: conn, errorChannel: errCh}
 	return <-errCh
 }
 
 // Unregister removes a client from a session.
-func (b *OverlayBroadcaster) Unregister(sessionUUID uuid.UUID, conn *websocket.Conn) {
+func (b *Broadcaster) Unregister(sessionUUID uuid.UUID, conn *websocket.Conn) {
 	b.cmdCh <- unregisterCmd{sessionUUID: sessionUUID, connection: conn}
 }
 
 // GetClientCount returns the number of connected clients for a session.
-func (b *OverlayBroadcaster) GetClientCount(sessionUUID uuid.UUID) int {
+func (b *Broadcaster) GetClientCount(sessionUUID uuid.UUID) int {
 	replyCh := make(chan int, 1)
 	b.cmdCh <- getClientCountCmd{sessionUUID: sessionUUID, replyChannel: replyCh}
 	return <-replyCh
 }
 
 // Stop shuts down the broadcaster, closing all client connections.
-func (b *OverlayBroadcaster) Stop() {
+func (b *Broadcaster) Stop() {
 	b.cmdCh <- stopCmd{}
 }
 
-func (b *OverlayBroadcaster) run() {
+func (b *Broadcaster) run() {
 	ticker := b.clock.NewTicker(tickInterval)
 	defer ticker.Stop()
 
@@ -121,7 +121,7 @@ func (b *OverlayBroadcaster) run() {
 				b.handleStop()
 				return
 			default:
-				log.Printf("OverlayBroadcaster: unknown command type %T", cmd)
+				log.Printf("Broadcaster: unknown command type %T", cmd)
 			}
 		case <-ticker.Chan():
 			b.handleTick()
@@ -129,7 +129,7 @@ func (b *OverlayBroadcaster) run() {
 	}
 }
 
-func (b *OverlayBroadcaster) handleRegister(c registerCmd) {
+func (b *Broadcaster) handleRegister(c registerCmd) {
 	clients, exists := b.activeClients[c.sessionUUID]
 	if !exists {
 		clients = make(sessionClients)
@@ -153,7 +153,7 @@ func (b *OverlayBroadcaster) handleRegister(c registerCmd) {
 	c.errorChannel <- nil
 }
 
-func (b *OverlayBroadcaster) handleUnregister(c unregisterCmd) {
+func (b *Broadcaster) handleUnregister(c unregisterCmd) {
 	clients, exists := b.activeClients[c.sessionUUID]
 	if !exists {
 		return
@@ -178,7 +178,7 @@ func (b *OverlayBroadcaster) handleUnregister(c unregisterCmd) {
 	}
 }
 
-func (b *OverlayBroadcaster) handleTick() {
+func (b *Broadcaster) handleTick() {
 	ctx := context.Background()
 	for sessionUUID, clients := range b.activeClients {
 		value, err := b.engine.GetCurrentValue(ctx, sessionUUID)
@@ -211,7 +211,7 @@ func (b *OverlayBroadcaster) handleTick() {
 	}
 }
 
-func (b *OverlayBroadcaster) handleStop() {
+func (b *Broadcaster) handleStop() {
 	for sessionUUID, clients := range b.activeClients {
 		for _, cw := range clients {
 			cw.stop()

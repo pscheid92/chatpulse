@@ -6,25 +6,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/Its-donkey/kappopher/helix"
 	"github.com/google/uuid"
 	"github.com/pscheid92/chatpulse/internal/domain"
 )
 
-const defaultShardID = "0"
-
-// eventsubAPIClient is the subset of TwitchClient used by EventSubManager.
-type eventsubAPIClient interface {
-	// Conduit operations
-	CreateConduit(ctx context.Context, shardCount int) (*helix.Conduit, error)
-	GetConduits(ctx context.Context) ([]helix.Conduit, error)
-	UpdateConduitShards(ctx context.Context, params *helix.UpdateConduitShardsParams) (*helix.UpdateConduitShardsResponse, error)
-	DeleteConduit(ctx context.Context, conduitID string) error
-	// Subscription operations
-	CreateEventSubSubscription(ctx context.Context, subscriptionType, broadcasterUserID, botUserID, conduitID string) (*helix.EventSubSubscription, error)
-	DeleteEventSubSubscription(ctx context.Context, subscriptionID string) error
-}
+const (
+	defaultShardID  = "0"
+	appTokenTimeout = 15 * time.Second
+)
 
 // subscriptionStore is the subset of database operations needed for subscription management.
 type subscriptionStore interface {
@@ -35,7 +27,7 @@ type subscriptionStore interface {
 
 // EventSubManager manages the lifecycle of a Twitch EventSub conduit and its subscriptions.
 type EventSubManager struct {
-	client      eventsubAPIClient
+	client      *helix.Client
 	db          subscriptionStore
 	conduitID   string
 	callbackURL string
@@ -43,35 +35,52 @@ type EventSubManager struct {
 	botUserID   string
 }
 
-// NewEventSubManager creates a new EventSubManager.
-func NewEventSubManager(client eventsubAPIClient, db subscriptionStore, callbackURL, secret, botUserID string) *EventSubManager {
+// NewEventSubManager creates a new EventSubManager. It validates credentials by
+// requesting an app access token (fail-fast if client ID/secret are invalid).
+func NewEventSubManager(clientID, clientSecret string, db subscriptionStore, callbackURL, secret, botUserID string) (*EventSubManager, error) {
+	auth := helix.NewAuthClient(helix.AuthConfig{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), appTokenTimeout)
+	defer cancel()
+
+	if _, err := auth.GetAppAccessToken(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get app access token: %w", err)
+	}
+
 	return &EventSubManager{
-		client:      client,
+		client:      helix.NewClient(clientID, auth),
 		db:          db,
 		callbackURL: callbackURL,
 		secret:      secret,
 		botUserID:   botUserID,
-	}
+	}, nil
 }
 
 // Setup creates or finds an existing conduit, then configures its shard
 // with a webhook transport pointing at callbackURL.
 func (m *EventSubManager) Setup(ctx context.Context) error {
 	// Check for existing conduit first (idempotent restart)
-	conduits, err := m.client.GetConduits(ctx)
+	resp, err := m.client.GetConduits(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list conduits: %w", err)
 	}
 
 	var conduit *helix.Conduit
-	if len(conduits) > 0 {
-		conduit = &conduits[0]
+	if len(resp.Data) > 0 {
+		conduit = &resp.Data[0]
 		log.Printf("Found existing conduit %s", conduit.ID)
 	} else {
 		conduit, err = m.client.CreateConduit(ctx, 1)
 		if err != nil {
 			return fmt.Errorf("failed to create conduit: %w", err)
 		}
+		if conduit == nil {
+			return fmt.Errorf("no conduit returned from Twitch API")
+		}
+		log.Printf("Created conduit %s with %d shards", conduit.ID, conduit.ShardCount)
 	}
 
 	m.conduitID = conduit.ID
@@ -88,6 +97,9 @@ func (m *EventSubManager) Setup(ctx context.Context) error {
 		conduit, err = m.client.CreateConduit(ctx, 1)
 		if err != nil {
 			return fmt.Errorf("failed to recreate conduit: %w", err)
+		}
+		if conduit == nil {
+			return fmt.Errorf("no conduit returned from Twitch API")
 		}
 		m.conduitID = conduit.ID
 		if err = m.configureShard(ctx, conduit.ID); err != nil {
@@ -121,7 +133,11 @@ func (m *EventSubManager) Cleanup(ctx context.Context) error {
 	if m.conduitID == "" {
 		return nil
 	}
-	return m.client.DeleteConduit(ctx, m.conduitID)
+	if err := m.client.DeleteConduit(ctx, m.conduitID); err != nil {
+		return fmt.Errorf("failed to delete conduit: %w", err)
+	}
+	log.Printf("Deleted conduit %s", m.conduitID)
+	return nil
 }
 
 // Subscribe creates an EventSub subscription for a broadcaster via the conduit.
@@ -138,7 +154,18 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 	}
 
 	// Create subscription via Twitch API
-	sub, err := m.client.CreateEventSubSubscription(ctx, "channel.chat.message", broadcasterUserID, m.botUserID, m.conduitID)
+	sub, err := m.client.CreateEventSubSubscription(ctx, &helix.CreateEventSubSubscriptionParams{
+		Type:    "channel.chat.message",
+		Version: "1",
+		Condition: map[string]string{
+			"broadcaster_user_id": broadcasterUserID,
+			"user_id":             m.botUserID,
+		},
+		Transport: helix.CreateEventSubTransport{
+			Method:    "conduit",
+			ConduitID: m.conduitID,
+		},
+	})
 	if err != nil {
 		// 409 Conflict means the subscription already exists on Twitch (e.g. DB record
 		// was lost but Twitch still has it). Treat as success — the subscription is active.
@@ -147,6 +174,9 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 			return nil
 		}
 		return fmt.Errorf("failed to create EventSub subscription: %w", err)
+	}
+	if sub == nil {
+		return fmt.Errorf("no subscription returned from Twitch API")
 	}
 
 	// Persist to DB

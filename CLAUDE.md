@@ -26,9 +26,18 @@ Environment is loaded automatically from `.env` via `godotenv` (called inside `c
 ## Project Structure
 
 ```
-cmd/server/main.go          Entry point (setupConfig, setupDB, setupTwitchClient, setupRedis, initWebhooks, runGracefulShutdown)
+cmd/server/main.go          Entry point (setupConfig, setupDB, setupRedis, initWebhooks, runGracefulShutdown)
 internal/
-  domain/domain.go          All shared types (User, Config, ConfigSnapshot, EventSubSubscription, SessionUpdate), sentinel errors (ErrUserNotFound, ErrConfigNotFound, ErrSubscriptionNotFound), and cross-cutting interfaces (SessionStateStore, VoteStore, ScaleProvider, UserRepository, ConfigRepository, EventSubRepository, AppService, TwitchService)
+  domain/
+    errors.go               Sentinel errors (ErrUserNotFound, ErrConfigNotFound, ErrSubscriptionNotFound)
+    user.go                 User type, UserRepository interface
+    config.go               Config, ConfigSnapshot types, ConfigRepository interface
+    session.go              SessionRepository interface (11 methods), SessionUpdate type
+    sentiment.go            SentimentStore interface (ApplyVote, GetSentiment, ResetSentiment)
+    debounce.go             Debouncer interface (CheckDebounce)
+    engine.go               Engine interface (GetCurrentValue, ProcessVote, ResetSentiment)
+    twitch.go               EventSubSubscription type, EventSubRepository, TwitchService interfaces
+    app.go                  AppService interface
   config/config.go          Struct-tag-based env loading (go-simpler/env), .env file support (godotenv), validation
   crypto/crypto.go          crypto.Service interface, AesGcmCryptoService (AES-256-GCM), NoopService (plaintext passthrough)
   database/
@@ -41,14 +50,13 @@ internal/
     sqlcgen/                Generated Go code from sqlc
   app/service.go            Application layer: orchestrates session lifecycle, cleanup timer, config saves
   redis/
-    client.go               Redis connection wrapper (NewClient, Ping, Close)
-    session.go              Redis-backed session state (keys, debounce, orphan scanning)
-    scripts.go              Lua scripts for atomic vote + decay operations
-    store.go                SentimentStore: Redis-backed domain.SessionStateStore adapter
+    client.go               Redis connection + Lua library loading (NewClient returns *redis.Client)
+    chatpulse.lua           Lua library for Redis Functions (apply_vote, get_decayed_value)
+    session_repository.go   SessionRepo: implements domain.SessionRepository (session lifecycle, queries, ref counting, orphan scanning)
+    sentiment_store.go      SentimentStore: implements domain.SentimentStore (vote application, decay reads, sentiment reset via Redis Functions)
+    debouncer.go            Debouncer: implements domain.Debouncer (SETNX-based per-user debounce with 1s TTL)
   sentiment/
-    engine.go               Thin read-only wrapper: GetCurrentValue (time-decayed read via store + clock)
-    trigger.go              Pure function: MatchTrigger for vote matching
-    vote.go                 ProcessVote pipeline function (uses domain.VoteStore)
+    engine.go               Engine: GetCurrentValue (time-decayed read) + ProcessVote (vote pipeline) + matchTrigger (unexported)
   server/
     server.go               Echo server setup, lifecycle
     routes.go               Route definitions (incl. webhook endpoint)
@@ -59,11 +67,10 @@ internal/
     handlers_overlay.go     Overlay page + WebSocket upgrade
     oauth_client.go         twitchOAuthClient interface + HTTP implementation
   twitch/
-    client.go               Kappopher-based Twitch API wrapper (conduit + EventSub CRUD)
-    eventsub.go             EventSubManager: conduit lifecycle + DB-backed subscription management
+    eventsub.go             EventSubManager: Twitch API client, conduit lifecycle, DB-backed subscription management
     webhook.go              EventSub webhook handler (HMAC verification, direct-to-store voting)
-  websocket/
-    broadcaster.go          OverlayBroadcaster: actor pattern, pull-based tick loop, per-session client management
+  broadcast/
+    broadcaster.go          Broadcaster: actor pattern, pull-based tick loop, per-session client management
     writer.go               Per-connection write goroutine (clientWriter, buffered send, ping/pong heartbeat)
 web/templates/
   login.html                Login page with Twitch OAuth button
@@ -112,7 +119,7 @@ Database connection returns a bare `*pgxpool.Pool` — no wrapper struct. Reposi
 
 ### Scaling Model
 
-Redis-only architecture. Session state lives in Redis, Lua scripts handle atomic vote/decay operations. Multiple instances share state via Redis; ref counting (`IncrRefCount`/`DecrRefCount`) tracks how many instances serve each session. The `OverlayBroadcaster` pulls current values from Redis on each tick (50ms) rather than subscribing to push notifications.
+Redis-only architecture. Session state lives in Redis, Redis Functions handle atomic vote/decay operations (loaded via `FUNCTION LOAD`, called via `FCALL`/`FCALL_RO`). Multiple instances share state via Redis; ref counting (`IncrRefCount`/`DecrRefCount`) tracks how many instances serve each session. The `Broadcaster` pulls current values from Redis on each tick (50ms) rather than subscribing to push notifications.
 
 ### Bot Account Architecture
 
@@ -127,12 +134,12 @@ A single dedicated bot account reads chat on behalf of all streamers:
 
 Chat messages are received via **Twitch EventSub webhooks** transported through a **Conduit**:
 
-- **EventSub Manager** (`twitch/eventsub.go`): Manages both conduit lifecycle and EventSub subscriptions. On startup (`Setup`), finds an existing conduit via `GetConduits()` or creates a new one, then configures a webhook shard pointing to the app's `WEBHOOK_CALLBACK_URL`. The `conduitID` is internal — no longer passed between separate managers. Creates/deletes EventSub subscriptions targeting the conduit. Stores `botUserID` and passes it to `CreateEventSubSubscription`. Handles Twitch 409 Conflict via `helix.APIError` type assertion (subscription already exists) as idempotent success. Subscriptions are persisted in PostgreSQL (`eventsub_subscriptions` table) for idempotency and crash recovery. On subscribe failure after Twitch API success, attempts cleanup. On shutdown (`Cleanup`), deletes the conduit.
-- **Webhook Handler** (`twitch/webhook.go`): Receives Twitch POST notifications with Kappopher's built-in HMAC-SHA256 signature verification. Processes votes via `sentiment.ProcessVote()` through the `VoteStore` interface, bypassing the Engine actor for minimal latency. Flow: broadcaster lookup → trigger match → debounce check → atomic vote application.
+- **EventSub Manager** (`twitch/eventsub.go`): Owns the Kappopher `*helix.Client` directly (no separate wrapper). `NewEventSubManager(clientID, clientSecret, ...)` validates credentials via `GetAppAccessToken` (fail-fast) and creates the Helix client internally. Manages conduit lifecycle and EventSub subscriptions. On startup (`Setup`), finds an existing conduit via `GetConduits()` or creates a new one, then configures a webhook shard pointing to the app's `WEBHOOK_CALLBACK_URL`. Creates/deletes EventSub subscriptions targeting the conduit. Handles Twitch 409 Conflict via `helix.APIError` type assertion (subscription already exists) as idempotent success. Subscriptions are persisted in PostgreSQL (`eventsub_subscriptions` table) for idempotency and crash recovery. On subscribe failure after Twitch API success, attempts cleanup. On shutdown (`Cleanup`), deletes the conduit.
+- **Webhook Handler** (`twitch/webhook.go`): Receives Twitch POST notifications with Kappopher's built-in HMAC-SHA256 signature verification. Processes votes via `engine.ProcessVote()` through the `domain.Engine` interface. Flow: broadcaster lookup → trigger match → debounce check → atomic vote application.
 
 ### Concurrency Model: Actor Pattern
 
-The `OverlayBroadcaster` (`websocket/broadcaster.go`) uses the **actor pattern** — a single goroutine owns all mutable state and receives typed commands via a buffered channel. No mutexes on actor-owned state.
+The `Broadcaster` (`broadcast/broadcaster.go`) uses the **actor pattern** — a single goroutine owns all mutable state and receives typed commands via a buffered channel. No mutexes on actor-owned state.
 
 The actor follows this shape:
 - Buffered command channel for typed commands (fire-and-forget or request/reply via embedded reply channel)
@@ -140,9 +147,9 @@ The actor follows this shape:
 - `Stop()` method for clean shutdown
 - Command types use an embedded `baseBroadcasterCmd` struct to satisfy the marker interface
 
-### OverlayBroadcaster (`websocket/broadcaster.go`)
+### Broadcaster (`broadcast/broadcaster.go`)
 
-- Actor goroutine owns the `activeClients` map (session UUID → set of `*clientWriter`). `NewOverlayBroadcaster` accepts a `domain.ScaleProvider` (the Engine), an `onSessionEmpty` callback, and a `clockwork.Clock`.
+- Actor goroutine owns the `activeClients` map (session UUID → set of `*clientWriter`). `NewBroadcaster` accepts a `domain.Engine`, an `onFirstClient` callback, an `onSessionEmpty` callback, and a `clockwork.Clock`.
 - **Pull-based broadcasting**: A 50ms ticker calls `engine.GetCurrentValue()` for each active session and broadcasts `domain.SessionUpdate{Value, Status: "active"}` to all connected clients. JSON marshaling happens once per session before fanning out.
 - **Per-connection write goroutines** (`clientWriter` in `writer.go`): each WebSocket connection gets its own goroutine with a buffered send channel (cap 16), 5-second write deadlines, and periodic ping/pong heartbeat (30s ping interval, 60s pong deadline). Slow clients are disconnected (non-blocking send) instead of blocking all broadcasts.
 - **Per-session client cap**: `maxClientsPerSession = 50` prevents resource exhaustion.
@@ -150,47 +157,55 @@ The actor follows this shape:
 
 ### Sentiment Engine (`sentiment/engine.go`)
 
-- Thin read-only wrapper — no actor, no goroutines. All mutable state lives in Redis.
-- `GetCurrentValue(ctx, sessionUUID)` reads the session config, then calls `store.GetDecayedValue()` with the current clock time. The Lua script in Redis computes the time-decayed value atomically.
-- Implements `domain.ScaleProvider`, consumed by the `OverlayBroadcaster`'s tick loop.
+- No actor, no goroutines. All mutable state lives in Redis.
+- Depends on three focused interfaces: `domain.SessionRepository` (session queries), `domain.SentimentStore` (vote/decay operations), and `domain.Debouncer` (per-user rate limiting).
+- `GetCurrentValue(ctx, sessionUUID)` reads the session config, then calls `sentimentStore.GetSentiment()` with the current clock time. The Redis Function computes the time-decayed value atomically.
+- `ProcessVote(ctx, broadcasterUserID, chatterUserID, messageText)` encapsulates the full vote pipeline: broadcaster lookup → trigger match → debounce check → atomic vote application.
+- `ResetSentiment(ctx, sessionUUID)` delegates to `sentimentStore.ResetSentiment()`.
+- Implements `domain.Engine`, consumed by both the `Broadcaster`'s tick loop (reads), the webhook handler (writes), and the app layer (reset).
 
-### SessionStateStore Interface (`domain/domain.go`)
+### SessionRepository Interface (`domain/session.go`)
 
-Abstracts session state (16 methods including `IncrRefCount`/`DecrRefCount` for multi-instance ref counting). Single implementation:
+Abstracts session lifecycle, queries, ref counting, and orphan cleanup (11 methods including `IncrRefCount`/`DecrRefCount` for multi-instance ref counting). Single implementation:
 
-- **`SentimentStore`** (`redis/store.go`): Wraps `redis.SessionStore` and `redis.ScriptRunner`. Accepts `clockwork.Clock` for consistent time handling. Debounce via `SETNX` with 1s TTL (auto-expires, no pruning needed). Vote/decay via Lua scripts (atomic operations). Lives in the `redis` package alongside the infrastructure it wraps, keeping `sentiment/` free of infrastructure imports.
+- **`SessionRepo`** (`redis/session_repository.go`): Directly implements `domain.SessionRepository`. Takes `*redis.Client` + `clockwork.Clock`. Mirrors the `database.UserRepo` pattern — single type, single constructor, implements domain interface directly.
+
+### SentimentStore Interface (`domain/sentiment.go`)
+
+Abstracts atomic vote/decay operations (3 methods: `ApplyVote`, `GetSentiment`, `ResetSentiment`). Single implementation:
+
+- **`SentimentStore`** (`redis/sentiment_store.go`): Implements `domain.SentimentStore`. Takes `*redis.Client`; calls Redis Functions (`FCALL`/`FCALL_RO`) for atomic vote application and time-decayed reads. Lua library loaded by `NewClient` at connection time.
+
+### Debouncer Interface (`domain/debounce.go`)
+
+Abstracts per-user vote rate limiting (1 method: `CheckDebounce`). Single implementation:
+
+- **`Debouncer`** (`redis/debouncer.go`): Implements `domain.Debouncer`. Uses Redis `SETNX` with 1s TTL (auto-expires, no pruning needed).
 
 ### Vote Processing Pipeline
 
-Votes flow through the `sentiment.ProcessVote()` function, which encapsulates the full pipeline via the `domain.VoteStore` interface (4 methods). The webhook handler calls this function directly for minimal latency. The bot account's `user_id` in the EventSub subscription means Twitch sends all chat messages from channels the bot has joined:
+Votes flow through `engine.ProcessVote()`, which orchestrates three focused interfaces (`SessionRepository` for queries, `SentimentStore` for vote application, `Debouncer` for rate limiting). The webhook handler calls this method through the `domain.Engine` interface. The bot account's `user_id` in the EventSub subscription means Twitch sends all chat messages from channels the bot has joined:
 
 1. Twitch sends `channel.chat.message` webhook → Kappopher verifies HMAC
-2. `store.GetSessionByBroadcaster(broadcasterUserID)` → session UUID
-3. `store.GetSessionConfig(sessionUUID)` → config
-4. `sentiment.MatchTrigger(messageText, config)` → delta (+10, -10, or 0)
-5. `store.CheckDebounce(sessionUUID, chatterUserID)` → allowed (SETNX in Redis)
-6. `store.ApplyVote(sessionUUID, delta)` → new value (Lua script: clamp + PUBLISH)
+2. `sessions.GetSessionByBroadcaster(broadcasterUserID)` → session UUID
+3. `sessions.GetSessionConfig(sessionUUID)` → config
+4. `sentiment.matchTrigger(messageText, config)` → delta (+10, -10, or 0)
+5. `debouncer.CheckDebounce(sessionUUID, chatterUserID)` → allowed (SETNX in Redis)
+6. `sentimentStore.ApplyVote(sessionUUID, delta)` → new value (Redis Function: decay + clamp)
 
-Step 6's Lua script atomically applies the time-decayed vote in Redis. The `OverlayBroadcaster`'s next tick (≤50ms later) reads the updated value via `Engine.GetCurrentValue` and broadcasts to local WebSocket clients.
+Step 6's Redis Function atomically applies the time-decayed vote in Redis. The `Broadcaster`'s next tick (≤50ms later) reads the updated value via `Engine.GetCurrentValue` and broadcasts to local WebSocket clients.
 
 ### Redis Architecture (`internal/redis/`)
 
 **Key schema**:
-- `session:{overlayUUID}` — hash: `value`, `broadcaster_user_id`, `config_json`, `last_disconnect`, `last_decay`
+- `session:{overlayUUID}` — hash: `value`, `broadcaster_user_id`, `config_json`, `last_disconnect`, `last_update`
+- `ref_count:{overlayUUID}` — integer ref count (how many instances serve this session)
 - `broadcaster:{twitchUserID}` — string → overlayUUID
 - `debounce:{overlayUUID}:{twitchUserID}` — key with 1s TTL (auto-expires)
 
-**Lua scripts** (run atomically server-side in Redis):
-- `applyVoteScript`: `HGET value + last_decay → apply time-decay → clamp(decayed + delta, -100, 100) → HSET value + last_decay`
-- `getDecayedValueScript`: `HGET value + last_decay → compute time-decayed value → return` (read-only, used by Engine's `GetCurrentValue`)
-
-### Twitch Client (`twitch/client.go`)
-
-Wraps Kappopher client for Twitch API operations. `NewTwitchClient(clientID, clientSecret)` creates the client.
-- **App-scoped client**: Uses client credentials flow for conduit management and EventSub CRUD
-- **Conduit operations**: `CreateConduit`, `GetConduits`, `UpdateConduitShards`, `DeleteConduit`
-- **EventSub operations**: `CreateEventSubSubscription` (conduit transport, accepts `botUserID` param), `DeleteEventSubSubscription`
-- **`TokenRefreshError`**: Error type for token refresh failures with `Revoked` flag
+**Redis Functions** (`chatpulse` library, loaded via `FUNCTION LOAD`, called via `FCALL`/`FCALL_RO`):
+- `apply_vote`: `HGET value + last_update → apply time-decay → clamp(decayed + delta, -100, 100) → HSET value + last_update` (read-write, `FCALL`)
+- `get_decayed_value`: `HGET value + last_update → compute time-decayed value → return` (read-only with `no-writes` flag, `FCALL_RO`)
 
 ### HTTP Server (`internal/server/`)
 
@@ -207,23 +222,28 @@ Wraps Kappopher client for Twitch API operations. `NewTwitchClient(clientID, cli
 - `EnsureSessionActive`: Uses `singleflight` to collapse concurrent activations. Checks if session exists in Redis; if not, loads user + config from DB, activates in store, and subscribes via Twitch EventSub.
 - `OnSessionEmpty`: Decrements Redis ref count; marks session as disconnected when ref count reaches 0 (no instances serving it).
 - **Cleanup Timer**: 30s ticker calls `CleanupOrphans`, which lists sessions disconnected for >30s, deletes them from Redis, and fires Twitch unsubscribe in a background goroutine.
-- Accepts `domain.UserRepository`, `domain.ConfigRepository`, `domain.SessionStateStore`, and `domain.TwitchService` (nil-safe for the Twitch dependency when webhooks are not configured).
+- Accepts `domain.UserRepository`, `domain.ConfigRepository`, `domain.SessionRepository`, `domain.Engine`, and `domain.TwitchService` (nil-safe for the Twitch dependency when webhooks are not configured). `ResetSentiment` delegates to the `Engine`, which in turn delegates to `SentimentStore`.
 - Also exposes 4 pass-through read methods (`GetUserByID`, `GetUserByOverlayUUID`, `GetConfig`, `UpsertUser`) so handlers never access repositories directly.
 
-### Domain Package (`domain/domain.go`)
+### Domain Package (`internal/domain/`)
 
-Single file containing all shared types and cross-cutting interfaces:
-- **Model types**: `User`, `Config`, `ConfigSnapshot`, `EventSubSubscription`, `SessionUpdate`
-- **Sentinel errors**: `ErrUserNotFound`, `ErrConfigNotFound`, `ErrSubscriptionNotFound` — returned by repository `Get*` methods when no row matches and by `Update*` methods when 0 rows are affected. Repositories translate `pgx.ErrNoRows` (for `:one` queries) and zero `RowsAffected()` (for `:execresult` queries) into these domain errors so consumers never import `pgx` directly.
-- **Repository interfaces**: `UserRepository` (5 methods), `ConfigRepository` (2 methods), `EventSubRepository` (4 methods)
-- **Other interfaces**: `SessionStateStore` (16 methods), `VoteStore` (4 methods), `ScaleProvider` (1 method), `AppService` (10 methods), `TwitchService` (2 methods)
+Concept-oriented files containing all shared types and cross-cutting interfaces:
+- **`errors.go`**: Sentinel errors `ErrUserNotFound`, `ErrConfigNotFound`, `ErrSubscriptionNotFound` — returned by repository `Get*` methods when no row matches and by `Update*` methods when 0 rows are affected. Repositories translate `pgx.ErrNoRows` (for `:one` queries) and zero `RowsAffected()` (for `:execresult` queries) into these domain errors so consumers never import `pgx` directly.
+- **`user.go`**: `User` type, `UserRepository` interface (5 methods)
+- **`config.go`**: `Config`, `ConfigSnapshot` types, `ConfigRepository` interface (2 methods)
+- **`session.go`**: `SessionRepository` interface (11 methods), `SessionUpdate` type
+- **`sentiment.go`**: `SentimentStore` interface (3 methods: `ApplyVote`, `GetSentiment`, `ResetSentiment`)
+- **`debounce.go`**: `Debouncer` interface (1 method: `CheckDebounce`)
+- **`engine.go`**: `Engine` interface (3 methods: `GetCurrentValue`, `ProcessVote`, `ResetSentiment`)
+- **`twitch.go`**: `EventSubSubscription` type, `EventSubRepository` (4 methods), `TwitchService` (2 methods)
+- **`app.go`**: `AppService` interface (10 methods)
 - Imports only stdlib + `github.com/google/uuid` — no internal dependencies, preventing circular imports.
 
 ### Other Architecture Notes
 
-- **Trigger Matching**: `sentiment.MatchTrigger()` — pure function, case-insensitive substring match. "For" trigger takes priority when both match. Returns +`voteDelta`, -`voteDelta`, or 0 (`voteDelta` = 10.0).
+- **Trigger Matching**: `matchTrigger()` — unexported pure function in `engine.go`, case-insensitive exact match (trimmed). "For" trigger takes priority when both match. Returns +`voteDelta`, -`voteDelta`, or 0 (`voteDelta` = 10.0).
 - **Vote Clamping**: Values clamped to [-100, 100].
-- **Debounce**: 1 second per user per session. Redis `SETNX` with 1s TTL (auto-expires, no pruning needed).
+- **Debounce**: 1 second per user per session. `domain.Debouncer` interface, implemented by `redis.Debouncer` using `SETNX` with 1s TTL (auto-expires, no pruning needed).
 - **Overlay UUID Separation**: The overlay URL uses a separate `overlay_uuid` column (not the user's internal `id`). Users can rotate their overlay UUID via `POST /api/rotate-overlay-uuid` to invalidate old URLs.
 - **Token Encryption at Rest**: AES-256-GCM encryption for access/refresh tokens in PostgreSQL. Handled by `crypto.Service` interface — `AesGcmCryptoService` (production, takes 64-char hex key) or `NoopService` (dev/test, plaintext passthrough). Injected into `UserRepo` via constructor. Nonce prepended to ciphertext, hex-encoded for TEXT column storage.
 - **UpsertUser Transaction**: User creation and default config insertion are wrapped in a single database transaction for atomicity. Lives in `UserRepo.Upsert()`. Uses `toDomainUser()` helper for consistent row mapping + token decryption.
@@ -232,12 +252,13 @@ Single file containing all shared types and cross-cutting interfaces:
 
 ## Testability Interfaces
 
-The codebase uses consumer-side interfaces for testability. Cross-cutting interfaces live in `domain/domain.go`; package-private interfaces stay with their single consumer.
+The codebase uses consumer-side interfaces for testability. Cross-cutting interfaces live in `domain/` (split across concept-oriented files); package-private interfaces stay with their single consumer.
 
-**Domain interfaces** (`domain/domain.go`):
-- **`domain.SessionStateStore`** — abstracts session state (16 methods). Implemented by `redis.SentimentStore` (with `clockwork.Clock` injection).
-- **`domain.VoteStore`** — narrow 4-method interface (ISP-clean) for the vote processing pipeline: `GetSessionByBroadcaster`, `GetSessionConfig`, `CheckDebounce`, `ApplyVote`. `SessionStateStore` implementations satisfy it.
-- **`domain.ScaleProvider`** — `GetCurrentValue(ctx, uuid) (float64, error)`. Implemented by `sentiment.Engine`. Consumed by `websocket.OverlayBroadcaster`.
+**Domain interfaces** (in `domain/` package):
+- **`domain.SessionRepository`** (`session.go`) — abstracts session lifecycle, queries, ref counting, orphan cleanup (11 methods). Implemented by `redis.SessionRepo` (with `clockwork.Clock` injection).
+- **`domain.SentimentStore`** (`sentiment.go`) — abstracts atomic vote/decay operations (3 methods: `ApplyVote`, `GetSentiment`, `ResetSentiment`). Implemented by `redis.SentimentStore`.
+- **`domain.Debouncer`** (`debounce.go`) — abstracts per-user vote rate limiting (1 method: `CheckDebounce`). Implemented by `redis.Debouncer`.
+- **`domain.Engine`** (`engine.go`) — 3-method interface: `GetCurrentValue`, `ProcessVote`, `ResetSentiment`. Implemented by `sentiment.Engine`. Consumed by `broadcast.Broadcaster` (reads), `twitch.WebhookHandler` (writes), and `app.Service` (reset).
 - **`domain.UserRepository`** — 5-method interface (`GetByID`, `GetByOverlayUUID`, `Upsert`, `UpdateTokens`, `RotateOverlayUUID`). Implemented by `database.UserRepo`.
 - **`domain.ConfigRepository`** — 2-method interface (`GetByUserID`, `Update`). Implemented by `database.ConfigRepo`.
 - **`domain.EventSubRepository`** — 4-method interface (`Create`, `GetByUserID`, `Delete`, `List`). Implemented by `database.EventSubRepo`.
@@ -247,17 +268,16 @@ The codebase uses consumer-side interfaces for testability. Cross-cutting interf
 **Package-private interfaces** (single consumer, stay local):
 - **`server.twitchOAuthClient`** — `ExchangeCodeForToken(ctx, code) (*twitchTokenResult, error)`. Production implementation wraps Twitch HTTP APIs; tests use `mockOAuthClient`.
 - **`server.webhookHandler`** — `HandleEventSub(c echo.Context) error`. Nil when webhooks not configured.
-- **`twitch.eventsubAPIClient`** — subset of `TwitchClient` used by `EventSubManager` (6 methods: `CreateConduit`, `GetConduits`, `UpdateConduitShards`, `DeleteConduit`, `CreateEventSubSubscription`, `DeleteEventSubSubscription`).
 - **`twitch.subscriptionStore`** — 3-method interface (`Create`, `GetByUserID`, `Delete`) satisfied by `database.EventSubRepo`; used by `EventSubManager`.
-- **`clockwork.Clock`** — injected into `sentiment.Engine`, `redis.SentimentStore`, `app.Service`, and `websocket.OverlayBroadcaster` (threaded to `clientWriter` for write deadlines, ping tickers, and pong read deadlines) for deterministic time control in tests.
+- **`clockwork.Clock`** — injected into `sentiment.Engine`, `redis.SessionRepo`, `app.Service`, and `broadcast.Broadcaster` (threaded to `clientWriter` for write deadlines, ping tickers, and pong read deadlines) for deterministic time control in tests.
 
 ### Testing with the Actor Pattern
 
-The `OverlayBroadcaster` uses an actor pattern. Tests use synchronous queries (e.g., `GetClientCount()`) as **barrier calls** — the reply won't come until all prior commands in the channel are processed. For `CleanupOrphans` (in `app.Service`), Twitch unsubscribe calls run in a background goroutine — tests use a channel with timeout to wait for completion.
+The `Broadcaster` uses an actor pattern. Tests use synchronous queries (e.g., `GetClientCount()`) as **barrier calls** — the reply won't come until all prior commands in the channel are processed. For `CleanupOrphans` (in `app.Service`), Twitch unsubscribe calls run in a background goroutine — tests use a channel with timeout to wait for completion.
 
 ## Testing
 
-130 tests across 8 packages. Run with `make test` or `go test ./...`.
+141 tests across 8 packages. Run with `make test` or `go test ./...`.
 
 ### Test Types
 
@@ -284,21 +304,20 @@ The `OverlayBroadcaster` uses an actor pattern. Tests use synchronous queries (e
 - `internal/database/user_repository_test.go` — user CRUD, token encryption via crypto.Service, overlay UUID rotation, not-found error paths, encryption key mismatch (testcontainers)
 - `internal/database/config_repository_test.go` — config read/update, not-found error path (testcontainers)
 - `internal/database/eventsub_repository_test.go` — EventSub subscription CRUD, upsert, list; includes `createTestUser` helper (testcontainers)
-- `internal/redis/redis_test.go` — test setup: testcontainers Redis, `setupTestClient` helper
-- `internal/redis/session_test.go` — activate, resume, delete, broadcaster mapping, debounce, orphan listing (18 tests)
-- `internal/redis/pubsub_test.go` — publish/subscribe roundtrip, multi-message, session isolation, close (4 tests)
-- `internal/redis/scripts_test.go` — Lua script vote application, clamping, decay with timestamp guard (3 tests)
-- `internal/sentiment/engine_test.go` — GetCurrentValue: decayed value, no session, clock time, decay math (4 tests)
-- `internal/sentiment/trigger_test.go` — MatchTrigger: for/against, case-insensitive, priority, nil config, empty message (7 tests)
+- `internal/redis/integration_test.go` — test setup: testcontainers Redis, `setupTestClient` helper
+- `internal/redis/client_integration_test.go` — Redis Function loading test (testcontainers)
+- `internal/redis/session_repository_integration_test.go` — session CRUD, broadcaster mapping, ref counting, orphan listing (testcontainers)
+- `internal/redis/sentiment_store_integration_test.go` — vote application, clamping, decay, sentiment read (testcontainers)
+- `internal/redis/debouncer_integration_test.go` — debounce TTL behavior (testcontainers)
+- `internal/sentiment/engine_test.go` — GetCurrentValue (4 tests) + ProcessVote (8 tests) + matchTrigger (9 tests): three focused mocks (`mockSessionRepo`, `mockSentimentStore`, `mockDebouncer`)
 - `internal/app/service_test.go` — EnsureSessionActive, OnSessionEmpty, IncrRefCount, ResetSentiment, SaveConfig, RotateOverlayUUID, CleanupOrphans, Stop (14 tests)
-- `internal/websocket/broadcaster_test.go` — register, tick broadcast, multiple clients, session empty callback, client cap, value updates (7 tests)
+- `internal/broadcast/broadcaster_test.go` — register, tick broadcast, multiple clients, session empty callback, client cap, value updates (7 tests)
 - `internal/server/handlers_test.go` — shared test infrastructure: mocks (`mockAppService`, `mockOAuthClient`), helpers (`newTestServer`, `setSessionUserID`, `withOAuthClient`)
 - `internal/server/handlers_unit_test.go` — input validation tests (validateConfig: 100% coverage)
 - `internal/server/handlers_auth_test.go` — requireAuth middleware, login page, logout, OAuth callback (success, missing code, invalid state, exchange error, DB error) (10 tests)
 - `internal/server/handlers_dashboard_test.go` — handleDashboard, handleSaveConfig (5 tests)
 - `internal/server/handlers_api_test.go` — handleResetSentiment, handleRotateOverlayUUID (5 tests)
 - `internal/server/handlers_overlay_test.go` — handleOverlay (3 tests)
-- `internal/twitch/client_test.go` — TokenRefreshError formatting
 - `internal/twitch/webhook_test.go` — webhook handler tests with HMAC-signed requests: trigger matching, debounce, invalid signature, non-chat events (5 tests)
 
 ### Test Dependencies
@@ -319,7 +338,7 @@ The `OverlayBroadcaster` uses an actor pattern. Tests use synchronous queries (e
 
 **Setup**: `TestMain()` starts a Redis 7 container once, reused across all tests (~1-2s overhead)
 **Cleanup**: Each test calls `FlushAll` before running
-**Tests cover**: Session CRUD, broadcaster mapping, debounce TTL, orphan scanning, Pub/Sub roundtrip, Lua script atomicity (vote clamping, decay timestamp guard)
+**Tests cover**: Session CRUD, broadcaster mapping, ref counting, orphan scanning (SessionRepo); vote application, clamping, decay, sentiment reads (SentimentStore); debounce TTL (Debouncer); Redis Function loading (client)
 
 ### Server Validation Tests (unit)
 
@@ -361,16 +380,23 @@ Test deps: stretchr/testify, jonboulle/clockwork, testcontainers-go, testcontain
 - `internal/twitch/eventsub.go` — 660-line EventSub WebSocket actor with 5-state FSM (replaced by webhooks + conduits)
 - `internal/twitch/token.go` — Token refresh middleware (replaced by Kappopher's built-in token management)
 - `internal/twitch/token_test.go` — Tests for deleted token code
-- `internal/twitch/helix.go` → `internal/twitch/client.go` — Renamed `HelixClient` to `TwitchClient`, deleted unused `GetConduitShards`, `GetUsers`, `AppAuthClient` methods
-- `internal/twitch/helix_test.go` → `internal/twitch/client_test.go` — Renamed alongside client
-- `internal/sentiment/store_redis.go` → `internal/redis/store.go` — Moved Redis `SessionStateStore` adapter out of domain package; renamed `RedisStore` to `SentimentStore` to avoid `redis.RedisStore` stutter
-- `internal/models/user.go` — Model types (`User`, `Config`, `ConfigSnapshot`, `EventSubSubscription`) moved to `internal/domain/domain.go`; `models` package deleted
-- `internal/sentiment/store.go` — `SessionStateStore`, `VoteStore`, `SessionUpdate` moved to `internal/domain/domain.go`
+- `internal/twitch/helix.go` → `internal/twitch/client.go` → merged into `internal/twitch/eventsub.go` — Helix API wrapper merged into `EventSubManager`; `eventsubAPIClient` interface removed
+- `internal/sentiment/store_redis.go` → `internal/redis/store.go` — Moved Redis store adapter out of domain package; renamed `RedisStore` to `SentimentStore` (later consolidated into `SessionStore`)
+- `internal/models/user.go` — Model types (`User`, `Config`, `ConfigSnapshot`, `EventSubSubscription`) moved to `internal/domain/`; `models` package deleted
+- `internal/sentiment/store.go` — `SessionStore`, `VoteStore`, `SessionUpdate` moved to `internal/domain/`
+- `internal/sentiment/vote.go` — `ProcessVote` moved to `Engine.ProcessVote` method in `engine.go`; `domain.VoteStore` interface removed (Engine uses `SessionStore` directly)
+- `internal/sentiment/trigger.go` — `MatchTrigger` moved into `engine.go` as unexported `matchTrigger`; tests merged into `engine_test.go`
+- `internal/domain/domain.go` — Split into concept-oriented files: `errors.go`, `user.go`, `config.go`, `session.go`, `engine.go`, `twitch.go`, `app.go`. `SessionStateStore` renamed to `SessionStore`, `ScaleProvider` renamed to `Engine`, dead `GetSessionValue` method removed.
 - `internal/sentiment/store_memory.go` — In-memory store removed (Redis-only architecture)
-- `internal/websocket/hub.go` → `internal/websocket/broadcaster.go` — Replaced push-based Hub with pull-based `OverlayBroadcaster`
+- `internal/websocket/hub.go` → `internal/broadcast/broadcaster.go` — Replaced push-based Hub with pull-based `Broadcaster` (package renamed from `websocket` to `broadcast`, type renamed from `OverlayBroadcaster` to `Broadcaster`)
 - `internal/websocket/commands.go` — Hub command types removed (broadcaster defines its own internally)
 - `internal/redis/pubsub.go` — Pub/Sub removed (broadcaster pulls values instead of subscribing)
 - `internal/twitch/conduit.go` + `internal/twitch/subscription.go` → `internal/twitch/eventsub.go` — Merged `ConduitManager` and `SubscriptionManager` into single `EventSubManager`; `conduitID` internalized
 - `internal/database/postgres.go` — Removed `DB` wrapper struct (was `*pgxpool.Pool` + `cipher.AEAD`); `Connect()` now returns bare `*pgxpool.Pool`; inline migrations replaced by tern; `HealthCheck()` removed
 - Token encrypt/decrypt methods extracted from `UserRepo` → new `internal/crypto/crypto.go` (`crypto.Service` interface)
 - `sqlc/` (repo root) → `internal/database/sqlc/` — Moved sqlc schemas + queries under database package for `//go:embed` compatibility; `schema.sql` renamed to `001_initial.sql` (tern migration format, dual-use with sqlc)
+- `internal/redis/scripts.go` → `internal/redis/functions.go` → merged into `internal/redis/store.go` — Replaced `ScriptRunner` + `EVAL`/`EVALSHA` with `FunctionRunner` + `FCALL`/`FCALL_RO`; Lua code extracted to embedded `chatpulse.lua` library; then consolidated into `SessionStore`
+- `internal/redis/scripts_test.go` → `internal/redis/functions_test.go` → merged into `internal/redis/store_test.go`
+- `internal/redis/session.go` + `internal/redis/functions.go` + `internal/redis/store.go` — Consolidated three types (`SessionStore` + `FunctionRunner` + `SentimentStore`) into single `SessionRepo` in `store.go` that directly implements `domain.SessionRepository`; `session_test.go` + `functions_test.go` merged into `store_integration_test.go`. Later split into `session_repository.go` (SessionRepo), `sentiment_store.go` (SentimentStore), and `debouncer.go` (Debouncer).
+- `domain.SessionStore` → `domain.SessionRepository` — Renamed to match `UserRepository`/`ConfigRepository` convention; implementation renamed `SentimentStore` → `SessionRepo`
+- `domain.SessionRepository` (15 methods) → split into `SessionRepository` (11), `SentimentStore` (3), `Debouncer` (1) — Extracted `ApplyVote`/`GetSentiment`/`ResetSentiment` into `domain.SentimentStore` (`redis.SentimentStore`), `CheckDebounce` into `domain.Debouncer` (`redis.Debouncer`)

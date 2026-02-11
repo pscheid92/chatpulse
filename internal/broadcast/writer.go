@@ -1,4 +1,4 @@
-package websocket
+package broadcast
 
 import (
 	"sync"

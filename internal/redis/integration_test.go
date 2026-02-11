@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
@@ -26,26 +27,28 @@ func TestMain(m *testing.M) {
 	}
 	testRedisURL = "redis://" + endpoint
 
-	code := m.Run()
-
-	_ = container.Terminate(ctx)
-	os.Exit(code)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to terminate redis container: %v\n", err)
+		}
+	}()
+	os.Exit(m.Run())
 }
 
-func setupTestClient(t *testing.T) *Client {
+func setupTestClient(t *testing.T) *goredis.Client {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
 
-	client, err := NewClient(testRedisURL)
+	ctx := context.Background()
+	client, err := NewClient(ctx, testRedisURL)
 	if err != nil {
 		t.Fatalf("failed to create redis client: %v", err)
 	}
 
 	// Flush all keys before each test
-	ctx := context.Background()
-	if err := client.rdb.FlushAll(ctx).Err(); err != nil {
+	if err := client.FlushAll(ctx).Err(); err != nil {
 		t.Fatalf("failed to flush redis: %v", err)
 	}
 

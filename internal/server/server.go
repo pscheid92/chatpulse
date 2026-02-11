@@ -10,9 +10,9 @@ import (
 	"github.com/gorilla/sessions"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/pscheid92/chatpulse/internal/broadcast"
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/domain"
-	"github.com/pscheid92/chatpulse/internal/websocket"
 )
 
 const sessionMaxAgeDays = 7
@@ -26,7 +26,7 @@ type Server struct {
 	echo              *echo.Echo
 	config            *config.Config
 	app               domain.AppService
-	broadcaster       *websocket.OverlayBroadcaster
+	broadcaster       *broadcast.Broadcaster
 	webhook           webhookHandler
 	oauthClient       twitchOAuthClient
 	sessionStore      *sessions.CookieStore
@@ -35,7 +35,7 @@ type Server struct {
 	overlayTemplate   *template.Template
 }
 
-func NewServer(cfg *config.Config, app domain.AppService, broadcaster *websocket.OverlayBroadcaster, webhook webhookHandler) (*Server, error) {
+func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster, webhook webhookHandler) (*Server, error) {
 	// Parse templates once at startup
 	loginTmpl, err := template.ParseFiles("web/templates/login.html")
 	if err != nil {

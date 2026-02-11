@@ -22,7 +22,8 @@ const (
 type Service struct {
 	users           domain.UserRepository
 	configs         domain.ConfigRepository
-	store           domain.SessionStateStore
+	store           domain.SessionRepository
+	engine          domain.Engine
 	twitch          domain.TwitchService
 	activationGroup singleflight.Group
 	clock           clockwork.Clock
@@ -33,11 +34,12 @@ type Service struct {
 
 // NewService creates the application layer service.
 // twitch may be nil if webhooks are not configured.
-func NewService(users domain.UserRepository, configs domain.ConfigRepository, store domain.SessionStateStore, twitch domain.TwitchService, clock clockwork.Clock) *Service {
+func NewService(users domain.UserRepository, configs domain.ConfigRepository, store domain.SessionRepository, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock) *Service {
 	s := &Service{
 		users:         users,
 		configs:       configs,
 		store:         store,
+		engine:        engine,
 		twitch:        twitch,
 		clock:         clock,
 		cleanupStopCh: make(chan struct{}),
@@ -144,7 +146,7 @@ func (s *Service) IncrRefCount(ctx context.Context, sessionUUID uuid.UUID) error
 
 // ResetSentiment resets the sentiment value for a session to zero.
 func (s *Service) ResetSentiment(ctx context.Context, overlayUUID uuid.UUID) error {
-	return s.store.ResetValue(ctx, overlayUUID)
+	return s.engine.ResetSentiment(ctx, overlayUUID)
 }
 
 // SaveConfig validates and saves the config, updating the live session if active.

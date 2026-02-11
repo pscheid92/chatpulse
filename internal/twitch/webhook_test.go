@@ -16,7 +16,9 @@ import (
 
 	"github.com/Its-donkey/kappopher/helix"
 	"github.com/google/uuid"
+	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/sentiment"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -25,12 +27,11 @@ const (
 	testChatterID     = "chatter-1"
 )
 
-// testVoteStore is a minimal in-memory VoteStore for webhook tests.
-type testVoteStore struct {
+// testSessionRepo is a minimal in-memory SessionStore for webhook tests.
+type testSessionRepo struct {
 	mu                   sync.Mutex
 	sessions             map[uuid.UUID]*testSession
 	broadcasterToSession map[string]uuid.UUID
-	debounced            map[string]bool // "uuid:userID" -> true means already debounced
 }
 
 type testSession struct {
@@ -38,29 +39,28 @@ type testSession struct {
 	Config domain.ConfigSnapshot
 }
 
-func newTestVoteStore() *testVoteStore {
-	return &testVoteStore{
+func newTestSessionStore() *testSessionRepo {
+	return &testSessionRepo{
 		sessions:             make(map[uuid.UUID]*testSession),
 		broadcasterToSession: make(map[string]uuid.UUID),
-		debounced:            make(map[string]bool),
 	}
 }
 
-func (s *testVoteStore) addSession(sessionUUID uuid.UUID, broadcasterID string, config domain.ConfigSnapshot) {
+func (s *testSessionRepo) addSession(sessionUUID uuid.UUID, broadcasterID string, config domain.ConfigSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sessionUUID] = &testSession{Value: 0, Config: config}
 	s.broadcasterToSession[broadcasterID] = sessionUUID
 }
 
-func (s *testVoteStore) GetSessionByBroadcaster(_ context.Context, broadcasterUserID string) (uuid.UUID, bool, error) {
+func (s *testSessionRepo) GetSessionByBroadcaster(_ context.Context, broadcasterUserID string) (uuid.UUID, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, ok := s.broadcasterToSession[broadcasterUserID]
 	return id, ok, nil
 }
 
-func (s *testVoteStore) GetSessionConfig(_ context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error) {
+func (s *testSessionRepo) GetSessionConfig(_ context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[sessionUUID]
@@ -71,18 +71,7 @@ func (s *testVoteStore) GetSessionConfig(_ context.Context, sessionUUID uuid.UUI
 	return &cfg, nil
 }
 
-func (s *testVoteStore) CheckDebounce(_ context.Context, sessionUUID uuid.UUID, twitchUserID string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := sessionUUID.String() + ":" + twitchUserID
-	if s.debounced[key] {
-		return false, nil
-	}
-	s.debounced[key] = true
-	return true, nil
-}
-
-func (s *testVoteStore) ApplyVote(_ context.Context, sessionUUID uuid.UUID, delta, _ float64, _ int64) (float64, error) {
+func (s *testSessionRepo) ApplyVote(_ context.Context, sessionUUID uuid.UUID, delta, _ float64, _ int64) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[sessionUUID]
@@ -93,7 +82,7 @@ func (s *testVoteStore) ApplyVote(_ context.Context, sessionUUID uuid.UUID, delt
 	return sess.Value, nil
 }
 
-func (s *testVoteStore) getValue(sessionUUID uuid.UUID) float64 {
+func (s *testSessionRepo) getValue(sessionUUID uuid.UUID) float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[sessionUUID]
@@ -101,6 +90,50 @@ func (s *testVoteStore) getValue(sessionUUID uuid.UUID) float64 {
 		return 0
 	}
 	return sess.Value
+}
+
+// Stub methods to satisfy domain.SessionRepository.
+func (s *testSessionRepo) ActivateSession(context.Context, uuid.UUID, string, domain.ConfigSnapshot) error {
+	return nil
+}
+func (s *testSessionRepo) ResumeSession(context.Context, uuid.UUID) error         { return nil }
+func (s *testSessionRepo) SessionExists(context.Context, uuid.UUID) (bool, error) { return false, nil }
+func (s *testSessionRepo) DeleteSession(context.Context, uuid.UUID) error         { return nil }
+func (s *testSessionRepo) MarkDisconnected(context.Context, uuid.UUID) error      { return nil }
+func (s *testSessionRepo) UpdateConfig(context.Context, uuid.UUID, domain.ConfigSnapshot) error {
+	return nil
+}
+func (s *testSessionRepo) IncrRefCount(context.Context, uuid.UUID) (int64, error) { return 0, nil }
+func (s *testSessionRepo) DecrRefCount(context.Context, uuid.UUID) (int64, error) { return 0, nil }
+func (s *testSessionRepo) ListOrphans(_ context.Context, _ time.Duration) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+// Stub methods to satisfy domain.SentimentStore.
+func (s *testSessionRepo) GetSentiment(context.Context, uuid.UUID, float64, int64) (float64, error) {
+	return 0, nil
+}
+func (s *testSessionRepo) ResetSentiment(context.Context, uuid.UUID) error { return nil }
+
+// testDebouncer is a simple in-memory debouncer for webhook tests.
+type testDebouncer struct {
+	mu        sync.Mutex
+	debounced map[string]bool
+}
+
+func newTestDebouncer() *testDebouncer {
+	return &testDebouncer{debounced: make(map[string]bool)}
+}
+
+func (d *testDebouncer) CheckDebounce(_ context.Context, sessionUUID uuid.UUID, twitchUserID string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	key := sessionUUID.String() + ":" + twitchUserID
+	if d.debounced[key] {
+		return false, nil
+	}
+	d.debounced[key] = true
+	return true, nil
 }
 
 func clamp(value, min, max float64) float64 {
@@ -181,10 +214,10 @@ func makeSignedNotification(secret, body string) *http.Request {
 // deterministic UUID for tests
 var testSessionUUID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-func setupWebhookTest(t *testing.T) (*WebhookHandler, *testVoteStore, string) {
+func setupWebhookTest(t *testing.T) (*WebhookHandler, *testSessionRepo, string) {
 	t.Helper()
 
-	store := newTestVoteStore()
+	store := newTestSessionStore()
 
 	broadcasterID := "broadcaster-123"
 	config := domain.ConfigSnapshot{
@@ -197,14 +230,16 @@ func setupWebhookTest(t *testing.T) (*WebhookHandler, *testVoteStore, string) {
 
 	store.addSession(testSessionUUID, broadcasterID, config)
 
-	handler := NewWebhookHandler(testWebhookSecret, store)
+	debouncer := newTestDebouncer()
+	engine := sentiment.NewEngine(store, store, debouncer, clockwork.NewRealClock())
+	handler := NewWebhookHandler(testWebhookSecret, engine)
 	return handler, store, broadcasterID
 }
 
 func TestWebhook_MatchingTrigger(t *testing.T) {
 	handler, store, broadcasterID := setupWebhookTest(t)
 
-	body := makeChatMessageBody(broadcasterID, "yes I agree")
+	body := makeChatMessageBody(broadcasterID, "yes")
 	req := makeSignedNotification(testWebhookSecret, body)
 	rec := httptest.NewRecorder()
 
@@ -238,7 +273,7 @@ func TestWebhook_DebouncedVote(t *testing.T) {
 	assert.Equal(t, 204, rec1.Code)
 
 	// Same chatter, second vote should be debounced
-	body2 := makeChatMessageBody(broadcasterID, "yes again")
+	body2 := makeChatMessageBody(broadcasterID, "yes")
 	req2 := makeSignedNotification(testWebhookSecret, body2)
 	rec2 := httptest.NewRecorder()
 	handler.HTTPHandler().ServeHTTP(rec2, req2)

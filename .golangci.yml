@@ -38,7 +38,6 @@ linters:
         - (*github.com/gorilla/websocket.Conn).Close
         - (*github.com/gorilla/websocket.Conn).SetWriteDeadline
         - (*github.com/gorilla/websocket.Conn).SetReadDeadline
-        - (*github.com/pscheid92/chatpulse/internal/redis.Client).Close
   exclusions:
     paths:
       - internal/database/sqlcgen

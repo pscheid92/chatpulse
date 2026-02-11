@@ -2,30 +2,28 @@ package redis
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
 )
 
-type Client struct {
-	rdb *redis.Client
-}
+//go:embed chatpulse.lua
+var chatpulseLibrary string
 
-func NewClient(redisURL string) (*Client, error) {
+// NewClient creates a Redis client and loads the chatpulse Lua function library.
+func NewClient(ctx context.Context, redisURL string) (*redis.Client, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse redis URL: %w", err)
 	}
 
 	rdb := redis.NewClient(opts)
-	client := Client{rdb: rdb}
-	return &client, nil
-}
 
-func (c *Client) Ping(ctx context.Context) error {
-	return c.rdb.Ping(ctx).Err()
-}
+	if err := rdb.FunctionLoadReplace(ctx, chatpulseLibrary).Err(); err != nil {
+		_ = rdb.Close()
+		return nil, fmt.Errorf("load chatpulse library: %w", err)
+	}
 
-func (c *Client) Close() error {
-	return c.rdb.Close()
+	return rdb, nil
 }

@@ -77,18 +77,13 @@ func (m *mockConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigge
 	return nil
 }
 
-type mockStore struct {
+type mockSessionRepo struct {
 	activateSessionFn   func(ctx context.Context, sessionUUID uuid.UUID, broadcasterUserID string, config domain.ConfigSnapshot) error
 	resumeSessionFn     func(ctx context.Context, sessionUUID uuid.UUID) error
 	sessionExistsFn     func(ctx context.Context, sessionUUID uuid.UUID) (bool, error)
 	deleteSessionFn     func(ctx context.Context, sessionUUID uuid.UUID) error
 	getSessionByBroadFn func(ctx context.Context, broadcasterUserID string) (uuid.UUID, bool, error)
 	getSessionConfigFn  func(ctx context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error)
-	getSessionValueFn   func(ctx context.Context, sessionUUID uuid.UUID) (float64, bool, error)
-	checkDebounceFn     func(ctx context.Context, sessionUUID uuid.UUID, twitchUserID string) (bool, error)
-	applyVoteFn         func(ctx context.Context, sessionUUID uuid.UUID, delta, decayRate float64, nowMs int64) (float64, error)
-	getDecayedValueFn   func(ctx context.Context, sessionUUID uuid.UUID, decayRate float64, nowMs int64) (float64, error)
-	resetValueFn        func(ctx context.Context, sessionUUID uuid.UUID) error
 	markDisconnectedFn  func(ctx context.Context, sessionUUID uuid.UUID) error
 	updateConfigFn      func(ctx context.Context, sessionUUID uuid.UUID, config domain.ConfigSnapshot) error
 	listOrphansFn       func(ctx context.Context, maxAge time.Duration) ([]uuid.UUID, error)
@@ -96,112 +91,77 @@ type mockStore struct {
 	decrRefCountFn      func(ctx context.Context, sessionUUID uuid.UUID) (int64, error)
 }
 
-func (m *mockStore) ActivateSession(ctx context.Context, sessionUUID uuid.UUID, broadcasterUserID string, config domain.ConfigSnapshot) error {
+func (m *mockSessionRepo) ActivateSession(ctx context.Context, sessionUUID uuid.UUID, broadcasterUserID string, config domain.ConfigSnapshot) error {
 	if m.activateSessionFn != nil {
 		return m.activateSessionFn(ctx, sessionUUID, broadcasterUserID, config)
 	}
 	return nil
 }
 
-func (m *mockStore) ResumeSession(ctx context.Context, sessionUUID uuid.UUID) error {
+func (m *mockSessionRepo) ResumeSession(ctx context.Context, sessionUUID uuid.UUID) error {
 	if m.resumeSessionFn != nil {
 		return m.resumeSessionFn(ctx, sessionUUID)
 	}
 	return nil
 }
 
-func (m *mockStore) SessionExists(ctx context.Context, sessionUUID uuid.UUID) (bool, error) {
+func (m *mockSessionRepo) SessionExists(ctx context.Context, sessionUUID uuid.UUID) (bool, error) {
 	if m.sessionExistsFn != nil {
 		return m.sessionExistsFn(ctx, sessionUUID)
 	}
 	return false, nil
 }
 
-func (m *mockStore) DeleteSession(ctx context.Context, sessionUUID uuid.UUID) error {
+func (m *mockSessionRepo) DeleteSession(ctx context.Context, sessionUUID uuid.UUID) error {
 	if m.deleteSessionFn != nil {
 		return m.deleteSessionFn(ctx, sessionUUID)
 	}
 	return nil
 }
 
-func (m *mockStore) GetSessionByBroadcaster(ctx context.Context, broadcasterUserID string) (uuid.UUID, bool, error) {
+func (m *mockSessionRepo) GetSessionByBroadcaster(ctx context.Context, broadcasterUserID string) (uuid.UUID, bool, error) {
 	if m.getSessionByBroadFn != nil {
 		return m.getSessionByBroadFn(ctx, broadcasterUserID)
 	}
 	return uuid.Nil, false, nil
 }
 
-func (m *mockStore) GetSessionConfig(ctx context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error) {
+func (m *mockSessionRepo) GetSessionConfig(ctx context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error) {
 	if m.getSessionConfigFn != nil {
 		return m.getSessionConfigFn(ctx, sessionUUID)
 	}
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockStore) GetSessionValue(ctx context.Context, sessionUUID uuid.UUID) (float64, bool, error) {
-	if m.getSessionValueFn != nil {
-		return m.getSessionValueFn(ctx, sessionUUID)
-	}
-	return 0, false, nil
-}
-
-func (m *mockStore) CheckDebounce(ctx context.Context, sessionUUID uuid.UUID, twitchUserID string) (bool, error) {
-	if m.checkDebounceFn != nil {
-		return m.checkDebounceFn(ctx, sessionUUID, twitchUserID)
-	}
-	return true, nil
-}
-
-func (m *mockStore) ApplyVote(ctx context.Context, sessionUUID uuid.UUID, delta, decayRate float64, nowMs int64) (float64, error) {
-	if m.applyVoteFn != nil {
-		return m.applyVoteFn(ctx, sessionUUID, delta, decayRate, nowMs)
-	}
-	return 0, nil
-}
-
-func (m *mockStore) GetDecayedValue(ctx context.Context, sessionUUID uuid.UUID, decayRate float64, nowMs int64) (float64, error) {
-	if m.getDecayedValueFn != nil {
-		return m.getDecayedValueFn(ctx, sessionUUID, decayRate, nowMs)
-	}
-	return 0, nil
-}
-
-func (m *mockStore) ResetValue(ctx context.Context, sessionUUID uuid.UUID) error {
-	if m.resetValueFn != nil {
-		return m.resetValueFn(ctx, sessionUUID)
-	}
-	return nil
-}
-
-func (m *mockStore) MarkDisconnected(ctx context.Context, sessionUUID uuid.UUID) error {
+func (m *mockSessionRepo) MarkDisconnected(ctx context.Context, sessionUUID uuid.UUID) error {
 	if m.markDisconnectedFn != nil {
 		return m.markDisconnectedFn(ctx, sessionUUID)
 	}
 	return nil
 }
 
-func (m *mockStore) UpdateConfig(ctx context.Context, sessionUUID uuid.UUID, config domain.ConfigSnapshot) error {
+func (m *mockSessionRepo) UpdateConfig(ctx context.Context, sessionUUID uuid.UUID, config domain.ConfigSnapshot) error {
 	if m.updateConfigFn != nil {
 		return m.updateConfigFn(ctx, sessionUUID, config)
 	}
 	return nil
 }
 
-func (m *mockStore) ListOrphans(ctx context.Context, maxAge time.Duration) ([]uuid.UUID, error) {
+func (m *mockSessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]uuid.UUID, error) {
 	if m.listOrphansFn != nil {
 		return m.listOrphansFn(ctx, maxAge)
 	}
 	return nil, nil
 }
 
-func (m *mockStore) IncrRefCount(ctx context.Context, sessionUUID uuid.UUID) (int64, error) {
+func (m *mockSessionRepo) IncrRefCount(ctx context.Context, sessionUUID uuid.UUID) (int64, error) {
 	if m.incrRefCountFn != nil {
 		return m.incrRefCountFn(ctx, sessionUUID)
 	}
 	return 1, nil
 }
 
-func (m *mockStore) DecrRefCount(ctx context.Context, sessionUUID uuid.UUID) (int64, error) {
+func (m *mockSessionRepo) DecrRefCount(ctx context.Context, sessionUUID uuid.UUID) (int64, error) {
 	if m.decrRefCountFn != nil {
 		return m.decrRefCountFn(ctx, sessionUUID)
 	}
@@ -227,12 +187,29 @@ func (m *mockTwitch) Unsubscribe(ctx context.Context, userID uuid.UUID) error {
 	return nil
 }
 
+type mockEngine struct {
+	resetSentimentFn func(ctx context.Context, sessionUUID uuid.UUID) error
+}
+
+func (m *mockEngine) GetCurrentValue(context.Context, uuid.UUID) (float64, error) { return 0, nil }
+func (m *mockEngine) ProcessVote(context.Context, string, string, string) (float64, bool) {
+	return 0, false
+}
+
+func (m *mockEngine) ResetSentiment(ctx context.Context, sessionUUID uuid.UUID) error {
+	if m.resetSentimentFn != nil {
+		return m.resetSentimentFn(ctx, sessionUUID)
+	}
+	return nil
+}
+
 // newTestService creates a Service without starting the cleanup timer.
-func newTestService(users domain.UserRepository, configs domain.ConfigRepository, store *mockStore, twitch domain.TwitchService, clock clockwork.Clock) *Service {
+func newTestService(users domain.UserRepository, configs domain.ConfigRepository, store *mockSessionRepo, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock) *Service {
 	return &Service{
 		users:         users,
 		configs:       configs,
 		store:         store,
+		engine:        engine,
 		twitch:        twitch,
 		clock:         clock,
 		cleanupStopCh: make(chan struct{}),
@@ -261,7 +238,7 @@ func TestEnsureSessionActive_NewSession(t *testing.T) {
 	}
 
 	var activated bool
-	store := &mockStore{
+	store := &mockSessionRepo{
 		sessionExistsFn: func(_ context.Context, _ uuid.UUID) (bool, error) {
 			return false, nil
 		},
@@ -285,7 +262,7 @@ func TestEnsureSessionActive_NewSession(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(users, configs, store, twitch, clock)
+	svc := newTestService(users, configs, store, &mockEngine{}, twitch, clock)
 
 	err := svc.EnsureSessionActive(context.Background(), overlayUUID)
 	require.NoError(t, err)
@@ -296,7 +273,7 @@ func TestEnsureSessionActive_NewSession(t *testing.T) {
 func TestEnsureSessionActive_ExistingSession(t *testing.T) {
 	overlayUUID := uuid.New()
 
-	store := &mockStore{
+	store := &mockSessionRepo{
 		sessionExistsFn: func(_ context.Context, _ uuid.UUID) (bool, error) {
 			return true, nil
 		},
@@ -307,7 +284,7 @@ func TestEnsureSessionActive_ExistingSession(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, &mockEngine{}, nil, clock)
 
 	err := svc.EnsureSessionActive(context.Background(), overlayUUID)
 	require.NoError(t, err)
@@ -329,11 +306,11 @@ func TestEnsureSessionActive_NilTwitch(t *testing.T) {
 		},
 	}
 
-	store := &mockStore{}
+	store := &mockSessionRepo{}
 	clock := clockwork.NewFakeClock()
 
 	// twitch is nil — should not panic
-	svc := newTestService(users, configs, store, nil, clock)
+	svc := newTestService(users, configs, store, &mockEngine{}, nil, clock)
 
 	err := svc.EnsureSessionActive(context.Background(), overlayUUID)
 	require.NoError(t, err)
@@ -345,7 +322,7 @@ func TestOnSessionEmpty_RefCountZero(t *testing.T) {
 	sessionUUID := uuid.New()
 	var disconnected bool
 
-	store := &mockStore{
+	store := &mockSessionRepo{
 		decrRefCountFn: func(_ context.Context, id uuid.UUID) (int64, error) {
 			assert.Equal(t, sessionUUID, id)
 			return 0, nil
@@ -358,7 +335,7 @@ func TestOnSessionEmpty_RefCountZero(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, &mockEngine{}, nil, clock)
 
 	svc.OnSessionEmpty(context.Background(), sessionUUID)
 	assert.True(t, disconnected)
@@ -368,7 +345,7 @@ func TestOnSessionEmpty_RefCountPositive(t *testing.T) {
 	sessionUUID := uuid.New()
 	var disconnected bool
 
-	store := &mockStore{
+	store := &mockSessionRepo{
 		decrRefCountFn: func(_ context.Context, _ uuid.UUID) (int64, error) {
 			return 1, nil
 		},
@@ -379,7 +356,7 @@ func TestOnSessionEmpty_RefCountPositive(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, &mockEngine{}, nil, clock)
 
 	svc.OnSessionEmpty(context.Background(), sessionUUID)
 	assert.False(t, disconnected, "should not mark disconnected when ref count is positive")
@@ -391,7 +368,7 @@ func TestIncrRefCount(t *testing.T) {
 	sessionUUID := uuid.New()
 	var called bool
 
-	store := &mockStore{
+	store := &mockSessionRepo{
 		incrRefCountFn: func(_ context.Context, id uuid.UUID) (int64, error) {
 			called = true
 			assert.Equal(t, sessionUUID, id)
@@ -400,7 +377,7 @@ func TestIncrRefCount(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, &mockEngine{}, nil, clock)
 
 	err := svc.IncrRefCount(context.Background(), sessionUUID)
 	require.NoError(t, err)
@@ -413,8 +390,8 @@ func TestResetSentiment(t *testing.T) {
 	overlayUUID := uuid.New()
 	var called bool
 
-	store := &mockStore{
-		resetValueFn: func(_ context.Context, id uuid.UUID) error {
+	engine := &mockEngine{
+		resetSentimentFn: func(_ context.Context, id uuid.UUID) error {
 			called = true
 			assert.Equal(t, overlayUUID, id)
 			return nil
@@ -422,7 +399,7 @@ func TestResetSentiment(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, &mockSessionRepo{}, engine, nil, clock)
 
 	err := svc.ResetSentiment(context.Background(), overlayUUID)
 	require.NoError(t, err)
@@ -430,14 +407,14 @@ func TestResetSentiment(t *testing.T) {
 }
 
 func TestResetSentiment_Error(t *testing.T) {
-	store := &mockStore{
-		resetValueFn: func(_ context.Context, _ uuid.UUID) error {
-			return fmt.Errorf("store error")
+	engine := &mockEngine{
+		resetSentimentFn: func(_ context.Context, _ uuid.UUID) error {
+			return fmt.Errorf("engine error")
 		},
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, &mockSessionRepo{}, engine, nil, clock)
 
 	err := svc.ResetSentiment(context.Background(), uuid.New())
 	assert.Error(t, err)
@@ -461,7 +438,7 @@ func TestSaveConfig_Success(t *testing.T) {
 		},
 	}
 
-	store := &mockStore{
+	store := &mockSessionRepo{
 		updateConfigFn: func(_ context.Context, id uuid.UUID, config domain.ConfigSnapshot) error {
 			storeUpdated = true
 			assert.Equal(t, overlayUUID, id)
@@ -471,7 +448,7 @@ func TestSaveConfig_Success(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, configs, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, configs, store, &mockEngine{}, nil, clock)
 
 	err := svc.SaveConfig(context.Background(), userID, "yes", "no", "Left", "Right", 1.5, overlayUUID)
 	require.NoError(t, err)
@@ -486,9 +463,9 @@ func TestSaveConfig_DBError(t *testing.T) {
 		},
 	}
 
-	store := &mockStore{}
+	store := &mockSessionRepo{}
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, configs, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, configs, store, &mockEngine{}, nil, clock)
 
 	err := svc.SaveConfig(context.Background(), uuid.New(), "yes", "no", "L", "R", 1.0, uuid.New())
 	assert.Error(t, err)
@@ -508,7 +485,7 @@ func TestRotateOverlayUUID(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(users, &mockConfigRepo{}, &mockStore{}, nil, clock)
+	svc := newTestService(users, &mockConfigRepo{}, &mockSessionRepo{}, &mockEngine{}, nil, clock)
 
 	got, err := svc.RotateOverlayUUID(context.Background(), userID)
 	require.NoError(t, err)
@@ -522,7 +499,7 @@ func TestCleanupOrphans_DeletesSessions(t *testing.T) {
 	orphan2 := uuid.New()
 	var deleted []uuid.UUID
 
-	store := &mockStore{
+	store := &mockSessionRepo{
 		listOrphansFn: func(_ context.Context, maxAge time.Duration) ([]uuid.UUID, error) {
 			assert.Equal(t, orphanMaxAge, maxAge)
 			return []uuid.UUID{orphan1, orphan2}, nil
@@ -534,7 +511,7 @@ func TestCleanupOrphans_DeletesSessions(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, &mockEngine{}, nil, clock)
 
 	svc.CleanupOrphans(context.Background())
 	assert.Equal(t, []uuid.UUID{orphan1, orphan2}, deleted)
@@ -552,7 +529,7 @@ func TestCleanupOrphans_UnsubscribesTwitch(t *testing.T) {
 		},
 	}
 
-	store := &mockStore{
+	store := &mockSessionRepo{
 		listOrphansFn: func(_ context.Context, _ time.Duration) ([]uuid.UUID, error) {
 			return []uuid.UUID{orphanOverlayUUID}, nil
 		},
@@ -566,7 +543,7 @@ func TestCleanupOrphans_UnsubscribesTwitch(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(users, &mockConfigRepo{}, store, twitch, clock)
+	svc := newTestService(users, &mockConfigRepo{}, store, &mockEngine{}, twitch, clock)
 
 	svc.CleanupOrphans(context.Background())
 
@@ -580,14 +557,14 @@ func TestCleanupOrphans_UnsubscribesTwitch(t *testing.T) {
 }
 
 func TestCleanupOrphans_NoOrphans(t *testing.T) {
-	store := &mockStore{
+	store := &mockSessionRepo{
 		listOrphansFn: func(_ context.Context, _ time.Duration) ([]uuid.UUID, error) {
 			return nil, nil
 		},
 	}
 
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, &mockEngine{}, nil, clock)
 
 	// Should not panic
 	svc.CleanupOrphans(context.Background())
@@ -597,7 +574,7 @@ func TestCleanupOrphans_NoOrphans(t *testing.T) {
 
 func TestStop(t *testing.T) {
 	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, &mockStore{}, nil, clock)
+	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, &mockSessionRepo{}, &mockEngine{}, nil, clock)
 
 	// Should not panic, even when called twice
 	svc.Stop()

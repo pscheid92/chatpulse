@@ -1,0 +1,21 @@
+package domain
+
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type AppService interface {
+	GetUserByID(ctx context.Context, userID uuid.UUID) (*User, error)
+	GetUserByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*User, error)
+	GetConfig(ctx context.Context, userID uuid.UUID) (*Config, error)
+	UpsertUser(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*User, error)
+	EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID) error
+	IncrRefCount(ctx context.Context, sessionUUID uuid.UUID) error
+	OnSessionEmpty(ctx context.Context, sessionUUID uuid.UUID)
+	ResetSentiment(ctx context.Context, overlayUUID uuid.UUID) error
+	SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, overlayUUID uuid.UUID) error
+	RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
+}

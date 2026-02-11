@@ -56,7 +56,6 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Webhook config: all three must be set together
 	if cfg.WebhookCallbackURL != "" || cfg.WebhookSecret != "" {
 		if cfg.WebhookCallbackURL == "" {
 			return fmt.Errorf("WEBHOOK_CALLBACK_URL is required when WEBHOOK_SECRET is set")
