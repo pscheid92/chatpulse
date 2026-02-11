@@ -2,79 +2,44 @@ package database
 
 import (
 	"context"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/database/sqlcgen"
 	"github.com/pscheid92/chatpulse/internal/domain"
 )
 
 type UserRepo struct {
-	pool *pgxpool.Pool
-	q    *sqlcgen.Queries
-	gcm  cipher.AEAD
+	pool   *pgxpool.Pool
+	q      *sqlcgen.Queries
+	crypto crypto.Service
 }
 
-func NewUserRepo(db *DB) *UserRepo {
-	return &UserRepo{pool: db.Pool, q: sqlcgen.New(db.Pool), gcm: db.gcm}
-}
-
-func (r *UserRepo) encryptToken(plaintext string) (string, error) {
-	if r.gcm == nil {
-		return plaintext, nil
+func NewUserRepo(pool *pgxpool.Pool, crypto crypto.Service) *UserRepo {
+	return &UserRepo{
+		pool:   pool,
+		q:      sqlcgen.New(pool),
+		crypto: crypto,
 	}
-
-	nonce := make([]byte, r.gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("failed to generate nonce: %w", err)
-	}
-
-	ciphertext := r.gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return hex.EncodeToString(ciphertext), nil
-}
-
-func (r *UserRepo) decryptToken(encoded string) (string, error) {
-	if r.gcm == nil {
-		return encoded, nil
-	}
-
-	ciphertext, err := hex.DecodeString(encoded)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode hex: %w", err)
-	}
-
-	nonceSize := r.gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return "", fmt.Errorf("ciphertext too short")
-	}
-
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := r.gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to decrypt: %w", err)
-	}
-
-	return string(plaintext), nil
 }
 
 func (r *UserRepo) toDomainUser(row sqlcgen.User) (*domain.User, error) {
-	accessToken, err := r.decryptToken(row.AccessToken)
+	accessToken, err := r.crypto.Decrypt(row.AccessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt access token: %w", err)
 	}
-	refreshToken, err := r.decryptToken(row.RefreshToken)
+
+	refreshToken, err := r.crypto.Decrypt(row.RefreshToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
 	}
-	return &domain.User{
+
+	user := domain.User{
 		ID:             row.ID,
 		OverlayUUID:    row.OverlayUUID,
 		TwitchUserID:   row.TwitchUserID,
@@ -84,7 +49,8 @@ func (r *UserRepo) toDomainUser(row sqlcgen.User) (*domain.User, error) {
 		TokenExpiry:    row.TokenExpiry,
 		CreatedAt:      row.CreatedAt,
 		UpdatedAt:      row.UpdatedAt,
-	}, nil
+	}
+	return &user, nil
 }
 
 func (r *UserRepo) GetByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
@@ -110,12 +76,12 @@ func (r *UserRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) 
 }
 
 func (r *UserRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error) {
-	encAccessToken, err := r.encryptToken(accessToken)
+	encAccessToken, err := r.crypto.Encrypt(accessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt access token: %w", err)
 	}
 
-	encRefreshToken, err := r.encryptToken(refreshToken)
+	encRefreshToken, err := r.crypto.Encrypt(refreshToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt refresh token: %w", err)
 	}
@@ -127,7 +93,6 @@ func (r *UserRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, acc
 	defer tx.Rollback(ctx)
 
 	qtx := r.q.WithTx(tx)
-
 	row, err := qtx.UpsertUser(ctx, sqlcgen.UpsertUserParams{
 		TwitchUserID:   twitchUserID,
 		TwitchUsername: twitchUsername,
@@ -151,22 +116,29 @@ func (r *UserRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, acc
 }
 
 func (r *UserRepo) UpdateTokens(ctx context.Context, userID uuid.UUID, accessToken, refreshToken string, tokenExpiry time.Time) error {
-	encAccessToken, err := r.encryptToken(accessToken)
+	encAccessToken, err := r.crypto.Encrypt(accessToken)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt access token: %w", err)
 	}
 
-	encRefreshToken, err := r.encryptToken(refreshToken)
+	encRefreshToken, err := r.crypto.Encrypt(refreshToken)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt refresh token: %w", err)
 	}
 
-	return r.q.UpdateTokens(ctx, sqlcgen.UpdateTokensParams{
+	tag, err := r.q.UpdateTokens(ctx, sqlcgen.UpdateTokensParams{
 		AccessToken:  encAccessToken,
 		RefreshToken: encRefreshToken,
 		TokenExpiry:  tokenExpiry,
 		ID:           userID,
 	})
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrUserNotFound
+	}
+	return nil
 }
 
 func (r *UserRepo) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {

@@ -25,7 +25,7 @@ INSERT INTO configs (user_id, created_at, updated_at)
 VALUES ($1, NOW(), NOW())
 ON CONFLICT (user_id) DO NOTHING;
 
--- name: UpdateTokens :exec
+-- name: UpdateTokens :execresult
 UPDATE users
 SET access_token = $1, refresh_token = $2, token_expiry = $3, updated_at = NOW()
 WHERE id = $4;

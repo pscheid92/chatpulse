@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pscheid92/chatpulse/internal/database/sqlcgen"
 	"github.com/pscheid92/chatpulse/internal/domain"
 )
@@ -14,8 +15,8 @@ type EventSubRepo struct {
 	q *sqlcgen.Queries
 }
 
-func NewEventSubRepo(db *DB) *EventSubRepo {
-	return &EventSubRepo{q: sqlcgen.New(db.Pool)}
+func NewEventSubRepo(pool *pgxpool.Pool) *EventSubRepo {
+	return &EventSubRepo{q: sqlcgen.New(pool)}
 }
 
 func (r *EventSubRepo) Create(ctx context.Context, userID uuid.UUID, broadcasterUserID, subscriptionID, conduitID string) error {

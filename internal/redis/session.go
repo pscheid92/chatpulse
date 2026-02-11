@@ -17,7 +17,7 @@ import (
 
 const debounceInterval = 1 * time.Second
 
-// Key schema:
+// Key schemas:
 //   session:{overlayUUID}              — hash: value, broadcaster_user_id, config_json, last_disconnect, last_update
 //   session:{overlayUUID}:ref_count    — integer: tracks how many app instances serve this session
 //   broadcaster:{twitchUserID}         — string → overlayUUID

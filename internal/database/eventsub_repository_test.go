@@ -3,17 +3,34 @@ package database
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+func createTestUser(t *testing.T, pool *pgxpool.Pool, twitchUserID string) *domain.User {
+	t.Helper()
+
+	repo := NewUserRepo(pool, crypto.NoopService{})
+	ctx := context.Background()
+	expiry := time.Now().UTC().Add(1 * time.Hour)
+
+	user, err := repo.Upsert(ctx, twitchUserID, "testuser_"+twitchUserID, "access_token", "refresh_token", expiry)
+	require.NoError(t, err)
+	require.NotEqual(t, uuid.Nil, user.ID)
+
+	return user
+}
+
 func TestCreateEventSubSubscription(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewEventSubRepo(db)
-	user := CreateTestUser(t, db, "12345")
+	pool := setupTestDB(t)
+	repo := NewEventSubRepo(pool)
+	user := createTestUser(t, pool, "12345")
 	ctx := context.Background()
 
 	err := repo.Create(ctx, user.ID, "broadcaster-1", "sub-1", "conduit-1")
@@ -30,9 +47,9 @@ func TestCreateEventSubSubscription(t *testing.T) {
 }
 
 func TestCreateEventSubSubscription_Upsert(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewEventSubRepo(db)
-	user := CreateTestUser(t, db, "12345")
+	pool := setupTestDB(t)
+	repo := NewEventSubRepo(pool)
+	user := createTestUser(t, pool, "12345")
 	ctx := context.Background()
 
 	// Create initial subscription
@@ -52,8 +69,8 @@ func TestCreateEventSubSubscription_Upsert(t *testing.T) {
 }
 
 func TestGetEventSubSubscription_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewEventSubRepo(db)
+	pool := setupTestDB(t)
+	repo := NewEventSubRepo(pool)
 	ctx := context.Background()
 
 	randomID := uuid.New()
@@ -65,9 +82,9 @@ func TestGetEventSubSubscription_NotFound(t *testing.T) {
 }
 
 func TestDeleteEventSubSubscription(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewEventSubRepo(db)
-	user := CreateTestUser(t, db, "12345")
+	pool := setupTestDB(t)
+	repo := NewEventSubRepo(pool)
+	user := createTestUser(t, pool, "12345")
 	ctx := context.Background()
 
 	// Create subscription
@@ -86,8 +103,8 @@ func TestDeleteEventSubSubscription(t *testing.T) {
 }
 
 func TestDeleteEventSubSubscription_NonExistent(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewEventSubRepo(db)
+	pool := setupTestDB(t)
+	repo := NewEventSubRepo(pool)
 	ctx := context.Background()
 
 	// Deleting a non-existent subscription should not error
@@ -96,8 +113,8 @@ func TestDeleteEventSubSubscription_NonExistent(t *testing.T) {
 }
 
 func TestListEventSubSubscriptions(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewEventSubRepo(db)
+	pool := setupTestDB(t)
+	repo := NewEventSubRepo(pool)
 	ctx := context.Background()
 
 	// List with no subscriptions
@@ -106,8 +123,8 @@ func TestListEventSubSubscriptions(t *testing.T) {
 	assert.Empty(t, subs)
 
 	// Create two users with subscriptions
-	user1 := CreateTestUser(t, db, "user-1")
-	user2 := CreateTestUser(t, db, "user-2")
+	user1 := createTestUser(t, pool, "user-1")
+	user2 := createTestUser(t, pool, "user-2")
 
 	err = repo.Create(ctx, user1.ID, "broadcaster-1", "sub-1", "conduit-1")
 	require.NoError(t, err)

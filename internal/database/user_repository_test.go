@@ -6,84 +6,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestEncryptDecrypt_WithKey(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	ctx := context.Background()
-	db, err := Connect(ctx, testDatabaseURL, testEncryptionKey)
-	require.NoError(t, err)
-	defer db.Close()
-
-	repo := NewUserRepo(db)
-	plaintext := "my-secret-token-12345"
-
-	// Encrypt
-	ciphertext, err := repo.encryptToken(plaintext)
-	require.NoError(t, err)
-	assert.NotEqual(t, plaintext, ciphertext)
-	assert.Greater(t, len(ciphertext), len(plaintext))
-
-	// Decrypt
-	decrypted, err := repo.decryptToken(ciphertext)
-	require.NoError(t, err)
-	assert.Equal(t, plaintext, decrypted)
-}
-
-func TestEncryptDecrypt_WithoutKey(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	ctx := context.Background()
-	db, err := Connect(ctx, testDatabaseURL, "")
-	require.NoError(t, err)
-	defer db.Close()
-
-	repo := NewUserRepo(db)
-	plaintext := "my-secret-token-12345"
-
-	// Without encryption key, should return plaintext
-	ciphertext, err := repo.encryptToken(plaintext)
-	require.NoError(t, err)
-	assert.Equal(t, plaintext, ciphertext)
-
-	decrypted, err := repo.decryptToken(ciphertext)
-	require.NoError(t, err)
-	assert.Equal(t, plaintext, decrypted)
-}
-
-func TestEncryptDecrypt_DecryptInvalidCiphertext(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	ctx := context.Background()
-	db, err := Connect(ctx, testDatabaseURL, testEncryptionKey)
-	require.NoError(t, err)
-	defer db.Close()
-
-	repo := NewUserRepo(db)
-
-	// Try to decrypt invalid hex
-	_, err = repo.decryptToken("not-valid-hex!!!")
-	assert.Error(t, err)
-
-	// Try to decrypt hex that's too short (< nonce size)
-	_, err = repo.decryptToken("abcd")
-	assert.Error(t, err)
-}
-
 func TestUpsertUser_Insert(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewUserRepo(db)
-	configRepo := NewConfigRepo(db)
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
+	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
 	expiry := time.Now().UTC().Add(1 * time.Hour)
@@ -109,9 +41,9 @@ func TestUpsertUser_Insert(t *testing.T) {
 }
 
 func TestUpsertUser_Update(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewUserRepo(db)
-	configRepo := NewConfigRepo(db)
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
+	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
 	// Insert
@@ -140,20 +72,13 @@ func TestUpsertUser_Update(t *testing.T) {
 }
 
 func TestUpsertUser_TokenEncryption(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
+	pool := setupTestDB(t)
 	ctx := context.Background()
-	db, err := Connect(ctx, testDatabaseURL, testEncryptionKey)
-	require.NoError(t, err)
-	defer db.Close()
 
-	repo := NewUserRepo(db)
-
-	// Truncate tables
-	_, err = db.Exec(ctx, "TRUNCATE users, configs CASCADE")
+	cryptoSvc, err := crypto.NewAesGcmCryptoService(testEncryptionKey)
 	require.NoError(t, err)
+
+	repo := NewUserRepo(pool, cryptoSvc)
 
 	expiry := time.Now().UTC().Add(1 * time.Hour)
 	user, err := repo.Upsert(ctx, "12345", "testuser", "plaintext_access", "plaintext_refresh", expiry)
@@ -161,7 +86,7 @@ func TestUpsertUser_TokenEncryption(t *testing.T) {
 
 	// Query raw tokens from database
 	var rawAccess, rawRefresh string
-	err = db.QueryRow(ctx, "SELECT access_token, refresh_token FROM users WHERE id = $1", user.ID).Scan(&rawAccess, &rawRefresh)
+	err = pool.QueryRow(ctx, "SELECT access_token, refresh_token FROM users WHERE id = $1", user.ID).Scan(&rawAccess, &rawRefresh)
 	require.NoError(t, err)
 
 	// Tokens should be encrypted (not equal to plaintext)
@@ -174,8 +99,8 @@ func TestUpsertUser_TokenEncryption(t *testing.T) {
 }
 
 func TestGetUserByID_Success(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewUserRepo(db)
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
 	// Insert user
@@ -195,8 +120,8 @@ func TestGetUserByID_Success(t *testing.T) {
 }
 
 func TestGetUserByID_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewUserRepo(db)
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
 	randomID := uuid.New()
@@ -208,20 +133,13 @@ func TestGetUserByID_NotFound(t *testing.T) {
 }
 
 func TestGetUserByID_TokenDecryption(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
+	pool := setupTestDB(t)
 	ctx := context.Background()
-	db, err := Connect(ctx, testDatabaseURL, testEncryptionKey)
-	require.NoError(t, err)
-	defer db.Close()
 
-	repo := NewUserRepo(db)
-
-	// Truncate tables
-	_, err = db.Exec(ctx, "TRUNCATE users, configs CASCADE")
+	cryptoSvc, err := crypto.NewAesGcmCryptoService(testEncryptionKey)
 	require.NoError(t, err)
+
+	repo := NewUserRepo(pool, cryptoSvc)
 
 	expiry := time.Now().UTC().Add(1 * time.Hour)
 	insertedUser, err := repo.Upsert(ctx, "12345", "testuser", "plain_access", "plain_refresh", expiry)
@@ -235,8 +153,8 @@ func TestGetUserByID_TokenDecryption(t *testing.T) {
 }
 
 func TestGetUserByOverlayUUID_Success(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewUserRepo(db)
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
 	// Insert user
@@ -253,8 +171,8 @@ func TestGetUserByOverlayUUID_Success(t *testing.T) {
 }
 
 func TestGetUserByOverlayUUID_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewUserRepo(db)
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
 	randomUUID := uuid.New()
@@ -266,8 +184,8 @@ func TestGetUserByOverlayUUID_NotFound(t *testing.T) {
 }
 
 func TestUpdateUserTokens(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewUserRepo(db)
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
 	// Insert user
@@ -288,9 +206,58 @@ func TestUpdateUserTokens(t *testing.T) {
 	assert.WithinDuration(t, expiry2, updatedUser.TokenExpiry, time.Second)
 }
 
+func TestRotateOverlayUUID_NotFound(t *testing.T) {
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
+	ctx := context.Background()
+
+	randomID := uuid.New()
+	_, err := repo.RotateOverlayUUID(ctx, randomID)
+
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrUserNotFound)
+}
+
+func TestUpdateTokens_NotFound(t *testing.T) {
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
+	ctx := context.Background()
+
+	randomID := uuid.New()
+	expiry := time.Now().UTC().Add(1 * time.Hour)
+	err := repo.UpdateTokens(ctx, randomID, "access", "refresh", expiry)
+
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrUserNotFound)
+}
+
+func TestGetUserByID_EncryptionKeyMismatch(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+
+	// Write tokens with key A
+	keyA := testEncryptionKey
+	cryptoA, err := crypto.NewAesGcmCryptoService(keyA)
+	require.NoError(t, err)
+	repoA := NewUserRepo(pool, cryptoA)
+
+	expiry := time.Now().UTC().Add(1 * time.Hour)
+	user, err := repoA.Upsert(ctx, "12345", "testuser", "secret_access", "secret_refresh", expiry)
+	require.NoError(t, err)
+
+	// Read tokens with key B
+	keyB := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	cryptoB, err := crypto.NewAesGcmCryptoService(keyB)
+	require.NoError(t, err)
+	repoB := NewUserRepo(pool, cryptoB)
+
+	_, err = repoB.GetByID(ctx, user.ID)
+	assert.Error(t, err)
+}
+
 func TestRotateOverlayUUID(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewUserRepo(db)
+	pool := setupTestDB(t)
+	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
 	// Insert user

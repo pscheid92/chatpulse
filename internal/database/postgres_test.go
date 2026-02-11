@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -17,7 +18,7 @@ import (
 const testEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 var (
-	testDB          *DB
+	testPool        *pgxpool.Pool
 	testDatabaseURL string
 )
 
@@ -55,15 +56,15 @@ func TestMain(m *testing.M) {
 	testDatabaseURL = connStr
 
 	// Connect to database
-	testDB, err = Connect(ctx, testDatabaseURL, "")
+	testPool, err = Connect(ctx, testDatabaseURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to test database: %v\n", err)
 		os.Exit(1)
 	}
-	defer testDB.Close()
+	defer testPool.Close()
 
 	// Run migrations
-	if err := testDB.RunMigrations(ctx); err != nil {
+	if err := RunMigrations(ctx, testPool); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to run migrations: %v\n", err)
 		os.Exit(1)
 	}
@@ -74,21 +75,21 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// setupTestDB returns a DB instance and registers cleanup to truncate tables
-func setupTestDB(t *testing.T) *DB {
+// setupTestDB returns a pool and registers cleanup to truncate tables
+func setupTestDB(t *testing.T) *pgxpool.Pool {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
 	t.Cleanup(func() {
 		ctx := context.Background()
-		_, err := testDB.Exec(ctx, "TRUNCATE users, configs CASCADE")
+		_, err := testPool.Exec(ctx, "TRUNCATE users, configs, eventsub_subscriptions CASCADE")
 		if err != nil {
 			t.Logf("Failed to truncate tables: %v", err)
 		}
 	})
 
-	return testDB
+	return testPool
 }
 
 func TestConnect_Success(t *testing.T) {
@@ -97,13 +98,13 @@ func TestConnect_Success(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	db, err := Connect(ctx, testDatabaseURL, "")
+	pool, err := Connect(ctx, testDatabaseURL)
 	require.NoError(t, err)
-	require.NotNil(t, db)
-	defer db.Close()
+	require.NotNil(t, pool)
+	defer pool.Close()
 
 	// Verify connection works
-	err = db.Ping(ctx)
+	err = pool.Ping(ctx)
 	require.NoError(t, err)
 }
 
@@ -113,82 +114,9 @@ func TestConnect_InvalidURL(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	db, err := Connect(ctx, "postgres://invalid:invalid@localhost:9999/nonexistent", "")
+	pool, err := Connect(ctx, "postgres://invalid:invalid@localhost:9999/nonexistent")
 	assert.Error(t, err)
-	assert.Nil(t, db)
-}
-
-func TestConnect_EncryptionKeyValidation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	tests := []struct {
-		name    string
-		keyHex  string
-		wantErr bool
-	}{
-		{
-			name:    "empty key is valid",
-			keyHex:  "",
-			wantErr: false,
-		},
-		{
-			name:    "32 bytes (64 hex chars) is valid",
-			keyHex:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			wantErr: false,
-		},
-		{
-			name:    "31 bytes is invalid",
-			keyHex:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
-			wantErr: true,
-		},
-		{
-			name:    "33 bytes is invalid",
-			keyHex:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00",
-			wantErr: true,
-		},
-		{
-			name:    "invalid hex is invalid",
-			keyHex:  "zzzz",
-			wantErr: true,
-		},
-	}
-
-	ctx := context.Background()
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			db, err := Connect(ctx, testDatabaseURL, tt.keyHex)
-			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Nil(t, db)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, db)
-				if db != nil {
-					db.Close()
-				}
-			}
-		})
-	}
-}
-
-func TestHealthCheck(t *testing.T) {
-	db := setupTestDB(t)
-	ctx := context.Background()
-
-	err := db.HealthCheck(ctx)
-	assert.NoError(t, err)
-}
-
-func TestHealthCheck_ContextCanceled(t *testing.T) {
-	db := setupTestDB(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	err := db.HealthCheck(ctx)
-	assert.Error(t, err)
+	assert.Nil(t, pool)
 }
 
 func TestRunMigrations_Idempotency(t *testing.T) {
@@ -197,25 +125,25 @@ func TestRunMigrations_Idempotency(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	db, err := Connect(ctx, testDatabaseURL, "")
+	pool, err := Connect(ctx, testDatabaseURL)
 	require.NoError(t, err)
-	defer db.Close()
+	defer pool.Close()
 
 	// Run migrations twice - should not error
-	err = db.RunMigrations(ctx)
+	err = RunMigrations(ctx, pool)
 	require.NoError(t, err)
 
-	err = db.RunMigrations(ctx)
+	err = RunMigrations(ctx, pool)
 	require.NoError(t, err)
 }
 
 func TestRunMigrations_SchemaVerification(t *testing.T) {
-	db := setupTestDB(t)
+	pool := setupTestDB(t)
 	ctx := context.Background()
 
 	// Verify users table exists with expected columns
 	var exists bool
-	err := db.QueryRow(ctx, `
+	err := pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT FROM information_schema.tables
 			WHERE table_name = 'users'
@@ -225,7 +153,7 @@ func TestRunMigrations_SchemaVerification(t *testing.T) {
 	assert.True(t, exists)
 
 	// Verify configs table exists
-	err = db.QueryRow(ctx, `
+	err = pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT FROM information_schema.tables
 			WHERE table_name = 'configs'
@@ -235,7 +163,7 @@ func TestRunMigrations_SchemaVerification(t *testing.T) {
 	assert.True(t, exists)
 
 	// Verify overlay_uuid column exists in users table
-	err = db.QueryRow(ctx, `
+	err = pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT FROM information_schema.columns
 			WHERE table_name = 'users' AND column_name = 'overlay_uuid'

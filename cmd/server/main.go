@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/app"
 	"github.com/pscheid92/chatpulse/internal/config"
+	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/database"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/redis"
@@ -85,16 +87,16 @@ func setupConfig() *config.Config {
 	return cfg
 }
 
-func setupDB(cfg *config.Config) *database.DB {
+func setupDB(cfg *config.Config) *pgxpool.Pool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	db, err := database.Connect(ctx, cfg.DatabaseURL, cfg.TokenEncryptionKey)
+	db, err := database.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	if err := db.RunMigrations(ctx); err != nil {
+	if err := database.RunMigrations(ctx, db); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
@@ -121,8 +123,8 @@ func main() {
 	clock := clockwork.NewRealClock()
 
 	cfg := setupConfig()
-	db := setupDB(cfg)
-	defer db.Close()
+	pool := setupDB(cfg)
+	defer pool.Close()
 	twitchClient := setupTwitchClient(cfg)
 
 	redisClient := setupRedis(cfg)
@@ -135,9 +137,18 @@ func main() {
 	engine := sentiment.NewEngine(store, clock)
 
 	// Construct repositories
-	userRepo := database.NewUserRepo(db)
-	configRepo := database.NewConfigRepo(db)
-	eventSubRepo := database.NewEventSubRepo(db)
+	var cryptoSvc crypto.Service = crypto.NoopService{}
+	if cfg.TokenEncryptionKey != "" {
+		var err error
+		cryptoSvc, err = crypto.NewAesGcmCryptoService(cfg.TokenEncryptionKey)
+		if err != nil {
+			log.Fatalf("Failed to create crypto service: %v", err)
+		}
+	}
+
+	userRepo := database.NewUserRepo(pool, cryptoSvc)
+	configRepo := database.NewConfigRepo(pool)
+	eventSubRepo := database.NewEventSubRepo(pool)
 
 	// Set up webhooks if configured (all three env vars required together)
 	var twitchSvc domain.TwitchService

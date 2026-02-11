@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const getConfigByUserID = `-- name: GetConfigByUserID :one
@@ -33,7 +34,7 @@ func (q *Queries) GetConfigByUserID(ctx context.Context, userID uuid.UUID) (Conf
 	return i, err
 }
 
-const updateConfig = `-- name: UpdateConfig :exec
+const updateConfig = `-- name: UpdateConfig :execresult
 UPDATE configs
 SET for_trigger = $1, against_trigger = $2, left_label = $3,
     right_label = $4, decay_speed = $5, updated_at = NOW()
@@ -49,8 +50,8 @@ type UpdateConfigParams struct {
 	UserID         uuid.UUID
 }
 
-func (q *Queries) UpdateConfig(ctx context.Context, arg UpdateConfigParams) error {
-	_, err := q.db.Exec(ctx, updateConfig,
+func (q *Queries) UpdateConfig(ctx context.Context, arg UpdateConfigParams) (pgconn.CommandTag, error) {
+	return q.db.Exec(ctx, updateConfig,
 		arg.ForTrigger,
 		arg.AgainstTrigger,
 		arg.LeftLabel,
@@ -58,5 +59,4 @@ func (q *Queries) UpdateConfig(ctx context.Context, arg UpdateConfigParams) erro
 		arg.DecaySpeed,
 		arg.UserID,
 	)
-	return err
 }

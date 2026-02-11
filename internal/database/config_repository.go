@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pscheid92/chatpulse/internal/database/sqlcgen"
 	"github.com/pscheid92/chatpulse/internal/domain"
 )
@@ -14,8 +15,8 @@ type ConfigRepo struct {
 	q *sqlcgen.Queries
 }
 
-func NewConfigRepo(db *DB) *ConfigRepo {
-	return &ConfigRepo{q: sqlcgen.New(db.Pool)}
+func NewConfigRepo(pool *pgxpool.Pool) *ConfigRepo {
+	return &ConfigRepo{q: sqlcgen.New(pool)}
 }
 
 func (r *ConfigRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
@@ -39,7 +40,7 @@ func (r *ConfigRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain
 }
 
 func (r *ConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64) error {
-	return r.q.UpdateConfig(ctx, sqlcgen.UpdateConfigParams{
+	tag, err := r.q.UpdateConfig(ctx, sqlcgen.UpdateConfigParams{
 		ForTrigger:     forTrigger,
 		AgainstTrigger: againstTrigger,
 		LeftLabel:      leftLabel,
@@ -47,4 +48,11 @@ func (r *ConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigger, a
 		DecaySpeed:     decaySpeed,
 		UserID:         userID,
 	})
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrConfigNotFound
+	}
+	return nil
 }

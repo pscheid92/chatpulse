@@ -30,11 +30,15 @@ cmd/server/main.go          Entry point (setupConfig, setupDB, setupTwitchClient
 internal/
   domain/domain.go          All shared types (User, Config, ConfigSnapshot, EventSubSubscription, SessionUpdate), sentinel errors (ErrUserNotFound, ErrConfigNotFound, ErrSubscriptionNotFound), and cross-cutting interfaces (SessionStateStore, VoteStore, ScaleProvider, UserRepository, ConfigRepository, EventSubRepository, AppService, TwitchService)
   config/config.go          Struct-tag-based env loading (go-simpler/env), .env file support (godotenv), validation
+  crypto/crypto.go          crypto.Service interface, AesGcmCryptoService (AES-256-GCM), NoopService (plaintext passthrough)
   database/
-    postgres.go             PostgreSQL connection, migrations, health check (DB struct holds *sql.DB + GCM cipher)
-    user_repository.go      UserRepo: user CRUD, token encryption/decryption, overlay UUID rotation
+    postgres.go             PostgreSQL connection (pgxpool.Pool), tern-based migrations (embedded SQL)
+    user_repository.go      UserRepo: user CRUD, overlay UUID rotation (delegates encryption to crypto.Service)
     config_repository.go    ConfigRepo: config read/update
     eventsub_repository.go  EventSubRepo: EventSub subscription CRUD
+    sqlc/schemas/           Schema DDL (shared: sqlc type analysis + tern runtime migrations)
+    sqlc/queries/           SQL query definitions for sqlc code generation
+    sqlcgen/                Generated Go code from sqlc
   app/service.go            Application layer: orchestrates session lifecycle, cleanup timer, config saves
   redis/
     client.go               Redis connection wrapper (NewClient, Ping, Close)
@@ -97,10 +101,12 @@ All defined in `.env.example`.
 
 ## Database
 
-PostgreSQL 15+. Three tables auto-created via migrations in `postgres.go`:
+PostgreSQL 15+. Schema managed by [tern](https://github.com/jackc/tern) migrations embedded from `internal/database/sqlc/schemas/`. Three tables:
 - `users` — Twitch OAuth data, tokens (encrypted at rest if `TOKEN_ENCRYPTION_KEY` set), expiry, `overlay_uuid` (separate from internal `id`)
 - `configs` — Per-user sentiment config (triggers, labels, decay speed)
 - `eventsub_subscriptions` — Tracks active EventSub subscriptions per user (user_id FK, broadcaster_user_id, subscription_id, conduit_id)
+
+Database connection returns a bare `*pgxpool.Pool` — no wrapper struct. Repositories accept the pool directly via constructors.
 
 ## Architecture Notes
 
@@ -208,7 +214,7 @@ Wraps Kappopher client for Twitch API operations. `NewTwitchClient(clientID, cli
 
 Single file containing all shared types and cross-cutting interfaces:
 - **Model types**: `User`, `Config`, `ConfigSnapshot`, `EventSubSubscription`, `SessionUpdate`
-- **Sentinel errors**: `ErrUserNotFound`, `ErrConfigNotFound`, `ErrSubscriptionNotFound` — returned by repository `Get*` methods when no row matches. Repositories translate `sql.ErrNoRows` into these domain errors so consumers never import `database/sql`. The `database/sql` package is confined to `internal/database/`.
+- **Sentinel errors**: `ErrUserNotFound`, `ErrConfigNotFound`, `ErrSubscriptionNotFound` — returned by repository `Get*` methods when no row matches and by `Update*` methods when 0 rows are affected. Repositories translate `pgx.ErrNoRows` (for `:one` queries) and zero `RowsAffected()` (for `:execresult` queries) into these domain errors so consumers never import `pgx` directly.
 - **Repository interfaces**: `UserRepository` (5 methods), `ConfigRepository` (2 methods), `EventSubRepository` (4 methods)
 - **Other interfaces**: `SessionStateStore` (16 methods), `VoteStore` (4 methods), `ScaleProvider` (1 method), `AppService` (10 methods), `TwitchService` (2 methods)
 - Imports only stdlib + `github.com/google/uuid` — no internal dependencies, preventing circular imports.
@@ -219,11 +225,9 @@ Single file containing all shared types and cross-cutting interfaces:
 - **Vote Clamping**: Values clamped to [-100, 100].
 - **Debounce**: 1 second per user per session. Redis `SETNX` with 1s TTL (auto-expires, no pruning needed).
 - **Overlay UUID Separation**: The overlay URL uses a separate `overlay_uuid` column (not the user's internal `id`). Users can rotate their overlay UUID via `POST /api/rotate-overlay-uuid` to invalidate old URLs.
-- **Token Encryption at Rest**: AES-256-GCM encryption for access/refresh tokens in PostgreSQL. `Connect(databaseURL, encryptionKeyHex)` accepts a 32-byte hex key. If key is empty, tokens pass through unencrypted (dev/test mode). The GCM cipher is created once in `Connect()` and cached on the `DB` struct, then passed to `UserRepo` via its constructor. Nonce prepended to ciphertext, hex-encoded for TEXT column storage.
-- **UpsertUser Transaction**: User creation and default config insertion are wrapped in a single database transaction for atomicity. Lives in `UserRepo.Upsert()`. Uses `scanUser()` helper for consistent row scanning + token decryption.
+- **Token Encryption at Rest**: AES-256-GCM encryption for access/refresh tokens in PostgreSQL. Handled by `crypto.Service` interface — `AesGcmCryptoService` (production, takes 64-char hex key) or `NoopService` (dev/test, plaintext passthrough). Injected into `UserRepo` via constructor. Nonce prepended to ciphertext, hex-encoded for TEXT column storage.
+- **UpsertUser Transaction**: User creation and default config insertion are wrapped in a single database transaction for atomicity. Lives in `UserRepo.Upsert()`. Uses `toDomainUser()` helper for consistent row mapping + token decryption.
 - **Connection Status Broadcasting**: Broadcaster sends `{"value": float, "status": "active"}` on each tick. Overlay shows "reconnecting..." indicator when status !== "active".
-- **Health Check**: `db.HealthCheck(ctx)` calls `PingContext` for readiness probes.
-- **DB Connection Pool**: `MaxOpenConns(25)`, `MaxIdleConns(5)`, `ConnMaxLifetime(5min)`.
 - **Context Propagation**: All DB queries and HTTP calls accept `context.Context` as first parameter for cancellation support.
 
 ## Testability Interfaces
@@ -253,7 +257,7 @@ The `OverlayBroadcaster` uses an actor pattern. Tests use synchronous queries (e
 
 ## Testing
 
-130 tests across 7 packages. Run with `make test` or `go test ./...`.
+130 tests across 8 packages. Run with `make test` or `go test ./...`.
 
 ### Test Types
 
@@ -275,10 +279,11 @@ The `OverlayBroadcaster` uses an actor pattern. Tests use synchronous queries (e
 ### Test Files
 
 - `internal/config/config_test.go` — env loading, defaults, validation, encryption key validation, webhook config validation
-- `internal/database/postgres_test.go` — connection, migrations, health check (testcontainers)
-- `internal/database/user_repository_test.go` — user CRUD, token encryption/decryption, overlay UUID rotation (testcontainers)
-- `internal/database/config_repository_test.go` — config read/update (testcontainers)
-- `internal/database/testhelpers.go` — test fixtures for creating users and configs (constructs repos internally)
+- `internal/crypto/crypto_test.go` — AesGcmCryptoService: key validation, encrypt/decrypt roundtrip, unique nonces, tampered ciphertext, NoopService passthrough (9 tests)
+- `internal/database/postgres_test.go` — connection, tern migrations, schema verification (testcontainers)
+- `internal/database/user_repository_test.go` — user CRUD, token encryption via crypto.Service, overlay UUID rotation, not-found error paths, encryption key mismatch (testcontainers)
+- `internal/database/config_repository_test.go` — config read/update, not-found error path (testcontainers)
+- `internal/database/eventsub_repository_test.go` — EventSub subscription CRUD, upsert, list; includes `createTestUser` helper (testcontainers)
 - `internal/redis/redis_test.go` — test setup: testcontainers Redis, `setupTestClient` helper
 - `internal/redis/session_test.go` — activate, resume, delete, broadcaster mapping, debounce, orphan listing (18 tests)
 - `internal/redis/pubsub_test.go` — publish/subscribe roundtrip, multi-message, session isolation, close (4 tests)
@@ -307,7 +312,7 @@ The `OverlayBroadcaster` uses an actor pattern. Tests use synchronous queries (e
 ### Database Integration Tests (testcontainers)
 
 **Setup**: `TestMain()` starts a PostgreSQL 15 container once, reused across all tests (~2-5s overhead total)
-**Cleanup**: Each test uses `setupTestDB(t)` which registers a cleanup function to `TRUNCATE users, configs CASCADE`
+**Cleanup**: Each test uses `setupTestDB(t)` which registers a cleanup function to `TRUNCATE users, configs, eventsub_subscriptions CASCADE`
 **Production fidelity**: Real PostgreSQL behavior, real schema, real constraints, real encryption
 
 ### Redis Integration Tests (testcontainers)
@@ -337,7 +342,7 @@ golangci-lint v2 configured via `.golangci.yml` (schema `version: "2"`). Run wit
 
 Module: `github.com/pscheid92/chatpulse`, Go 1.26.0.
 
-Key deps: echo/v4, gorilla/websocket, gorilla/sessions, Its-donkey/kappopher, lib/pq, redis/go-redis/v9, google/uuid, joho/godotenv, jonboulle/clockwork, go-simpler/env.
+Key deps: echo/v4, gorilla/websocket, gorilla/sessions, Its-donkey/kappopher, jackc/pgx/v5, jackc/tern/v2, redis/go-redis/v9, google/uuid, joho/godotenv, jonboulle/clockwork, go-simpler/env.
 
 Test deps: stretchr/testify, jonboulle/clockwork, testcontainers-go, testcontainers-go/modules/postgres, testcontainers-go/modules/redis.
 
@@ -346,6 +351,7 @@ Test deps: stretchr/testify, jonboulle/clockwork, testcontainers-go, testcontain
 | Removed | Added |
 |---------|-------|
 | `github.com/nicklaw5/helix/v2` | `github.com/Its-donkey/kappopher` v1.1.1 |
+| | `github.com/jackc/tern/v2` v2.3.5 |
 | | `github.com/redis/go-redis/v9` v9.17.3 |
 | | `github.com/testcontainers/testcontainers-go/modules/redis` v0.40.0 |
 | | `go-simpler.org/env` v0.12.0 |
@@ -365,3 +371,6 @@ Test deps: stretchr/testify, jonboulle/clockwork, testcontainers-go, testcontain
 - `internal/websocket/commands.go` — Hub command types removed (broadcaster defines its own internally)
 - `internal/redis/pubsub.go` — Pub/Sub removed (broadcaster pulls values instead of subscribing)
 - `internal/twitch/conduit.go` + `internal/twitch/subscription.go` → `internal/twitch/eventsub.go` — Merged `ConduitManager` and `SubscriptionManager` into single `EventSubManager`; `conduitID` internalized
+- `internal/database/postgres.go` — Removed `DB` wrapper struct (was `*pgxpool.Pool` + `cipher.AEAD`); `Connect()` now returns bare `*pgxpool.Pool`; inline migrations replaced by tern; `HealthCheck()` removed
+- Token encrypt/decrypt methods extracted from `UserRepo` → new `internal/crypto/crypto.go` (`crypto.Service` interface)
+- `sqlc/` (repo root) → `internal/database/sqlc/` — Moved sqlc schemas + queries under database package for `//go:embed` compatibility; `schema.sql` renamed to `001_initial.sql` (tern migration format, dual-use with sqlc)

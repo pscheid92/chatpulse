@@ -6,15 +6,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGetConfig(t *testing.T) {
-	db := setupTestDB(t)
-	userRepo := NewUserRepo(db)
-	configRepo := NewConfigRepo(db)
+	pool := setupTestDB(t)
+	userRepo := NewUserRepo(pool, crypto.NoopService{})
+	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
 	// Insert user (creates default config)
@@ -34,8 +35,8 @@ func TestGetConfig(t *testing.T) {
 }
 
 func TestGetConfig_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	configRepo := NewConfigRepo(db)
+	_ = setupTestDB(t)
+	configRepo := NewConfigRepo(testPool)
 	ctx := context.Background()
 
 	randomID := uuid.New()
@@ -46,10 +47,22 @@ func TestGetConfig_NotFound(t *testing.T) {
 	assert.Nil(t, config)
 }
 
+func TestUpdateConfig_NotFound(t *testing.T) {
+	pool := setupTestDB(t)
+	configRepo := NewConfigRepo(pool)
+	ctx := context.Background()
+
+	randomID := uuid.New()
+	err := configRepo.Update(ctx, randomID, "LUL", "BibleThump", "Happy", "Sad", 1.5)
+
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrConfigNotFound)
+}
+
 func TestUpdateConfig(t *testing.T) {
-	db := setupTestDB(t)
-	userRepo := NewUserRepo(db)
-	configRepo := NewConfigRepo(db)
+	pool := setupTestDB(t)
+	userRepo := NewUserRepo(pool, crypto.NoopService{})
+	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
 	// Insert user

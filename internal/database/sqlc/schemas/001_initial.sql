@@ -1,6 +1,3 @@
--- schema.sql — consolidated schema for sqlc type analysis only (not executed at runtime).
--- Runtime migrations live in postgres.go.
-
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     overlay_uuid UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
@@ -31,3 +28,9 @@ CREATE TABLE eventsub_subscriptions (
     conduit_id TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+---- create above / drop below ----
+
+DROP TABLE IF EXISTS eventsub_subscriptions;
+DROP TABLE IF EXISTS configs;
+DROP TABLE IF EXISTS users;

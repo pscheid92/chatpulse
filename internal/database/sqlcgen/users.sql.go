@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const getUserByID = `-- name: GetUserByID :one
@@ -83,7 +84,7 @@ func (q *Queries) RotateOverlayUUID(ctx context.Context, id uuid.UUID) (uuid.UUI
 	return overlay_uuid, err
 }
 
-const updateTokens = `-- name: UpdateTokens :exec
+const updateTokens = `-- name: UpdateTokens :execresult
 UPDATE users
 SET access_token = $1, refresh_token = $2, token_expiry = $3, updated_at = NOW()
 WHERE id = $4
@@ -96,14 +97,13 @@ type UpdateTokensParams struct {
 	ID           uuid.UUID
 }
 
-func (q *Queries) UpdateTokens(ctx context.Context, arg UpdateTokensParams) error {
-	_, err := q.db.Exec(ctx, updateTokens,
+func (q *Queries) UpdateTokens(ctx context.Context, arg UpdateTokensParams) (pgconn.CommandTag, error) {
+	return q.db.Exec(ctx, updateTokens,
 		arg.AccessToken,
 		arg.RefreshToken,
 		arg.TokenExpiry,
 		arg.ID,
 	)
-	return err
 }
 
 const upsertUser = `-- name: UpsertUser :one
