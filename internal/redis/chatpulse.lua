@@ -35,6 +35,8 @@ local function apply_vote_v2(keys, args)
     value = value + delta
     if value < -100 then value = -100 elseif value > 100 then value = 100 end
     redis.call('HSET', keys[1], 'value', tostring(value), 'last_update', tostring(now_ms))
+    -- Refresh TTL on every vote (active session)
+    redis.call('EXPIRE', keys[1], 86400)  -- 24 hours in seconds
     return {tostring(value), LIBRARY_VERSION, "ok"}
 end
 

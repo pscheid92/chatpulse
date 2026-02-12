@@ -66,6 +66,9 @@ func (s *SessionRepo) ActivateSession(ctx context.Context, sid uuid.UUID, broadc
 		fieldLastDisconnect: "0",
 		fieldLastUpdate:     "0",
 	})
+	// Defensive 24h TTL: prevents indefinite memory leak if orphan cleanup fails
+	// Active sessions get TTL refreshed on every vote
+	pipe.Expire(ctx, sk, 24*time.Hour)
 	pipe.Set(ctx, bk, sid.String(), 0)
 	_, err = pipe.Exec(ctx)
 	return err
@@ -177,12 +180,44 @@ func (s *SessionRepo) UpdateConfig(ctx context.Context, sid uuid.UUID, config do
 
 func (s *SessionRepo) IncrRefCount(ctx context.Context, sid uuid.UUID) (int64, error) {
 	rk := refCountKey(sid)
-	return s.rdb.Incr(ctx, rk).Result()
+	count, err := s.rdb.Incr(ctx, rk).Result()
+	if err != nil {
+		return 0, err
+	}
+
+	// Defensive check: suspiciously high ref count (likely leak or race condition)
+	if count >= 10 {
+		metrics.RefCountAnomaliesTotal.WithLabelValues("high_incr").Inc()
+		slog.Warn("Ref count suspiciously high on increment - possible leak",
+			"session_uuid", sid.String(),
+			"count", count)
+	}
+
+	return count, nil
 }
 
 func (s *SessionRepo) DecrRefCount(ctx context.Context, sid uuid.UUID) (int64, error) {
 	rk := refCountKey(sid)
-	return s.rdb.Decr(ctx, rk).Result()
+	count, err := s.rdb.Decr(ctx, rk).Result()
+	if err != nil {
+		return 0, err
+	}
+
+	// Defensive check: ref count went negative (underflow - more decrements than increments)
+	if count < 0 {
+		metrics.RefCountAnomaliesTotal.WithLabelValues("negative").Inc()
+		slog.Warn("Ref count went negative - resetting to 0 (self-healing)",
+			"session_uuid", sid.String(),
+			"count", count)
+
+		// Self-heal: reset to 0 to prevent permanent negative state
+		if err := s.rdb.Set(ctx, rk, 0, 0).Err(); err != nil {
+			slog.Error("Failed to reset negative ref count", "error", err)
+		}
+		return 0, nil
+	}
+
+	return count, nil
 }
 
 // --- Orphan cleanup ---

@@ -281,6 +281,114 @@ The actor follows this shape:
 - `Stop()` method for clean shutdown
 - Command types use an embedded `baseBroadcasterCmd` struct to satisfy the marker interface
 
+### Context Propagation and Shutdown Timing
+
+**Context patterns:**
+- **Request contexts:** Propagated from Echo handlers through all layers (database, Redis, Twitch API). Cancelled when client disconnects.
+- **Shutdown context:** Injected into Broadcaster on creation, cancelled by `Stop()` to abort in-flight Redis calls immediately.
+- **Background contexts:** Used only for fire-and-forget operations (e.g., orphan cleanup unsubscribe).
+
+**Timeout hierarchy:**
+- Broadcaster Redis calls: 2s per-session timeout (circuit breaker threshold)
+- Broadcaster shutdown: 10s total (waits for goroutine exit)
+- WebSocket write operations: 5s deadline
+- Orphan cleanup scan: 30s timeout
+- HTTP server shutdown: 30s (Echo graceful shutdown)
+
+**Graceful shutdown sequence:**
+1. SIGINT/SIGTERM received
+2. `Broadcaster.Stop()` cancels shutdown context → in-flight Redis calls abort immediately
+3. Stop command sent to actor → broadcaster exits tick loop
+4. WebSocket close frames sent to all clients
+5. Wait for broadcaster goroutine exit (max 10s)
+6. App cleanup timer stopped
+7. EventSub manager cleanup (conduit deletion if owned)
+8. Database and Redis connections closed
+
+**Total shutdown time:** <5s under normal conditions, max 15s if broadcaster has hung sessions.
+
+### Cleanup Leader Election
+
+Orphan cleanup runs on only one instance at a time using Redis-based leader election.
+
+**Pattern: Redis SETNX with TTL**
+
+```go
+// Try to become leader
+ok, _ := rdb.SetNX(ctx, "cleanup:leader", instanceID, 30*time.Second).Result()
+if !ok {
+    // Another instance is leader, skip cleanup
+    return
+}
+
+// We're the leader, run cleanup
+runCleanup()
+
+// Renew lease every 15s
+rdb.Expire(ctx, "cleanup:leader", 30*time.Second)
+```
+
+**Benefits:**
+- ✅ Eliminates duplicate Twitch API calls (N instances → 1× API calls per cleanup cycle)
+- ✅ Reduces Redis SCAN contention (single instance scanning at a time)
+- ✅ Prevents goroutine accumulation from duplicate background tasks
+- ✅ Graceful leader failover (30s lease renewal, self-healing on leader crash)
+
+**Implementation** (`internal/app/service.go`):
+- `LeaderElector` handles lock acquisition, renewal, and release
+- Instance ID format: `hostname-PID` (unique across restarts and instances)
+- Lock key: `cleanup:leader`, TTL: 30 seconds
+- Lease renewal: every 15 seconds (half of TTL for safety margin)
+- Graceful release on shutdown (deletes lock only if still owned)
+
+**Failure Modes:**
+
+**Leader crashes:**
+- Lock TTL expires after 30s
+- Another instance becomes leader on next cleanup cycle (≤30s recovery)
+- No manual intervention required
+
+**Leader slow to renew:**
+- Renewal happens every 15s (half of 30s TTL)
+- If renewal fails, lock expires at 30s
+- New leader elected on next cycle (graceful failover)
+
+**Network partition:**
+- Leader can't reach Redis → renewal fails → loses leadership
+- Other instances elect new leader when TTL expires
+- No split-brain (Redis is single source of truth)
+
+**Clock skew:**
+- TTL-based expiry is Redis-side, not dependent on instance clocks
+- Instance ID collision (same hostname+PID) prevented by process isolation
+
+**Metrics:**
+
+- `cleanup_leader{instance_id}` - 1 if this instance is leader, 0 otherwise
+- `cleanup_skipped_total{reason}` - Cleanup cycles skipped (not_leader, leader_lock_failed)
+- `leader_election_failures_total{reason}` - Election failures (acquire_failed, renew_failed)
+
+**Operations:**
+
+**Check current leader:**
+```bash
+redis-cli GET cleanup:leader
+# Returns: hostname-PID of current leader
+```
+
+**Force leader change** (emergency):
+```bash
+redis-cli DEL cleanup:leader
+# Next instance to run cleanup becomes leader
+# Use only if current leader is stuck and not releasing lock
+```
+
+**Lock stolen alert:**
+If `leader_election_failures_total{reason="lock_stolen"}` fires frequently:
+- Indicates clock skew or multiple instances with same instance ID
+- Check instance ID generation (hostname + PID should be unique)
+- Verify no instances sharing PIDs (e.g., containerized environments with PID 1 reuse)
+
 ### Broadcaster (`broadcast/broadcaster.go`)
 
 - Actor goroutine owns the `activeClients` map (session UUID → set of `*clientWriter`). `NewBroadcaster` accepts a `domain.Engine`, an `onFirstClient` callback, an `onSessionEmpty` callback, and a `clockwork.Clock`.

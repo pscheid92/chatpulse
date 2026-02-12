@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/metrics"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -42,12 +44,17 @@ type Service struct {
 	cleanupMu        sync.Mutex    // protects cleanup state
 	orphanMaxAge     time.Duration
 	cleanupInterval  time.Duration
+	leaderElector    *LeaderElector // Redis-based leader election for cleanup
+	isLeader         bool           // true if this instance is cleanup leader
 }
 
 // NewService creates the application layer service.
 // twitch may be nil if webhooks are not configured.
 // orphanMaxAge and cleanupInterval control orphan session cleanup timing.
-func NewService(users domain.UserRepository, configs domain.ConfigRepository, store domain.SessionRepository, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock, orphanMaxAge, cleanupInterval time.Duration) *Service {
+// rdb is used for leader election to ensure only one instance runs cleanup.
+func NewService(users domain.UserRepository, configs domain.ConfigRepository, store domain.SessionRepository, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock, rdb *redis.Client, orphanMaxAge, cleanupInterval time.Duration) *Service {
+	instanceID := generateInstanceID()
+
 	s := &Service{
 		users:           users,
 		configs:         configs,
@@ -58,10 +65,22 @@ func NewService(users domain.UserRepository, configs domain.ConfigRepository, st
 		cleanupStopCh:   make(chan struct{}),
 		orphanMaxAge:    orphanMaxAge,
 		cleanupInterval: cleanupInterval,
+		leaderElector:   NewLeaderElector(rdb, instanceID),
+		isLeader:        false,
 	}
 
 	s.startCleanupTimer()
 	return s
+}
+
+// generateInstanceID creates a unique instance identifier.
+// Format: hostname-PID for uniqueness across restarts and instances.
+func generateInstanceID() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+	return fmt.Sprintf("%s-%d", hostname, os.Getpid())
 }
 
 // GetUserByID retrieves a user by internal ID.
@@ -324,14 +343,19 @@ func (s *Service) startCleanupTimer() {
 	// Initial delay with jitter
 	initialTimer := s.clock.NewTimer(firstInterval)
 
+	// Leader election: renew lease every 15s (half of 30s TTL)
+	renewTicker := s.clock.NewTicker(15 * time.Second)
+
 	go func() {
+		defer ticker.Stop()
+		defer renewTicker.Stop()
+
 		// Wait for initial jittered delay
 		select {
 		case <-initialTimer.Chan():
 			// First cleanup after jittered interval
 		case <-s.cleanupStopCh:
 			initialTimer.Stop()
-			ticker.Stop()
 			return
 		}
 
@@ -362,12 +386,29 @@ func (s *Service) startCleanupTimer() {
 						// Backoff complete
 					case <-s.cleanupStopCh:
 						timer.Stop()
-						ticker.Stop()
 						return
 					}
 				}
 
-				// Run cleanup
+				// Try to become leader (if not already)
+				if !s.isLeader {
+					acquired, err := s.leaderElector.TryAcquire(context.Background())
+					if err != nil {
+						slog.Error("failed to acquire leader lock", "error", err)
+						metrics.LeaderElectionFailuresTotal.WithLabelValues("acquire_failed").Inc()
+						continue
+					}
+					if !acquired {
+						slog.Debug("skipping cleanup (not leader)")
+						metrics.CleanupSkippedTotal.WithLabelValues("not_leader").Inc()
+						continue
+					}
+					s.isLeader = true
+					metrics.CleanupLeaderGauge.WithLabelValues(s.leaderElector.instanceID).Set(1)
+					slog.Info("became cleanup leader", "instance_id", s.leaderElector.instanceID)
+				}
+
+				// Run cleanup as leader
 				err := s.CleanupOrphans(context.Background())
 
 				s.cleanupMu.Lock()
@@ -384,18 +425,40 @@ func (s *Service) startCleanupTimer() {
 				}
 				s.cleanupMu.Unlock()
 
+			case <-renewTicker.Chan():
+				// Renew leadership lease
+				if s.isLeader {
+					if err := s.leaderElector.Renew(context.Background()); err != nil {
+						slog.Warn("lost leader lock", "error", err)
+						metrics.LeaderElectionFailuresTotal.WithLabelValues("renew_failed").Inc()
+						metrics.CleanupLeaderGauge.WithLabelValues(s.leaderElector.instanceID).Set(0)
+						s.isLeader = false
+					}
+				}
+
 			case <-s.cleanupStopCh:
-				ticker.Stop()
 				return
 			}
 		}
 	}()
-	slog.Info("Cleanup timer started", "interval", "30s")
+	slog.Info("Cleanup timer started with leader election", "interval", "30s")
 }
 
 // Stop stops the cleanup timer and waits for in-flight cleanup goroutines to finish.
+// Gracefully releases leadership lock if this instance is the leader.
 func (s *Service) Stop() {
 	s.stopOnce.Do(func() {
+		// Release leadership before exiting
+		if s.isLeader {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.leaderElector.Release(ctx); err != nil {
+				slog.Error("failed to release leader lock", "error", err)
+			} else {
+				slog.Info("released cleanup leader lock")
+			}
+		}
+
 		close(s.cleanupStopCh)
 	})
 	s.cleanupWg.Wait()

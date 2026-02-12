@@ -233,7 +233,7 @@ func main() {
 		twitchSvc = eventsubMgr
 	}
 
-	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, clock, 30*time.Second, 30*time.Second)
+	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, clock, redisClient, 30*time.Second, 30*time.Second)
 
 	onFirstClient := func(sessionUUID uuid.UUID) {
 		if err := appSvc.IncrRefCount(context.Background(), sessionUUID); err != nil {

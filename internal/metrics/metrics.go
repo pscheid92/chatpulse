@@ -60,6 +60,15 @@ var (
 		},
 		[]string{"component"},
 	)
+
+	// RefCountAnomaliesTotal tracks ref count anomalies (negative, high, underflow)
+	RefCountAnomaliesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ref_count_anomalies_total",
+			Help: "Total ref count anomalies detected by type",
+		},
+		[]string{"type"},
+	)
 )
 
 // Broadcaster Metrics
@@ -443,6 +452,36 @@ var (
 			Name: "orphan_cleanup_key_limit_reached_total",
 			Help: "Total number of times cleanup hit key limit (1000 keys/run)",
 		},
+	)
+)
+
+// Leader Election Metrics
+var (
+	// CleanupLeaderGauge tracks which instance is the cleanup leader
+	CleanupLeaderGauge = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "cleanup_leader",
+			Help: "1 if this instance is cleanup leader, 0 otherwise",
+		},
+		[]string{"instance_id"},
+	)
+
+	// CleanupSkippedTotal tracks cleanup cycles skipped (not leader)
+	CleanupSkippedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "cleanup_skipped_total",
+			Help: "Total cleanup cycles skipped (not leader)",
+		},
+		[]string{"reason"}, // "not_leader" vs "leader_lock_failed"
+	)
+
+	// LeaderElectionFailuresTotal tracks leader election failures
+	LeaderElectionFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "leader_election_failures_total",
+			Help: "Total leader election failures",
+		},
+		[]string{"reason"}, // "acquire_failed", "renew_failed", "lock_stolen"
 	)
 )
 

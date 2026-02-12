@@ -77,6 +77,8 @@ type Broadcaster struct {
 	stopTimeout          time.Duration
 	maxClientsPerSession int
 	tickInterval         time.Duration
+	shutdownCtx          context.Context
+	shutdownCancel       context.CancelFunc
 }
 
 // NewBroadcaster creates a new broadcaster.
@@ -86,6 +88,8 @@ type Broadcaster struct {
 // maxClientsPerSession limits connections per session (prevents resource exhaustion).
 // tickInterval controls broadcast frequency (lower = lower latency, higher Redis load).
 func NewBroadcaster(engine domain.Engine, onFirstClient func(uuid.UUID), onSessionEmpty func(uuid.UUID), clock clockwork.Clock, maxClientsPerSession int, tickInterval time.Duration) *Broadcaster {
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+
 	b := &Broadcaster{
 		cmdCh:                make(chan broadcasterCmd, 256),
 		clock:                clock,
@@ -98,6 +102,8 @@ func NewBroadcaster(engine domain.Engine, onFirstClient func(uuid.UUID), onSessi
 		stopTimeout:          stopTimeout,
 		maxClientsPerSession: maxClientsPerSession,
 		tickInterval:         tickInterval,
+		shutdownCtx:          shutdownCtx,
+		shutdownCancel:       shutdownCancel,
 	}
 	go b.run()
 	return b
@@ -148,6 +154,9 @@ func (b *Broadcaster) GetClientCount(sessionUUID uuid.UUID) int {
 // Stop shuts down the broadcaster, closing all client connections.
 // Blocks until the broadcaster goroutine has exited or timeout is reached.
 func (b *Broadcaster) Stop() {
+	// Cancel shutdown context to abort in-flight Redis operations
+	b.shutdownCancel()
+
 	b.cmdCh <- stopCmd{}
 
 	// Wait for goroutine to exit with timeout
@@ -329,9 +338,15 @@ func (b *Broadcaster) handleTick() {
 		}
 
 		// Per-session timeout to prevent Redis hangs from blocking the broadcaster
-		ctx, cancel := context.WithTimeout(context.Background(), redisTimeout)
+		// Use shutdown context so Redis calls abort immediately on Stop()
+		ctx, cancel := context.WithTimeout(b.shutdownCtx, redisTimeout)
 		value, err := b.engine.GetCurrentValue(ctx, sessionUUID)
 		cancel()
+
+		// If shutdown context was cancelled, exit immediately
+		if b.shutdownCtx.Err() == context.Canceled {
+			return
+		}
 
 		if err != nil {
 			// Handle failure - increment circuit breaker counter
