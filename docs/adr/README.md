@@ -92,6 +92,26 @@ What are the positive, negative, and trade-off consequences of this decision?
 | [ADR-009](009-token-encryption-at-rest.md) | AES-256-GCM token encryption at rest | OAuth tokens encrypted before PostgreSQL storage. `crypto.Service` interface with AES-256-GCM (prod) or NoopService (dev). |
 | [ADR-010](010-eventual-consistency-philosophy.md) | Graceful degradation - eventual consistency | Accept eventual consistency over strong consistency. Prioritize availability. Self-healing (cleanup timers) over prevention (locks). |
 
+### Tier 4: Implementation ADRs
+
+**Read after Tier 1-3** - these explain internal implementation choices (concurrency patterns, tooling, algorithms):
+
+| ADR | Title | Summary |
+|-----|-------|---------|
+| [ADR-011](011-actor-pattern-broadcaster.md) | Actor pattern for broadcaster concurrency | Single goroutine owns mutable state. Typed command channel (no mutexes). Trade-off: simplicity over maximum throughput. |
+| [ADR-012](012-manual-dependency-injection.md) | Manual dependency injection | Explicit constructor calls in main.go. No DI framework. Trade-off: explicitness over brevity. |
+| [ADR-013](013-sqlc-for-sql-generation.md) | sqlc for type-safe SQL | Generate Go code from SQL files. Compile-time type safety. Trade-off: type safety over zero-codegen. |
+| [ADR-014](014-time-decay-sentiment-algorithm.md) | Time-decay sentiment algorithm | Exponential decay in Redis Lua functions. Smooth asymptotic approach to neutral. Trade-off: smooth decay over simple linear. |
+
+### Tier 5: Operations ADRs
+
+**Read after Tier 1-4** - these explain deployment and observability practices:
+
+| ADR | Title | Summary |
+|-----|-------|---------|
+| [ADR-015](015-deployment-strategy-zero-downtime.md) | Deployment strategy and zero-downtime deploys | Kubernetes rolling updates with expand/contract migrations. Advisory lock coordination. Trade-off: zero downtime over fast deploys. |
+| [ADR-016](016-observability-and-slo-tracking.md) | Observability and SLO tracking | Prometheus metrics + structured logs. SLOs: 99.5% availability, P95 <500ms. Defer distributed tracing. |
+
 ## How to Propose New ADRs
 
 1. Copy the template above into a new file `XXX-title.md` (use next available number)

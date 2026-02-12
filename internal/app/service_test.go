@@ -16,11 +16,12 @@ import (
 // --- Mock implementations ---
 
 type mockUserRepo struct {
-	getByIDFn           func(ctx context.Context, userID uuid.UUID) (*domain.User, error)
-	getByOverlayUUIDFn  func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error)
-	upsertFn            func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error)
-	updateTokensFn      func(ctx context.Context, userID uuid.UUID, accessToken, refreshToken string, tokenExpiry time.Time) error
-	rotateOverlayUUIDFn func(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
+	getByIDFn                   func(ctx context.Context, userID uuid.UUID) (*domain.User, error)
+	getByOverlayUUIDFn          func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error)
+	upsertFn                    func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error)
+	updateTokensFn              func(ctx context.Context, userID uuid.UUID, accessToken, refreshToken string, tokenExpiry time.Time) error
+	rotateOverlayUUIDFn         func(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
+	listUsersWithLegacyTokensFn func(ctx context.Context, currentVersion string, limit int) ([]*domain.User, error)
 }
 
 func (m *mockUserRepo) GetByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
@@ -56,6 +57,13 @@ func (m *mockUserRepo) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) 
 		return m.rotateOverlayUUIDFn(ctx, userID)
 	}
 	return uuid.New(), nil
+}
+
+func (m *mockUserRepo) ListUsersWithLegacyTokens(ctx context.Context, currentVersion string, limit int) ([]*domain.User, error) {
+	if m.listUsersWithLegacyTokensFn != nil {
+		return m.listUsersWithLegacyTokensFn(ctx, currentVersion, limit)
+	}
+	return nil, fmt.Errorf("not implemented")
 }
 
 type mockConfigRepo struct {
