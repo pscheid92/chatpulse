@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,6 +156,10 @@ func (m *mockSessionRepo) UpdateConfig(ctx context.Context, sessionUUID uuid.UUI
 	return nil
 }
 
+func (m *mockSessionRepo) DisconnectedCount(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockSessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]uuid.UUID, error) {
 	if m.listOrphansFn != nil {
 		return m.listOrphansFn(ctx, maxAge)
@@ -174,6 +179,10 @@ func (m *mockSessionRepo) DecrRefCount(ctx context.Context, sessionUUID uuid.UUI
 		return m.decrRefCountFn(ctx, sessionUUID)
 	}
 	return 0, nil
+}
+
+func (m *mockSessionRepo) ListActiveSessions(ctx context.Context) ([]domain.ActiveSession, error) {
+	return nil, nil
 }
 
 type mockTwitch struct {
@@ -217,12 +226,19 @@ func (m *mockEngine) InvalidateConfigCache(_ uuid.UUID) {
 
 // newTestService creates a Service without starting the cleanup timer.
 func newTestService(users domain.UserRepository, configs domain.ConfigRepository, store *mockSessionRepo, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock) *Service {
+	// Create a mock Redis client that won't actually connect
+	// The Publish call in SaveConfig will fail gracefully (just logs a warning)
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+
 	return &Service{
 		users:           users,
 		configs:         configs,
 		store:           store,
 		engine:          engine,
 		twitch:          twitch,
+		redis:           rdb,
 		clock:           clock,
 		cleanupStopCh:   make(chan struct{}),
 		orphanMaxAge:    30 * time.Second,
@@ -449,6 +465,17 @@ func TestSaveConfig_Success(t *testing.T) {
 			assert.Equal(t, "no", againstT)
 			assert.Equal(t, 1.5, decay)
 			return nil
+		},
+		getByUserIDFn: func(_ context.Context, id uuid.UUID) (*domain.Config, error) {
+			return &domain.Config{
+				UserID:         userID,
+				ForTrigger:     "yes",
+				AgainstTrigger: "no",
+				LeftLabel:      "Left",
+				RightLabel:     "Right",
+				DecaySpeed:     1.5,
+				Version:        2, // Incremented by trigger
+			}, nil
 		},
 	}
 

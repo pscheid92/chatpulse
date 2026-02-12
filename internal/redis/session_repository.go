@@ -22,8 +22,12 @@ const (
 	fieldValue          = "value"
 	fieldBroadcasterID  = "broadcaster_user_id"
 	fieldConfigJSON     = "config_json"
+	fieldConfigVersion  = "config_version"
 	fieldLastDisconnect = "last_disconnect"
 	fieldLastUpdate     = "last_update"
+
+	// Redis sorted set key for orphan cleanup optimization.
+	disconnectedSessionsKey = "disconnected_sessions"
 )
 
 type SessionRepo struct {
@@ -53,8 +57,12 @@ func (s *SessionRepo) ActivateSession(ctx context.Context, sid uuid.UUID, broadc
 	}
 
 	if exists != 0 {
-		// Resume: clear last_disconnect
-		return s.rdb.HSet(ctx, sk, fieldLastDisconnect, "0").Err()
+		// Resume: clear last_disconnect and remove from disconnected set
+		pipe := s.rdb.Pipeline()
+		pipe.HSet(ctx, sk, fieldLastDisconnect, "0")
+		pipe.ZRem(ctx, disconnectedSessionsKey, sid.String())
+		_, err = pipe.Exec(ctx)
+		return err
 	}
 
 	// Create a new session
@@ -63,6 +71,7 @@ func (s *SessionRepo) ActivateSession(ctx context.Context, sid uuid.UUID, broadc
 		fieldValue:          "0",
 		fieldBroadcasterID:  broadcasterUserID,
 		fieldConfigJSON:     string(configJSON),
+		fieldConfigVersion:  config.Version,
 		fieldLastDisconnect: "0",
 		fieldLastUpdate:     "0",
 	})
@@ -76,7 +85,11 @@ func (s *SessionRepo) ActivateSession(ctx context.Context, sid uuid.UUID, broadc
 
 func (s *SessionRepo) ResumeSession(ctx context.Context, sid uuid.UUID) error {
 	sk := sessionKey(sid)
-	return s.rdb.HSet(ctx, sk, fieldLastDisconnect, "0").Err()
+	pipe := s.rdb.Pipeline()
+	pipe.HSet(ctx, sk, fieldLastDisconnect, "0")
+	pipe.ZRem(ctx, disconnectedSessionsKey, sid.String())
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (s *SessionRepo) SessionExists(ctx context.Context, sid uuid.UUID) (bool, error) {
@@ -111,6 +124,7 @@ func (s *SessionRepo) DeleteSession(ctx context.Context, sid uuid.UUID) error {
 	pipe := s.rdb.Pipeline()
 	pipe.Del(ctx, sk)
 	pipe.Del(ctx, rk)
+	pipe.ZRem(ctx, disconnectedSessionsKey, sid.String())
 
 	if broadcasterID != "" {
 		bk := broadcasterKey(broadcasterID)
@@ -124,7 +138,16 @@ func (s *SessionRepo) MarkDisconnected(ctx context.Context, sid uuid.UUID) error
 	sk := sessionKey(sid)
 	now := s.clock.Now()
 	formattedNow := strconv.FormatInt(now.UnixMilli(), 10)
-	return s.rdb.HSet(ctx, sk, fieldLastDisconnect, formattedNow).Err()
+
+	// Update session hash and add to disconnected sorted set atomically
+	pipe := s.rdb.Pipeline()
+	pipe.HSet(ctx, sk, fieldLastDisconnect, formattedNow)
+	pipe.ZAdd(ctx, disconnectedSessionsKey, goredis.Z{
+		Score:  float64(now.Unix()),
+		Member: sid.String(),
+	})
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 // --- Session queries ---
@@ -151,7 +174,21 @@ func (s *SessionRepo) GetSessionByBroadcaster(ctx context.Context, broadcasterUs
 
 func (s *SessionRepo) GetSessionConfig(ctx context.Context, sid uuid.UUID) (*domain.ConfigSnapshot, error) {
 	sk := sessionKey(sid)
-	result, err := s.rdb.HGet(ctx, sk, fieldConfigJSON).Result()
+
+	// Fetch both config JSON and version field
+	pipe := s.rdb.Pipeline()
+	configCmd := pipe.HGet(ctx, sk, fieldConfigJSON)
+	versionCmd := pipe.HGet(ctx, sk, fieldConfigVersion)
+	_, err := pipe.Exec(ctx)
+
+	if errors.Is(err, goredis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	configJSON, err := configCmd.Result()
 	if errors.Is(err, goredis.Nil) {
 		return nil, nil
 	}
@@ -160,9 +197,23 @@ func (s *SessionRepo) GetSessionConfig(ctx context.Context, sid uuid.UUID) (*dom
 	}
 
 	var config domain.ConfigSnapshot
-	if err := json.Unmarshal([]byte(result), &config); err != nil {
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+
+	// Check for version mismatch (drift detection)
+	versionStr, err := versionCmd.Result()
+	if err == nil {
+		redisVersion, parseErr := strconv.Atoi(versionStr)
+		if parseErr == nil && config.Version != redisVersion {
+			slog.Warn("config version mismatch detected",
+				"session_uuid", sid.String(),
+				"redis_version", redisVersion,
+				"config_json_version", config.Version)
+			metrics.ConfigDriftDetected.WithLabelValues(sid.String()).Inc()
+		}
+	}
+
 	return &config, nil
 }
 
@@ -173,7 +224,10 @@ func (s *SessionRepo) UpdateConfig(ctx context.Context, sid uuid.UUID, config do
 	}
 
 	sk := sessionKey(sid)
-	return s.rdb.HSet(ctx, sk, fieldConfigJSON, string(configJSON)).Err()
+	return s.rdb.HSet(ctx, sk,
+		fieldConfigJSON, string(configJSON),
+		fieldConfigVersion, config.Version,
+	).Err()
 }
 
 // --- Ref counting ---
@@ -222,18 +276,55 @@ func (s *SessionRepo) DecrRefCount(ctx context.Context, sid uuid.UUID) (int64, e
 
 // --- Orphan cleanup ---
 
+// DisconnectedCount returns the number of sessions in the disconnected set.
+func (s *SessionRepo) DisconnectedCount(ctx context.Context) (int64, error) {
+	count, err := s.rdb.ZCard(ctx, disconnectedSessionsKey).Result()
+	if err != nil {
+		return 0, fmt.Errorf("zcard failed: %w", err)
+	}
+	return count, nil
+}
+
 func (s *SessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]uuid.UUID, error) {
 	now := s.clock.Now()
-	var orphans []uuid.UUID
+	cutoff := now.Add(-maxAge).Unix()
+
+	// Use ZRANGEBYSCORE to efficiently query disconnected sessions older than cutoff
+	// Score is Unix timestamp, so this returns all sessions disconnected before cutoff
+	members, err := s.rdb.ZRangeByScore(ctx, disconnectedSessionsKey, &goredis.ZRangeBy{
+		Min: "-inf",
+		Max: fmt.Sprintf("%d", cutoff),
+	}).Result()
+
+	if err != nil {
+		return nil, fmt.Errorf("zrangebyscore failed: %w", err)
+	}
+
+	// Parse UUIDs from sorted set members
+	orphans := make([]uuid.UUID, 0, len(members))
+	for _, member := range members {
+		id, err := uuid.Parse(member)
+		if err != nil {
+			slog.Warn("ListOrphans: invalid UUID in sorted set", "member", member, "error", err)
+			continue
+		}
+		orphans = append(orphans, id)
+	}
+
+	return orphans, nil
+}
+
+// --- Reconciliation ---
+
+func (s *SessionRepo) ListActiveSessions(ctx context.Context) ([]domain.ActiveSession, error) {
+	var sessions []domain.ActiveSession
 	var cursor uint64
-	keysProcessed := 0
-	const maxKeysPerScan = 1000 // Process at most 1000 keys per cleanup run
 
 	for {
-		// Check context cancellation/timeout before each scan iteration
+		// Check context cancellation before each scan iteration
 		select {
 		case <-ctx.Done():
-			return orphans, fmt.Errorf("scan cancelled after finding %d orphans: %w", len(orphans), ctx.Err())
+			return sessions, fmt.Errorf("scan cancelled: %w", ctx.Err())
 		default:
 		}
 
@@ -243,21 +334,28 @@ func (s *SessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]
 		}
 
 		for _, key := range keys {
-			keysProcessed++
-
-			// Stop if we've hit the per-run limit
-			if keysProcessed >= maxKeysPerScan {
-				metrics.OrphanCleanupKeyLimitReachedTotal.Inc()
-				slog.Info("cleanup key limit reached",
-					"keys_processed", keysProcessed,
-					"orphans_found", len(orphans))
-				metrics.OrphanCleanupKeysScannedTotal.Add(float64(keysProcessed))
-				return orphans, nil
+			sessionUUID, err := uuid.Parse(strings.TrimPrefix(key, "session:"))
+			if err != nil {
+				slog.Warn("ListActiveSessions: invalid UUID key", "key", key, "error", err)
+				continue
 			}
 
-			if id, isOrphan := s.checkOrphan(ctx, key, now, maxAge); isOrphan {
-				orphans = append(orphans, id)
+			// Fetch broadcaster_user_id from session hash
+			broadcasterUserID, err := s.rdb.HGet(ctx, key, fieldBroadcasterID).Result()
+			if err != nil {
+				if !errors.Is(err, goredis.Nil) {
+					slog.Error("ListActiveSessions: failed to read broadcaster_user_id", "key", key, "error", err)
+				}
+				continue
 			}
+
+			// For now, we don't have user_id stored in Redis session hash
+			// The reconciler will need to look it up via GetUserByOverlayUUID if needed
+			sessions = append(sessions, domain.ActiveSession{
+				OverlayUUID:       sessionUUID,
+				BroadcasterUserID: broadcasterUserID,
+				UserID:            uuid.Nil, // Not stored in Redis, reconciler must lookup if needed
+			})
 		}
 
 		cursor = nextCursor
@@ -266,35 +364,7 @@ func (s *SessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]
 		}
 	}
 
-	metrics.OrphanCleanupKeysScannedTotal.Add(float64(keysProcessed))
-	return orphans, nil
-}
-
-func (s *SessionRepo) checkOrphan(ctx context.Context, key string, now time.Time, maxAge time.Duration) (uuid.UUID, bool) {
-	val, err := s.rdb.HGet(ctx, key, fieldLastDisconnect).Result()
-	if err != nil {
-		if !errors.Is(err, goredis.Nil) {
-			slog.Error("ListOrphans: failed to read key", "key", key, "error", err)
-		}
-		return uuid.Nil, false
-	}
-
-	ts, err := strconv.ParseInt(val, 10, 64)
-	if err != nil || ts == 0 {
-		return uuid.Nil, false
-	}
-
-	if now.Sub(time.UnixMilli(ts)) < maxAge {
-		return uuid.Nil, false
-	}
-
-	id, err := uuid.Parse(strings.TrimPrefix(key, "session:"))
-	if err != nil {
-		slog.Warn("ListOrphans: invalid UUID key", "key", key, "error", err)
-		return uuid.Nil, false
-	}
-
-	return id, true
+	return sessions, nil
 }
 
 // --- Key helpers ---

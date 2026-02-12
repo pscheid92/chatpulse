@@ -105,7 +105,12 @@ func (s *testSessionRepo) UpdateConfig(context.Context, uuid.UUID, domain.Config
 }
 func (s *testSessionRepo) IncrRefCount(context.Context, uuid.UUID) (int64, error) { return 0, nil }
 func (s *testSessionRepo) DecrRefCount(context.Context, uuid.UUID) (int64, error) { return 0, nil }
+func (s *testSessionRepo) DisconnectedCount(context.Context) (int64, error)        { return 0, nil }
 func (s *testSessionRepo) ListOrphans(_ context.Context, _ time.Duration) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (s *testSessionRepo) ListActiveSessions(context.Context) ([]domain.ActiveSession, error) {
 	return nil, nil
 }
 

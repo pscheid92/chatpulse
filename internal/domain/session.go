@@ -12,6 +12,12 @@ type SessionUpdate struct {
 	Status string  `json:"status"`
 }
 
+type ActiveSession struct {
+	OverlayUUID       uuid.UUID
+	UserID            uuid.UUID
+	BroadcasterUserID string
+}
+
 type SessionRepository interface {
 	// Session lifecycle
 
@@ -34,5 +40,10 @@ type SessionRepository interface {
 
 	// Orphan cleanup
 
+	DisconnectedCount(ctx context.Context) (int64, error)
 	ListOrphans(ctx context.Context, maxAge time.Duration) ([]uuid.UUID, error)
+
+	// Reconciliation
+
+	ListActiveSessions(ctx context.Context) ([]ActiveSession, error)
 }

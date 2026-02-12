@@ -20,6 +20,7 @@ type Config struct {
 	LeftLabel  string
 	RightLabel string
 	DecaySpeed float64
+	Version    int       // Incremented on each update for drift detection
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -30,6 +31,7 @@ type ConfigSnapshot struct {
 	LeftLabel      string
 	RightLabel     string
 	DecaySpeed     float64
+	Version        int // Cached version for drift detection
 }
 
 type ConfigRepository interface {

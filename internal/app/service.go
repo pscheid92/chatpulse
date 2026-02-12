@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
+	"github.com/pscheid92/chatpulse/internal/coordination"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/metrics"
 	"github.com/redis/go-redis/v9"
@@ -34,6 +35,7 @@ type Service struct {
 	store            domain.SessionRepository
 	engine           domain.Engine
 	twitch           domain.TwitchService
+	redis            *redis.Client
 	activationGroup  singleflight.Group
 	clock            clockwork.Clock
 	cleanupStopCh    chan struct{}
@@ -61,6 +63,7 @@ func NewService(users domain.UserRepository, configs domain.ConfigRepository, st
 		store:           store,
 		engine:          engine,
 		twitch:          twitch,
+		redis:           rdb,
 		clock:           clock,
 		cleanupStopCh:   make(chan struct{}),
 		orphanMaxAge:    orphanMaxAge,
@@ -148,6 +151,7 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 			LeftLabel:      config.LeftLabel,
 			RightLabel:     config.RightLabel,
 			DecaySpeed:     config.DecaySpeed,
+			Version:        config.Version,
 		}
 
 		if err := s.store.ActivateSession(activationCtx, overlayUUID, user.TwitchUserID, snapshot); err != nil {
@@ -217,20 +221,43 @@ func (s *Service) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, 
 		return err
 	}
 
+	// Fetch updated config to get new version (incremented by trigger)
+	config, err := s.configs.GetByUserID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch updated config: %w", err)
+	}
+
 	snapshot := domain.ConfigSnapshot{
 		ForTrigger:     forTrigger,
 		AgainstTrigger: againstTrigger,
 		LeftLabel:      leftLabel,
 		RightLabel:     rightLabel,
 		DecaySpeed:     decaySpeed,
-	}
-	// Best-effort update of live session
-	if err := s.store.UpdateConfig(ctx, overlayUUID, snapshot); err != nil {
-		slog.Error("Failed to update live session config", "error", err)
+		Version:        config.Version,
 	}
 
-	// Invalidate config cache so next GetCurrentValue() fetches fresh config
+	// Update live session in Redis - no longer best-effort
+	// Return error to caller if Redis update fails (prevents silent drift)
+	if err := s.store.UpdateConfig(ctx, overlayUUID, snapshot); err != nil {
+		slog.Error("Failed to update session config in Redis",
+			"user_id", userID,
+			"overlay_uuid", overlayUUID,
+			"error", err)
+
+		// Return error to handler - user should see error and can retry
+		return fmt.Errorf("config saved to database but failed to update active session: %w", err)
+	}
+
+	// Invalidate local config cache so next GetCurrentValue() fetches fresh config
 	s.engine.InvalidateConfigCache(overlayUUID)
+
+	// Broadcast invalidation to other instances via pub/sub
+	if err := coordination.PublishConfigInvalidation(ctx, s.redis, overlayUUID); err != nil {
+		slog.Warn("Failed to publish config invalidation",
+			"overlay_uuid", overlayUUID,
+			"error", err)
+		// Non-fatal: other instances will get update via TTL expiry
+	}
 
 	return nil
 }
@@ -250,6 +277,11 @@ func (s *Service) CleanupOrphans(ctx context.Context) error {
 		metrics.OrphanCleanupScansTotal.Inc()
 		metrics.OrphanCleanupDurationSeconds.Observe(s.clock.Since(start).Seconds())
 	}()
+
+	// Update disconnected sessions count metric
+	if count, err := s.store.DisconnectedCount(ctx); err == nil {
+		metrics.DisconnectedSessionsCount.Set(float64(count))
+	}
 
 	// Add timeout to prevent unbounded scan operations
 	scanCtx, cancel := context.WithTimeout(ctx, cleanupScanTimeout)

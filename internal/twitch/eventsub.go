@@ -11,6 +11,7 @@ import (
 	"github.com/Its-donkey/kappopher/helix"
 	"github.com/google/uuid"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/metrics"
 )
 
 const (
@@ -182,6 +183,7 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 		sub, err := m.attemptSubscribe(ctx, userID, broadcasterUserID)
 		if err == nil {
 			// Success
+			metrics.EventSubSubscribeAttemptsTotal.WithLabelValues("success").Inc()
 			slog.Info("Subscribed to chat messages",
 				"broadcaster_user_id", broadcasterUserID,
 				"subscription_id", sub.ID,
@@ -199,6 +201,7 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 				"backoff_seconds", backoff.Seconds())
 		} else if !isEventSubRetriable(err) {
 			// Permanent error (4xx except 429) - don't retry
+			metrics.EventSubSubscribeAttemptsTotal.WithLabelValues("permanent_error").Inc()
 			slog.Error("EventSub subscribe failed with permanent error",
 				"broadcaster_user_id", broadcasterUserID,
 				"error", err)
@@ -221,6 +224,7 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 			}
 		} else {
 			// Exhausted retries
+			metrics.EventSubSubscribeAttemptsTotal.WithLabelValues("exhausted").Inc()
 			slog.Error("EventSub subscribe failed after retries",
 				"broadcaster_user_id", broadcasterUserID,
 				"attempts", maxRetries,

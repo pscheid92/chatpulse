@@ -255,6 +255,67 @@ Database connection returns a bare `*pgxpool.Pool` — no wrapper struct. Reposi
 
 Redis-only architecture. Session state lives in Redis, Redis Functions handle atomic vote/decay operations (loaded via `FUNCTION LOAD`, called via `FCALL`/`FCALL_RO`). Multiple instances share state via Redis; ref counting (`IncrRefCount`/`DecrRefCount`) tracks how many instances serve each session. The `Broadcaster` pulls current values from Redis on each tick (50ms) rather than subscribing to push notifications.
 
+### Data Consistency Model
+
+#### PostgreSQL = Source of Truth
+- User config stored in `configs` table
+- Config `version` field incremented on every update (via trigger)
+- Authoritative for all config reads
+
+#### Redis = Session Cache
+- Active session state cached for performance
+- Config snapshot stored in `session:{uuid}` hash with version field
+- Config version stored alongside (`config_version` field)
+
+#### Consistency Guarantees
+
+**Strong consistency:** NOT provided
+- Redis update can fail after PostgreSQL succeeds
+- Eventual consistency model (5-minute reconciliation)
+
+**Eventual consistency:** Provided via reconciler
+- Background reconciler detects drift every 5 minutes
+- Auto-fixes stale Redis config by comparing versions
+- Alert fires on drift detection (`config_drift_detected_total` metric)
+
+**Failure modes:**
+
+1. **SaveConfig + Redis failure**
+   - PostgreSQL: Updated ✅
+   - Redis: Stale ❌
+   - User sees error → can retry
+   - Reconciler fixes within 5 minutes
+
+2. **Redis flush**
+   - All sessions reset
+   - Next activation fetches from PostgreSQL
+   - Reconciler not needed (sessions recreated fresh)
+
+3. **Manual DB update**
+   - PostgreSQL: Updated ✅
+   - Redis: Stale ❌ (no cache invalidation)
+   - Reconciler detects + fixes within 5 minutes
+
+#### Operations
+
+**Check for drift manually:**
+```bash
+# Query Prometheus
+chatpulse_config_drift_detected_total
+```
+
+**Force reconciliation:**
+```bash
+# Restart reconciler (kills + recreates)
+kubectl rollout restart deployment chatpulse
+```
+
+**Manual cache invalidation:**
+```bash
+# Delete session (forces re-activation with fresh config)
+redis-cli DEL "session:{overlay_uuid}"
+```
+
 ### Bot Account Architecture
 
 A single dedicated bot account reads chat on behalf of all streamers:
@@ -270,6 +331,38 @@ Chat messages are received via **Twitch EventSub webhooks** transported through 
 
 - **EventSub Manager** (`twitch/eventsub.go`): Owns the Kappopher `*helix.Client` directly (no separate wrapper). `NewEventSubManager(clientID, clientSecret, ...)` validates credentials via `GetAppAccessToken` (fail-fast) and creates the Helix client internally. Manages conduit lifecycle and EventSub subscriptions. On startup (`Setup`), finds an existing conduit via `GetConduits()` or creates a new one, then configures a webhook shard pointing to the app's `WEBHOOK_CALLBACK_URL`. Creates/deletes EventSub subscriptions targeting the conduit. Handles Twitch 409 Conflict via `helix.APIError` type assertion (subscription already exists) as idempotent success. Subscriptions are persisted in PostgreSQL (`eventsub_subscriptions` table) for idempotency and crash recovery. On subscribe failure after Twitch API success, attempts cleanup. On shutdown (`Cleanup`), deletes the conduit.
 - **Webhook Handler** (`twitch/webhook.go`): Receives Twitch POST notifications with Kappopher's built-in HMAC-SHA256 signature verification. Processes votes via `engine.ProcessVote()` through the `domain.Engine` interface. Flow: broadcaster lookup → trigger match → debounce check → atomic vote application.
+
+### EventSub Graceful Degradation
+
+**Startup resilience:**
+- EventSub setup failures don't prevent app startup (logged as warning, metric incremented)
+- App continues without webhooks → overlay displays cached values, votes not processed
+- Impact: Temporary Twitch API outages don't cause service-wide downtime
+
+**Subscribe retry with exponential backoff:**
+- 3 attempts: 1s → 2s → 4s backoff
+- 429 rate limit → 30s backoff (respects Twitch rate limits)
+- Permanent errors (4xx except 429) → fail immediately, no retry
+- Metrics: `eventsub_subscribe_attempts_total{result}` (success, permanent_error, exhausted)
+
+**Unsubscribe retry:**
+- Same retry logic as Subscribe (3 attempts, exponential backoff)
+- Best-effort: if Twitch delete fails after retries, still deletes from DB (prevents orphan accumulation in our system)
+- Orphan subscriptions on Twitch side are benign (no quota impact if broadcaster inactive)
+
+**Metrics:**
+- `eventsub_setup_failures_total` - startup failures (counter)
+- `eventsub_subscribe_attempts_total{result}` - subscribe outcomes (counter)
+- `eventsub_stale_subscriptions_total` - health monitoring (counter, future)
+
+**Failure modes:**
+1. **EventSub setup fails at startup** → App runs without webhooks, overlay works, votes not processed
+2. **Subscribe fails (permanent)** → Session activation fails, user sees error, can retry
+3. **Subscribe fails (exhausted retries)** → Session activation fails after 3 attempts (~7s delay)
+4. **Twitch 429 rate limit** → Automatic 30s backoff, retry continues
+5. **Unsubscribe fails** → DB record deleted (prevents leak), Twitch subscription may be orphaned (benign)
+
+**Recovery:** Twitch API recovery is automatic - next subscribe attempt succeeds, webhooks resume flowing.
 
 ### Concurrency Model: Actor Pattern
 
@@ -462,6 +555,7 @@ Step 7's Redis Function atomically applies the time-decayed vote in Redis. The `
 - `broadcaster:{twitchUserID}` — string → overlayUUID
 - `debounce:{overlayUUID}:{twitchUserID}` — key with 1s TTL (auto-expires, per-user rate limit)
 - `rate_limit:votes:{overlayUUID}` — hash: `tokens`, `last_update` (5-min TTL, per-session rate limit)
+- `disconnected_sessions` — sorted set: score = Unix timestamp (disconnect time), member = session UUID (orphan cleanup index)
 
 **Redis Functions** (loaded via `FUNCTION LOAD`, called via `FCALL`/`FCALL_RO`):
 - `chatpulse` library:

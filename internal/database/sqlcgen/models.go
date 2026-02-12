@@ -19,6 +19,7 @@ type Config struct {
 	DecaySpeed     float64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	Version        int32
 }
 
 type EventsubSubscription struct {

@@ -48,7 +48,12 @@ func (m *mockSessionRepo) UpdateConfig(context.Context, uuid.UUID, domain.Config
 }
 func (m *mockSessionRepo) IncrRefCount(context.Context, uuid.UUID) (int64, error) { return 0, nil }
 func (m *mockSessionRepo) DecrRefCount(context.Context, uuid.UUID) (int64, error) { return 0, nil }
+func (m *mockSessionRepo) DisconnectedCount(context.Context) (int64, error)        { return 0, nil }
 func (m *mockSessionRepo) ListOrphans(context.Context, time.Duration) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (m *mockSessionRepo) ListActiveSessions(context.Context) ([]domain.ActiveSession, error) {
 	return nil, nil
 }
 

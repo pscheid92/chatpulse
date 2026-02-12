@@ -1,6 +1,6 @@
 -- name: GetConfigByUserID :one
 SELECT user_id, for_trigger, against_trigger, left_label, right_label,
-       decay_speed, created_at, updated_at
+       decay_speed, version, created_at, updated_at
 FROM configs WHERE user_id = $1;
 
 -- name: UpdateConfig :execresult

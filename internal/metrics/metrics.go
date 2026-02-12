@@ -311,6 +311,34 @@ var (
 	)
 )
 
+// EventSub Metrics
+var (
+	// EventSubSetupFailuresTotal tracks EventSub setup failures at startup
+	EventSubSetupFailuresTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "eventsub_setup_failures_total",
+			Help: "Total number of EventSub setup failures at startup (app continues without webhooks)",
+		},
+	)
+
+	// EventSubSubscribeAttemptsTotal tracks subscribe attempts by result
+	EventSubSubscribeAttemptsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "eventsub_subscribe_attempts_total",
+			Help: "Total EventSub subscribe attempts by result",
+		},
+		[]string{"result"}, // "success", "exhausted", "permanent_error"
+	)
+
+	// EventSubStaleSubscriptionsTotal tracks stale subscriptions detected
+	EventSubStaleSubscriptionsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "eventsub_stale_subscriptions_total",
+			Help: "Total stale subscriptions detected (no webhooks >10min)",
+		},
+	)
+)
+
 // Config Cache Metrics
 var (
 	// ConfigCacheHits tracks successful config cache hits
@@ -343,6 +371,33 @@ var (
 			Name: "config_cache_evictions_total",
 			Help: "Total number of expired config cache entries evicted",
 		},
+	)
+
+	// ConfigDriftDetected tracks config version mismatches between Redis and ConfigSnapshot
+	ConfigDriftDetected = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "config_drift_detected_total",
+			Help: "Total config drift events detected (Redis version != config JSON version)",
+		},
+		[]string{"session_uuid"},
+	)
+
+	// ConfigDriftFixed tracks successful drift reconciliation attempts
+	ConfigDriftFixed = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "config_drift_fixed_total",
+			Help: "Total config drift events auto-fixed by reconciler",
+		},
+		[]string{"session_uuid"},
+	)
+
+	// RedisUpdateFailures tracks Redis config update failures
+	RedisUpdateFailures = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "redis_update_failures_total",
+			Help: "Total Redis config update failures in SaveConfig",
+		},
+		[]string{"reason"},
 	)
 )
 
@@ -453,6 +508,14 @@ var (
 			Help: "Total number of times cleanup hit key limit (1000 keys/run)",
 		},
 	)
+
+	// DisconnectedSessionsCount tracks number of sessions in disconnected state
+	DisconnectedSessionsCount = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "disconnected_sessions_count",
+			Help: "Number of sessions in disconnected state (sorted set size)",
+		},
+	)
 )
 
 // Leader Election Metrics
@@ -494,6 +557,44 @@ var (
 			Help: "Build information with version, commit, build_time, and go_version labels (value is always 1)",
 		},
 		[]string{"version", "commit", "build_time", "go_version"},
+	)
+)
+
+// Instance Coordination Metrics
+var (
+	// InstanceRegistrySize tracks number of active instances in the registry
+	InstanceRegistrySize = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "instance_registry_size",
+			Help: "Number of active instances in the registry",
+		},
+	)
+
+	// PubSubMessagesReceived tracks config invalidation messages received
+	PubSubMessagesReceived = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pubsub_messages_received_total",
+			Help: "Total pub/sub messages received by channel",
+		},
+		[]string{"channel"},
+	)
+
+	// LeaderElections tracks successful leader elections by key
+	LeaderElections = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "leader_elections_total",
+			Help: "Total successful leader elections by key",
+		},
+		[]string{"key"},
+	)
+
+	// IsLeader tracks whether this instance is the leader for a given key
+	IsLeader = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "is_leader",
+			Help: "1 if this instance is the leader for the given key, 0 otherwise",
+		},
+		[]string{"key"},
 	)
 )
 

@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -14,13 +15,25 @@ import (
 
 const getConfigByUserID = `-- name: GetConfigByUserID :one
 SELECT user_id, for_trigger, against_trigger, left_label, right_label,
-       decay_speed, created_at, updated_at
+       decay_speed, version, created_at, updated_at
 FROM configs WHERE user_id = $1
 `
 
-func (q *Queries) GetConfigByUserID(ctx context.Context, userID uuid.UUID) (Config, error) {
+type GetConfigByUserIDRow struct {
+	UserID         uuid.UUID
+	ForTrigger     string
+	AgainstTrigger string
+	LeftLabel      string
+	RightLabel     string
+	DecaySpeed     float64
+	Version        int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+func (q *Queries) GetConfigByUserID(ctx context.Context, userID uuid.UUID) (GetConfigByUserIDRow, error) {
 	row := q.db.QueryRow(ctx, getConfigByUserID, userID)
-	var i Config
+	var i GetConfigByUserIDRow
 	err := row.Scan(
 		&i.UserID,
 		&i.ForTrigger,
@@ -28,6 +41,7 @@ func (q *Queries) GetConfigByUserID(ctx context.Context, userID uuid.UUID) (Conf
 		&i.LeftLabel,
 		&i.RightLabel,
 		&i.DecaySpeed,
+		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

@@ -34,6 +34,7 @@ func (r *ConfigRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain
 		LeftLabel:      row.LeftLabel,
 		RightLabel:     row.RightLabel,
 		DecaySpeed:     row.DecaySpeed,
+		Version:        int(row.Version),
 		CreatedAt:      row.CreatedAt,
 		UpdatedAt:      row.UpdatedAt,
 	}, nil
