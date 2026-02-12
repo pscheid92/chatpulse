@@ -5,7 +5,8 @@ linters:
   enable:
     - bodyclose
     - durationcheck
-    - errorlint
+    - errname       # Sentinel errors must be named Err*
+    - errorlint     # Check error wrapping (use %w, not %v)
     - fatcontext
     - goconst
     - gocritic
@@ -16,6 +17,7 @@ linters:
     - unconvert
     - unparam
     - wastedassign
+    - wrapcheck     # Check errors are wrapped at appropriate layers
   settings:
     goconst:
       min-len: 3

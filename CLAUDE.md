@@ -61,6 +61,7 @@ internal/
     server.go               Echo server setup, lifecycle
     routes.go               Route definitions (incl. webhook endpoint)
     handlers.go             Shared helpers (renderTemplate, getBaseURL, session constants)
+    handlers_health.go      Health check endpoints (liveness, readiness probes for load balancers)
     handlers_auth.go        Auth middleware, OAuth flow, login/logout
     handlers_dashboard.go   Dashboard page, config save, input validation
     handlers_api.go         REST API endpoints (reset sentiment, rotate overlay UUID)
@@ -78,8 +79,20 @@ web/templates/
   overlay.html              OBS overlay (glassmorphism, status indicator)
 ```
 
+## Architecture Decision Records
+
+See [`docs/adr/`](docs/adr/) for detailed architectural decision records (ADRs). These documents explain why key decisions were made and what alternatives were considered.
+
+**Start here:** Read the [Tier 1 Foundation ADRs](docs/adr/README.md#tier-1-foundation-adrs) first - they explain the core architecture that all other decisions depend on:
+
+- [ADR-001: Redis-only architecture](docs/adr/001-redis-only-architecture.md) - Why all session state lives in Redis
+- [ADR-002: Pull-based broadcaster](docs/adr/002-pull-based-broadcaster.md) - Why we poll Redis instead of using pub/sub
+- [ADR-003: EventSub webhooks + conduits](docs/adr/003-eventsub-webhooks-conduits.md) - Why we use webhooks instead of WebSocket
+
 ## Key Routes
 
+- `GET /health/live` - Liveness probe (always 200 OK if process alive, for load balancer health checks)
+- `GET /health/ready` - Readiness probe (200 OK if all dependencies healthy: Redis, PostgreSQL, Redis Functions; 503 if any check fails)
 - `GET /` - Redirects to `/dashboard`
 - `GET /auth/login` - Login page with Twitch OAuth button
 - `GET /auth/callback` - Twitch OAuth callback
@@ -207,6 +220,8 @@ Step 6's Redis Function atomically applies the time-decayed vote in Redis. The `
 - `apply_vote`: `HGET value + last_update → apply time-decay → clamp(decayed + delta, -100, 100) → HSET value + last_update` (read-write, `FCALL`)
 - `get_decayed_value`: `HGET value + last_update → compute time-decayed value → return` (read-only with `no-writes` flag, `FCALL_RO`)
 
+**Circuit Breaker** (`redis/circuit_breaker_hook.go`): Implements `redis.Hook` to wrap all Redis operations with circuit breaker protection using `sony/gobreaker`. Opens after 5 requests @ 60% failure rate, stays open for 10s, allows 3 test requests in half-open state. Provides graceful degradation: read operations (GET/HGET) serve from in-memory cache (5-minute TTL); read-only functions (FCALL_RO for sentiment) return neutral value (0.0); write operations fail fast. Metrics track state transitions and current state (0=closed, 1=half-open, 2=open). See `docs/architecture/circuit-breaker.md` for full details.
+
 ### HTTP Server (`internal/server/`)
 
 - **Echo Framework**: Uses Echo v4 with Logger and Recover middleware. Sessions via gorilla/sessions with `sessionMaxAgeDays` (7) expiry, secure cookies in production. Templates are parsed once at startup and cached in the `Server` struct. `NewServer` returns `(*Server, error)`.
@@ -249,6 +264,15 @@ Concept-oriented files containing all shared types and cross-cutting interfaces:
 - **UpsertUser Transaction**: User creation and default config insertion are wrapped in a single database transaction for atomicity. Lives in `UserRepo.Upsert()`. Uses `toDomainUser()` helper for consistent row mapping + token decryption.
 - **Connection Status Broadcasting**: Broadcaster sends `{"value": float, "status": "active"}` on each tick. Overlay shows "reconnecting..." indicator when status !== "active".
 - **Context Propagation**: All DB queries and HTTP calls accept `context.Context` as first parameter for cancellation support.
+
+### Error Handling
+
+See [`docs/ERROR_HANDLING.md`](docs/ERROR_HANDLING.md) for error handling standards and patterns:
+
+- **3-Tier Error Classification:** Domain errors (Tier A - sentinel errors, unwrapped, no logs at origin), Infrastructure errors (Tier B - wrapped with context, logged at origin), Programming errors (Tier C - panics, caught by middleware)
+- **Logging Rules:** Log at decision boundary (handlers, middleware), not at origin (repositories). Exception: infrastructure errors ARE logged at origin with full context.
+- **Structured Logging:** Consistent snake_case field names (`user_id`, `session_uuid`, `broadcaster_user_id`), required fields (`error`, message), structured context
+- **Code Examples:** Repositories (return sentinel errors unwrapped), Handlers (log at decision boundary), Application services (pass through without logging)
 
 ## Testability Interfaces
 
