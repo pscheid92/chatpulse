@@ -11,6 +11,9 @@ import (
 //go:embed chatpulse.lua
 var chatpulseLibrary string
 
+//go:embed vote_rate_limit.lua
+var voteRateLimitLibrary string
+
 // NewClient creates a Redis client and loads the chatpulse Lua function library.
 // The client is wrapped with a circuit breaker hook for graceful degradation
 // when Redis becomes unavailable.
@@ -28,9 +31,16 @@ func NewClient(ctx context.Context, redisURL string) (*redis.Client, error) {
 	// Add metrics hook to collect operation metrics (wraps circuit breaker)
 	rdb.AddHook(&MetricsHook{})
 
+	// Load chatpulse library (sentiment functions)
 	if err := rdb.FunctionLoadReplace(ctx, chatpulseLibrary).Err(); err != nil {
 		_ = rdb.Close()
 		return nil, fmt.Errorf("load chatpulse library: %w", err)
+	}
+
+	// Load vote_rate_limit library (rate limiting functions)
+	if err := rdb.FunctionLoadReplace(ctx, voteRateLimitLibrary).Err(); err != nil {
+		_ = rdb.Close()
+		return nil, fmt.Errorf("load vote_rate_limit library: %w", err)
 	}
 
 	return rdb, nil

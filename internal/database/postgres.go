@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/tern/v2/migrate"
+	"github.com/pscheid92/chatpulse/internal/metrics"
 )
 
 //go:embed sqlc/schemas/*.sql
@@ -19,6 +20,9 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse database URL: %w", err)
 	}
+
+	// Add metrics tracer to collect query metrics
+	poolCfg.ConnConfig.Tracer = &MetricsTracer{}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
@@ -31,6 +35,18 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	}
 
 	return pool, nil
+}
+
+// UpdatePoolMetrics updates database connection pool metrics
+// This should be called periodically (e.g., every 30 seconds) to track pool health
+func UpdatePoolMetrics(pool *pgxpool.Pool) {
+	stats := pool.Stat()
+
+	// Track active connections (connections currently in use)
+	metrics.DBConnectionsCurrent.WithLabelValues("active").Set(float64(stats.AcquiredConns()))
+
+	// Track idle connections (connections in pool but not in use)
+	metrics.DBConnectionsCurrent.WithLabelValues("idle").Set(float64(stats.IdleConns()))
 }
 
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {

@@ -69,7 +69,7 @@ func BenchmarkEngine_GetCurrentValue_CacheHit(b *testing.B) {
 	}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock, cache)
+	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
 
 	sessionUUID := uuid.New()
 	ctx := context.Background()
@@ -105,7 +105,7 @@ func BenchmarkEngine_GetCurrentValue_CacheMiss(b *testing.B) {
 	}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock, cache)
+	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
 
 	ctx := context.Background()
 

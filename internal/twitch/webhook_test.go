@@ -136,6 +136,13 @@ func (d *testDebouncer) CheckDebounce(_ context.Context, sessionUUID uuid.UUID, 
 	return true, nil
 }
 
+// alwaysAllowRateLimiter always allows votes (for webhook tests).
+type alwaysAllowRateLimiter struct{}
+
+func (a *alwaysAllowRateLimiter) CheckVoteRateLimit(_ context.Context, _ uuid.UUID) (bool, error) {
+	return true, nil
+}
+
 func clamp(value, min, max float64) float64 {
 	if value < min {
 		return min
@@ -231,9 +238,10 @@ func setupWebhookTest(t *testing.T) (*WebhookHandler, *testSessionRepo, string) 
 	store.addSession(testSessionUUID, broadcasterID, config)
 
 	debouncer := newTestDebouncer()
+	rateLimiter := &alwaysAllowRateLimiter{}
 	clock := clockwork.NewRealClock()
 	cache := sentiment.NewConfigCache(10*time.Second, clock)
-	engine := sentiment.NewEngine(store, store, debouncer, clock, cache)
+	engine := sentiment.NewEngine(store, store, debouncer, rateLimiter, clock, cache)
 	handler := NewWebhookHandler(testWebhookSecret, engine)
 	return handler, store, broadcasterID
 }

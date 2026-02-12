@@ -23,10 +23,12 @@ import (
 	"github.com/pscheid92/chatpulse/internal/logging"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/pscheid92/chatpulse/internal/metrics"
 	"github.com/pscheid92/chatpulse/internal/redis"
 	"github.com/pscheid92/chatpulse/internal/sentiment"
 	"github.com/pscheid92/chatpulse/internal/server"
 	"github.com/pscheid92/chatpulse/internal/twitch"
+	"github.com/pscheid92/chatpulse/internal/version"
 )
 
 type webhookResult struct {
@@ -131,7 +133,22 @@ func main() {
 
 	// Initialize structured logging
 	logging.InitLogger(cfg.LogLevel, cfg.LogFormat)
-	slog.Info("Application starting", "env", cfg.AppEnv, "port", cfg.Port)
+
+	// Register build information metric
+	buildInfo := version.Get()
+	metrics.BuildInfo.WithLabelValues(
+		buildInfo.Version,
+		buildInfo.Commit,
+		buildInfo.BuildTime,
+		buildInfo.GoVersion,
+	).Set(1)
+
+	slog.Info("Application starting",
+		"env", cfg.AppEnv,
+		"port", cfg.Port,
+		"version", buildInfo.Version,
+		"commit", buildInfo.Commit,
+		"build_time", buildInfo.BuildTime)
 
 	pool := setupDB(cfg)
 	defer pool.Close()
@@ -142,13 +159,14 @@ func main() {
 	store := redis.NewSessionRepo(redisClient, clock)
 	sentimentStore := redis.NewSentimentStore(redisClient)
 	debouncer := redis.NewDebouncer(redisClient)
+	voteRateLimiter := redis.NewVoteRateLimiter(redisClient, clock, cfg.VoteRateLimitCapacity, cfg.VoteRateLimitRate)
 
 	// Create config cache with 10-second TTL
 	configCache := sentiment.NewConfigCache(10*time.Second, clock)
 	stopEviction := configCache.StartEvictionTimer(1 * time.Minute)
 	defer stopEviction()
 
-	engine := sentiment.NewEngine(store, sentimentStore, debouncer, clock, configCache)
+	engine := sentiment.NewEngine(store, sentimentStore, debouncer, voteRateLimiter, clock, configCache)
 
 	// Construct repositories
 	var cryptoSvc crypto.Service = crypto.NoopService{}

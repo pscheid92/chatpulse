@@ -2,7 +2,6 @@ package server
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	apperrors "github.com/pscheid92/chatpulse/internal/errors"
 	"github.com/pscheid92/chatpulse/internal/metrics"
 )
 
@@ -49,24 +49,30 @@ func (s *Server) handleOverlay(c echo.Context) error {
 	overlayUUIDStr := c.Param("uuid")
 	overlayUUID, err := uuid.Parse(overlayUUIDStr)
 	if err != nil {
-		return c.String(400, "Invalid UUID")
+		return apperrors.ValidationError("invalid UUID format").WithField("uuid", overlayUUIDStr)
 	}
 
 	ctx := c.Request().Context()
 
 	user, err := s.app.GetUserByOverlayUUID(ctx, overlayUUID)
 	if errors.Is(err, domain.ErrUserNotFound) {
-		return c.String(404, "Overlay not found")
+		return apperrors.NotFoundError("overlay not found").WithField("overlay_uuid", overlayUUID.String())
 	}
 	if err != nil {
-		slog.Error("Failed to get user by overlay UUID", "error", err)
-		return c.String(500, "Failed to load overlay")
+		return apperrors.InternalError("failed to load overlay", err).
+			WithField("overlay_uuid", overlayUUID.String())
 	}
 
 	config, err := s.app.GetConfig(ctx, user.ID)
 	if err != nil {
-		slog.Error("Failed to load config", "error", err)
-		return c.String(500, "Failed to load config")
+		if errors.Is(err, domain.ErrConfigNotFound) {
+			return apperrors.NotFoundError("config not found").
+				WithField("user_id", user.ID.String()).
+				WithField("overlay_uuid", overlayUUID.String())
+		}
+		return apperrors.InternalError("failed to load config", err).
+			WithField("user_id", user.ID.String()).
+			WithField("overlay_uuid", overlayUUID.String())
 	}
 
 	data := map[string]any{
@@ -87,7 +93,7 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 	overlayUUID, err := uuid.Parse(overlayUUIDStr)
 	if err != nil {
 		metrics.WebSocketConnectionsTotal.WithLabelValues("error").Inc()
-		return c.String(400, "Invalid UUID")
+		return apperrors.ValidationError("invalid UUID format").WithField("uuid", overlayUUIDStr)
 	}
 
 	// Extract client IP
@@ -100,18 +106,25 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 		case LimitReasonRate:
 			metrics.WebSocketConnectionsRejected.WithLabelValues("rate_limit").Inc()
 			slog.Warn("WebSocket connection rate limited", "ip", clientIP, "reason", reason)
-			return c.String(429, "Too many connection attempts. Please slow down.")
+			return apperrors.ValidationError("too many connection attempts").
+				WithField("client_ip", clientIP).
+				WithField("reason", "rate_limit")
 		case LimitReasonGlobal:
 			metrics.WebSocketConnectionsRejected.WithLabelValues("global_limit").Inc()
 			slog.Warn("WebSocket connection rejected: global limit", "ip", clientIP, "capacity_pct", s.connLimits.Global().CapacityPct())
-			return c.String(503, "Server at capacity. Please try again later.")
+			return apperrors.InternalError("server at capacity", nil).
+				WithField("client_ip", clientIP).
+				WithField("capacity_pct", s.connLimits.Global().CapacityPct())
 		case LimitReasonPerIP:
 			metrics.WebSocketConnectionsRejected.WithLabelValues("ip_limit").Inc()
 			slog.Warn("WebSocket connection rejected: per-IP limit", "ip", clientIP, "connections", s.connLimits.PerIP().Count(clientIP))
-			return c.String(429, "Too many connections from your IP address.")
+			return apperrors.ValidationError("too many connections from your IP address").
+				WithField("client_ip", clientIP).
+				WithField("connections", s.connLimits.PerIP().Count(clientIP))
 		default:
 			metrics.WebSocketConnectionsRejected.WithLabelValues("unknown").Inc()
-			return c.String(503, "Connection limit exceeded")
+			return apperrors.InternalError("connection limit exceeded", nil).
+				WithField("client_ip", clientIP)
 		}
 	}
 	// Ensure we release the connection slot when the handler exits
@@ -125,28 +138,29 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 
 	user, err := s.app.GetUserByOverlayUUID(ctx, overlayUUID)
 	if errors.Is(err, domain.ErrUserNotFound) {
-		return c.String(404, "Session not found")
+		return apperrors.NotFoundError("session not found").WithField("overlay_uuid", overlayUUID.String())
 	}
 	if err != nil {
-		slog.Error("Failed to get user by overlay UUID", "error", err)
-		return c.String(500, "Internal error")
+		return apperrors.InternalError("failed to get user by overlay UUID", err).
+			WithField("overlay_uuid", overlayUUID.String())
 	}
 
 	// Ensure session is active in Redis (activate or resume)
 	if err := s.app.EnsureSessionActive(ctx, user.OverlayUUID); err != nil {
-		slog.Error("Failed to ensure session active", "error", err)
-		return c.String(500, "Failed to activate session")
+		return apperrors.InternalError("failed to activate session", err).
+			WithField("overlay_uuid", user.OverlayUUID.String()).
+			WithField("user_id", user.ID.String())
 	}
 
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
-		return fmt.Errorf("failed to upgrade WebSocket: %w", err)
+		return apperrors.InternalError("failed to upgrade WebSocket", err)
 	}
 
 	if err := s.broadcaster.Register(user.OverlayUUID, conn); err != nil {
-		slog.Error("Failed to register with broadcaster", "error", err)
 		conn.Close()
-		return fmt.Errorf("failed to register client with broadcaster: %w", err)
+		return apperrors.InternalError("failed to register client with broadcaster", err).
+			WithField("overlay_uuid", user.OverlayUUID.String())
 	}
 
 	// Track successful connection

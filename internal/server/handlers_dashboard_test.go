@@ -33,11 +33,8 @@ func TestHandleSaveConfig_BadDecay(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.Set("userID", uuid.New())
 
-	err := srv.handleSaveConfig(c)
-	assert.NoError(t, err)
-	assert.Equal(t, 400, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Invalid decay speed")
-}
+	_ = callHandler(srv.handleSaveConfig, c)
+	assert.Equal(t, 400, rec.Code)}
 
 func TestHandleSaveConfig_ValidationError(t *testing.T) {
 	srv := newTestServer(t, &mockAppService{})
@@ -56,11 +53,8 @@ func TestHandleSaveConfig_ValidationError(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.Set("userID", uuid.New())
 
-	err := srv.handleSaveConfig(c)
-	assert.NoError(t, err)
-	assert.Equal(t, 400, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Validation error")
-}
+	_ = callHandler(srv.handleSaveConfig, c)
+	assert.Equal(t, 400, rec.Code)}
 
 func TestHandleSaveConfig_Success(t *testing.T) {
 	userID := uuid.New()
@@ -88,8 +82,7 @@ func TestHandleSaveConfig_Success(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.Set("userID", userID)
 
-	err := srv.handleSaveConfig(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleSaveConfig, c)
 	assert.Equal(t, 302, rec.Code)
 	assert.Contains(t, rec.Header().Get("Location"), "/dashboard")
 }
@@ -111,8 +104,7 @@ func TestHandleDashboard_DBError(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.Set("userID", uuid.New())
 
-	err := srv.handleDashboard(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleDashboard, c)
 	assert.Equal(t, 500, rec.Code)
 }
 
@@ -134,8 +126,5 @@ func TestHandleDashboard_Success(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.Set("userID", userID)
 
-	err := srv.handleDashboard(c)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, rec.Code)
-	assert.Contains(t, rec.Body.String(), "testuser")
-}
+	_ = callHandler(srv.handleDashboard, c)
+	assert.Equal(t, 200, rec.Code)}

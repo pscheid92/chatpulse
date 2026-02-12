@@ -74,11 +74,126 @@ internal/
   broadcast/
     broadcaster.go          Broadcaster: actor pattern, pull-based tick loop, per-session client management
     writer.go               Per-connection write goroutine (clientWriter, buffered send, ping/pong heartbeat)
+  metrics/
+    metrics.go              Prometheus metrics (22 metrics: Redis, Broadcaster, WebSocket, Vote, Database, Application)
 web/templates/
   login.html                Login page with Twitch OAuth button
   dashboard.html            Streamer config UI (auth required, has logout + rotate URL)
   overlay.html              OBS overlay (glassmorphism, status indicator)
 ```
+
+## Package Dependency Graph
+
+The following diagram shows the layered architecture and package dependencies. Arrows indicate import direction (A → B means "A imports B").
+
+```mermaid
+graph TB
+    subgraph "Entry Point"
+        main[cmd/server/main.go]
+    end
+
+    subgraph "HTTP Layer"
+        server[server]
+    end
+
+    subgraph "Application Layer"
+        app[app]
+        sentiment[sentiment]
+        broadcast[broadcast]
+    end
+
+    subgraph "Infrastructure Layer"
+        database[(database)]
+        redis[(redis)]
+        crypto[crypto]
+        twitch[twitch]
+        config[config]
+        metrics[metrics]
+    end
+
+    subgraph "Domain Layer"
+        domain[domain<br/>interfaces + types<br/>no dependencies]
+    end
+
+    %% Entry point dependencies
+    main --> server
+    main --> app
+    main --> database
+    main --> redis
+    main --> config
+    main --> twitch
+
+    %% HTTP layer dependencies
+    server --> app
+    server --> domain
+    server --> broadcast
+
+    %% Application layer dependencies
+    app --> database
+    app --> redis
+    app --> twitch
+    app --> sentiment
+    app --> domain
+
+    sentiment --> redis
+    sentiment --> domain
+
+    broadcast --> domain
+
+    %% Infrastructure layer dependencies
+    database --> domain
+    database --> crypto
+    database --> metrics
+
+    redis --> domain
+    redis --> metrics
+
+    twitch --> domain
+
+    %% Metrics is leaf (no internal deps)
+
+    %% Styling
+    classDef domainStyle fill:#e1f5e1,stroke:#2e7d32,stroke-width:3px
+    classDef infraStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef appStyle fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef serverStyle fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    classDef mainStyle fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+
+    class domain domainStyle
+    class database,redis,crypto,twitch,config,metrics infraStyle
+    class app,sentiment,broadcast appStyle
+    class server serverStyle
+    class main mainStyle
+```
+
+### Dependency Rules
+
+**✅ Allowed:**
+- Infrastructure → Domain (implements interfaces)
+- Application → Infrastructure (uses repositories)
+- Application → Domain (orchestrates via interfaces)
+- Server → Application (calls app services)
+- Server → Domain (uses types)
+- Main → Everything (wiring only)
+
+**❌ Forbidden:**
+- Domain → Anything internal (must stay pure - interfaces and types only)
+- Infrastructure ↔ Infrastructure (database ↛ redis, prevents tight coupling)
+- Server → Infrastructure directly (must go through Application layer)
+- Application → Server (layering violation)
+
+**Key Architectural Principles:**
+1. **Domain is the foundation** - No internal dependencies, only stdlib + uuid
+2. **Infrastructure is independent** - Each infra package implements domain interfaces without cross-dependencies
+3. **Application orchestrates** - Combines multiple infrastructure components via domain interfaces
+4. **Server is thin** - Delegates to application layer, never touches infrastructure directly
+5. **Main wires it all** - Dependency injection happens only in main.go
+
+**Benefits:**
+- ✅ Testability: Each layer can be tested with mocks of the layer below
+- ✅ Flexibility: Swap infrastructure (Redis → In-memory) without touching application
+- ✅ Clarity: Dependency direction always flows toward domain (stable foundation)
+- ✅ Maintainability: Changes in one infrastructure package don't affect others
 
 ## Architecture Decision Records
 
@@ -94,6 +209,7 @@ See [`docs/adr/`](docs/adr/) for detailed architectural decision records (ADRs).
 
 - `GET /health/live` - Liveness probe (always 200 OK if process alive, for load balancer health checks)
 - `GET /health/ready` - Readiness probe (200 OK if all dependencies healthy: Redis, PostgreSQL, Redis Functions; 503 if any check fails)
+- `GET /metrics` - Prometheus metrics endpoint (publicly accessible, no auth required for scraping)
 - `GET /` - Redirects to `/dashboard`
 - `GET /auth/login` - Login page with Twitch OAuth button
 - `GET /auth/callback` - Twitch OAuth callback
@@ -170,8 +286,11 @@ The actor follows this shape:
 - Actor goroutine owns the `activeClients` map (session UUID → set of `*clientWriter`). `NewBroadcaster` accepts a `domain.Engine`, an `onFirstClient` callback, an `onSessionEmpty` callback, and a `clockwork.Clock`.
 - **Pull-based broadcasting**: A 50ms ticker calls `engine.GetCurrentValue()` for each active session and broadcasts `domain.SessionUpdate{Value, Status: "active"}` to all connected clients. JSON marshaling happens once per session before fanning out.
 - **Per-connection write goroutines** (`clientWriter` in `writer.go`): each WebSocket connection gets its own goroutine with a buffered send channel (cap 16), 5-second write deadlines, and periodic ping/pong heartbeat (30s ping interval, 60s pong deadline). Slow clients are disconnected (non-blocking send) instead of blocking all broadcasts.
+- **Idle timeout detection** (`writer.go`): Tracks last activity timestamp per client (updated on pong receipt). Clients idle >5 minutes are automatically disconnected. Warning message sent at 4 minutes (1 minute before disconnect). Configurable via `idleTimeout` and `idleWarningTime` constants.
+- **Graceful shutdown** (`broadcaster.go`): `Stop()` sends WebSocket close frames (code 1000, reason: "Server shutting down") to all clients, waits for write goroutines to exit, logs disconnection stats. Close frames are sent after the write goroutine exits to prevent concurrent writes.
 - **Per-session client cap**: `maxClientsPerSession = 50` prevents resource exhaustion.
 - **Session empty callback**: When the last client disconnects from a session, the `onSessionEmpty` callback fires (wired to `app.Service.OnSessionEmpty` in main.go), which decrements the Redis ref count and marks the session as disconnected if no instances serve it.
+- **Connection lifecycle metrics**: `websocket_idle_disconnects_total` (idle timeouts), `websocket_connection_duration_seconds` (histogram tracking connection lifetimes from upgrade to close).
 
 ### Sentiment Engine (`sentiment/engine.go`)
 
@@ -233,11 +352,15 @@ Step 7's Redis Function atomically applies the time-decayed vote in Redis. The `
 - `session:{overlayUUID}` — hash: `value`, `broadcaster_user_id`, `config_json`, `last_disconnect`, `last_update`
 - `ref_count:{overlayUUID}` — integer ref count (how many instances serve this session)
 - `broadcaster:{twitchUserID}` — string → overlayUUID
-- `debounce:{overlayUUID}:{twitchUserID}` — key with 1s TTL (auto-expires)
+- `debounce:{overlayUUID}:{twitchUserID}` — key with 1s TTL (auto-expires, per-user rate limit)
+- `rate_limit:votes:{overlayUUID}` — hash: `tokens`, `last_update` (5-min TTL, per-session rate limit)
 
-**Redis Functions** (`chatpulse` library, loaded via `FUNCTION LOAD`, called via `FCALL`/`FCALL_RO`):
-- `apply_vote`: `HGET value + last_update → apply time-decay → clamp(decayed + delta, -100, 100) → HSET value + last_update` (read-write, `FCALL`)
-- `get_decayed_value`: `HGET value + last_update → compute time-decayed value → return` (read-only with `no-writes` flag, `FCALL_RO`)
+**Redis Functions** (loaded via `FUNCTION LOAD`, called via `FCALL`/`FCALL_RO`):
+- `chatpulse` library:
+  - `apply_vote`: `HGET value + last_update → apply time-decay → clamp(decayed + delta, -100, 100) → HSET value + last_update` (read-write, `FCALL`)
+  - `get_decayed_value`: `HGET value + last_update → compute time-decayed value → return` (read-only with `no-writes` flag, `FCALL_RO`)
+- `vote_rate_limit` library:
+  - `check_vote_rate_limit`: Token bucket algorithm: `HGET tokens + last_update → compute refill → check if >= 1 → consume 1 token → HSET` (returns 1=allowed, 0=rejected)
 
 **Circuit Breaker** (`redis/circuit_breaker_hook.go`): Implements `redis.Hook` to wrap all Redis operations with circuit breaker protection using `sony/gobreaker`. Opens after 5 requests @ 60% failure rate, stays open for 10s, allows 3 test requests in half-open state. Provides graceful degradation: read operations (GET/HGET) serve from in-memory cache (5-minute TTL); read-only functions (FCALL_RO for sentiment) return neutral value (0.0); write operations fail fast. Metrics track state transitions and current state (0=closed, 1=half-open, 2=open). See `docs/architecture/circuit-breaker.md` for full details.
 
@@ -248,6 +371,7 @@ Step 7's Redis Function atomically applies the time-decayed vote in Redis. The `
 - **Handler File Organization**: Handlers are split by domain — `handlers_auth.go` (auth middleware, OAuth, login/logout), `handlers_dashboard.go` (dashboard page, config save, validation), `handlers_api.go` (REST API), `handlers_overlay.go` (overlay page, WebSocket). Shared helpers (`renderTemplate`, `getBaseURL`, session constants) live in `handlers.go`.
 - **Auth Middleware** (`requireAuth` in `handlers_auth.go`): Checks session for user ID, parses UUID, stores in Echo context. Redirects to `/auth/login` if not authenticated.
 - **OAuth Flow**: Uses the `twitchOAuthClient` interface (mockable for tests). `GET /auth/login` → generate CSRF state + store in session → Twitch OAuth (scope: `channel:bot`, `state` param) → `/auth/callback` → verify state matches session → `oauthClient.ExchangeCodeForToken()` → `twitchTokenResult` → upsert to DB → create session → `/dashboard`.
+- **Error Handling** (`internal/errors/`): Structured error handling with context propagation and HTTP status code mapping. All handlers return structured errors that the error middleware converts to JSON responses. Five error types: `ValidationError` (400), `NotFoundError` (404), `ConflictError` (409), `InternalError` (500), `ExternalError` (502). Errors support context fields via chainable `WithContext(key, value)` / `WithField(key, value)` methods. Error middleware logs errors at appropriate levels (INFO for validation/not-found, WARN for conflicts, ERROR for internal/external), records metrics (`http_errors_total{type}`), and returns JSON responses (`{"error": string, "type": string, "context": map}`). Echo's HTTPError (e.g., from CSRF middleware) is passed through unchanged to preserve original status codes. Example: `return apperrors.ValidationError("invalid UUID").WithField("uuid", uuidStr)`.
 - **WebSocket Lifecycle** (`handlers_overlay.go`): `GET /ws/overlay/:uuid` → parse overlay UUID → lookup user → `app.EnsureSessionActive` → `app.IncrRefCount` → upgrade to WebSocket → `broadcaster.Register` → read pump blocks → `broadcaster.Unregister` → `app.OnSessionEmpty`.
 - **Graceful Shutdown**: `SIGINT`/`SIGTERM` → `runGracefulShutdown` returns a `done` channel → `server.Shutdown` → `appSvc.Stop` (stops cleanup timer) → `broadcaster.Stop` → `eventsubManager.Cleanup` → `close(done)`. Main goroutine waits on `<-done` after `srv.Start()` returns, ensuring all deferred cleanup (DB close, Redis close) executes properly.
 
@@ -546,6 +670,112 @@ if testing.Short() {
 **Input Validation** (`internal/server/handlers_unit_test.go`):
 - Empty trigger detection (for/against), length limits (triggers: 500, labels: 50), decay range (0.1-2.0), identical trigger prevention
 
+## Observability
+
+ChatPulse exposes comprehensive Prometheus metrics for monitoring application health, performance, and business metrics.
+
+### Metrics Endpoint
+
+**Route**: `GET /metrics`
+
+**Access**: Publicly accessible (no authentication required for Prometheus scraping)
+
+**Format**: Prometheus exposition format (text/plain)
+
+**Documentation**: See [`docs/operations/prometheus-metrics.md`](docs/operations/prometheus-metrics.md) for complete metrics catalog, PromQL queries, alert examples, and Grafana dashboard configuration.
+
+### Instrumentation
+
+**22 metrics across 6 categories:**
+
+1. **Redis Metrics** (`internal/redis/metrics_hook.go`)
+   - Implemented via `redis.Hook` interface for automatic operation tracking
+   - Tracks all Redis operations (get, set, fcall, hget, etc.) by status (success, error)
+   - Histogram for operation latency distribution
+   - Connection pool state (active/idle connections)
+
+2. **Broadcaster Metrics** (`internal/broadcast/broadcaster.go`)
+   - Active sessions and connected clients (gauges)
+   - Tick loop duration (50ms target)
+   - Broadcast fanout duration per session
+   - Slow client evictions (buffer full)
+
+3. **WebSocket Metrics** (`internal/server/handlers_overlay.go`, `internal/broadcast/writer.go`)
+   - Connection lifecycle: total attempts by result (success/error/rejected), current active connections
+   - Connection limits: capacity utilization (0-100%), unique IPs, rejection reasons (rate_limit/global_limit/ip_limit)
+   - Performance: connection duration histogram, message send duration, ping/pong failures
+
+4. **Vote Processing Metrics** (`internal/sentiment/engine.go`)
+   - Vote pipeline: total votes by result (applied/debounced/invalid/no_session/error)
+   - Processing latency distribution
+   - Trigger matches by type (for/against)
+   - Rate limiter token bucket state
+
+5. **Database Metrics** (`internal/database/metrics_tracer.go`)
+   - Implemented via `pgx.QueryTracer` interface
+   - Query latency histogram by query name (extracted from SQL comments or first 50 chars)
+   - Connection pool state (active/idle connections)
+   - Query errors by query name
+
+6. **Application Metrics** (`internal/app/service.go`)
+   - Config cache hit/miss rates, entry count, evictions
+   - Background cleanup errors (Twitch unsubscribe failures)
+
+### Prometheus Configuration
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: 'chatpulse'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['chatpulse:8080']
+```
+
+### Alert Examples
+
+```yaml
+# High Redis error rate
+- alert: HighRedisErrorRate
+  expr: rate(redis_operations_total{status="error"}[5m]) > 0.05
+  for: 2m
+
+# WebSocket capacity
+- alert: HighWebSocketCapacity
+  expr: websocket_connection_capacity_percent > 80
+  for: 5m
+
+# Vote processing errors
+- alert: VoteProcessingErrors
+  expr: rate(vote_processing_total{result="error"}[5m]) > 0.01
+  for: 2m
+```
+
+### Key PromQL Queries
+
+```promql
+# Redis operation rate by type
+rate(redis_operations_total[5m])
+
+# 95th percentile Redis latency
+histogram_quantile(0.95, rate(redis_operation_duration_seconds_bucket[5m]))
+
+# Vote application rate
+rate(vote_processing_total{result="applied"}[5m])
+
+# WebSocket connection growth
+deriv(websocket_connections_current[5m])
+```
+
+### Design Principles
+
+- **Automatic instrumentation**: Redis (hook), Database (tracer), HTTP (middleware) use framework integration
+- **Bounded cardinality**: All labels have fixed sets (<100 unique values) to prevent metric explosion
+- **Histogram buckets**: Tailored to expected latencies (Redis: 1-100ms, WebSocket: 100µs-250ms, DB: 1ms-10s)
+- **Business + technical metrics**: Track both vote rates (business) and latency (technical) for full observability
+
 ## Linting
 
 golangci-lint v2 configured via `.golangci.yml` (schema `version: "2"`). Run with `make lint`.
@@ -565,6 +795,26 @@ Module: `github.com/pscheid92/chatpulse`, Go 1.26.0.
 Key deps: echo/v4, gorilla/websocket, gorilla/sessions, Its-donkey/kappopher, jackc/pgx/v5, jackc/tern/v2, redis/go-redis/v9, google/uuid, joho/godotenv, jonboulle/clockwork, go-simpler/env.
 
 Test deps: stretchr/testify, jonboulle/clockwork, testcontainers-go, testcontainers-go/modules/postgres, testcontainers-go/modules/redis.
+
+## Deployment Documentation
+
+Production deployment guides for various environments:
+
+- **Load Balancers:**
+  - [`docs/deployment/load-balancer-nginx.md`](docs/deployment/load-balancer-nginx.md) — Nginx reverse proxy configuration with WebSocket support, health checks, performance tuning
+  - [`docs/deployment/load-balancer-aws-alb.md`](docs/deployment/load-balancer-aws-alb.md) — AWS Application Load Balancer with Terraform, auto-scaling, target groups
+  - [`docs/deployment/load-balancer-kubernetes.md`](docs/deployment/load-balancer-kubernetes.md) — Kubernetes Ingress (nginx-ingress, AWS ALB Ingress, Traefik) with HPA, PDB, sticky sessions
+- **Operations:**
+  - [`docs/deployment/graceful-shutdown.md`](docs/deployment/graceful-shutdown.md) — Graceful shutdown behavior, timeout configuration for Docker/Kubernetes/ECS, testing procedures
+  - [`docs/deployment/troubleshooting-load-balancer.md`](docs/deployment/troubleshooting-load-balancer.md) — Common issues (502 errors, WebSocket failures, SSL/TLS), diagnostics, monitoring alerts
+
+**Key deployment requirements:**
+- WebSocket idle timeout: 3600s (1 hour) for long-lived overlay connections
+- Health checks: `/health/ready` (readiness), `/health/live` (liveness)
+- Sticky sessions: Recommended for overlay clients to reconnect to same instance
+- Graceful shutdown: 60s timeout (30s HTTP drain + 30s cleanup)
+- Minimum replicas: 3 for high availability
+- Load balancing: Use `least_conn` (Nginx) or sticky sessions (ALB/Kubernetes) for even distribution
 
 ### Dependency Changes (Feb 2026 Architecture Overhaul)
 

@@ -176,6 +176,14 @@ var (
 			Help: "Number of unique IP addresses with active WebSocket connections",
 		},
 	)
+
+	// WebSocketIdleDisconnects tracks disconnects due to idle timeout
+	WebSocketIdleDisconnects = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "websocket_idle_disconnects_total",
+			Help: "Total WebSocket connections closed due to idle timeout (>5 minutes no pong)",
+		},
+	)
 )
 
 // Vote Processing Metrics
@@ -205,6 +213,27 @@ var (
 			Help: "Total vote trigger matches by type (for/against)",
 		},
 		[]string{"trigger_type"},
+	)
+)
+
+// Vote Rate Limiting Metrics
+var (
+	// VoteRateLimitChecks tracks vote rate limit checks by result
+	VoteRateLimitChecks = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "vote_rate_limit_checks_total",
+			Help: "Vote rate limit checks by result (allowed/rejected/error)",
+		},
+		[]string{"result"},
+	)
+
+	// VoteRateLimitTokensRemaining tracks remaining tokens in rate limit bucket
+	VoteRateLimitTokensRemaining = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "vote_rate_limit_tokens_remaining",
+			Help:    "Remaining tokens in vote rate limit bucket",
+			Buckets: []float64{0, 10, 25, 50, 75, 90, 100},
+		},
 	)
 )
 
@@ -319,7 +348,22 @@ var (
 	)
 )
 
+// Build Information Metrics
+var (
+	// BuildInfo is a gauge that always returns 1, with build metadata as labels
+	BuildInfo = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "build_info",
+			Help: "Build information with version, commit, build_time, and go_version labels (value is always 1)",
+		},
+		[]string{"version", "commit", "build_time", "go_version"},
+	)
+)
+
 // HTTP Request Metrics
 // Note: These are automatically provided by echoprometheus middleware
 // - http_requests_total{method, path, status}
 // - http_request_duration_seconds{method, path}
+
+// HTTP Error Metrics
+// Note: http_errors_total{type} is provided by internal/errors package

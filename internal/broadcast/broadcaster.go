@@ -281,13 +281,22 @@ func (b *Broadcaster) handleTick() {
 }
 
 func (b *Broadcaster) handleStop() {
+	totalClients := 0
+	for _, clients := range b.activeClients {
+		totalClients += len(clients)
+	}
+
+	slog.Info("Broadcaster shutting down", "sessions", len(b.activeClients), "total_clients", totalClients)
+
 	for sessionUUID, clients := range b.activeClients {
 		for _, cw := range clients {
-			cw.stop()
+			cw.stopGraceful("Server shutting down")
 		}
 		delete(b.activeClients, sessionUUID)
 		if b.onSessionEmpty != nil {
 			b.onSessionEmpty(sessionUUID)
 		}
 	}
+
+	slog.Info("Broadcaster shutdown complete", "disconnected_clients", totalClients)
 }

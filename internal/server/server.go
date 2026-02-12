@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/sessions"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,6 +16,7 @@ import (
 	"github.com/pscheid92/chatpulse/internal/broadcast"
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	apperrors "github.com/pscheid92/chatpulse/internal/errors"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -40,6 +42,7 @@ type Server struct {
 	db                *pgxpool.Pool
 	redisClient       *goredis.Client
 	connLimits        *ConnectionLimits
+	startTime         time.Time
 	// For testing only - allows injecting mock health checkers
 	redisHealthCheck    redisHealthChecker
 	postgresHealthCheck postgresHealthChecker
@@ -67,6 +70,7 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 	// Middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
+	e.Use(apperrors.Middleware())                    // Structured error handling
 	e.Use(echoprometheus.NewMiddleware("chatpulse")) // Metrics endpoint at /metrics
 
 	// Session store
@@ -118,6 +122,7 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 		db:                db,
 		redisClient:       redisClient,
 		connLimits:        connLimits,
+		startTime:         time.Now(),
 	}
 
 	// Register routes

@@ -17,15 +17,17 @@ type Engine struct {
 	sessions    domain.SessionRepository
 	sentiment   domain.SentimentStore
 	debounce    domain.Debouncer
+	rateLimiter domain.VoteRateLimiter
 	clock       clockwork.Clock
 	configCache *ConfigCache
 }
 
-func NewEngine(sessions domain.SessionRepository, sentiment domain.SentimentStore, debounce domain.Debouncer, clock clockwork.Clock, configCache *ConfigCache) *Engine {
+func NewEngine(sessions domain.SessionRepository, sentiment domain.SentimentStore, debounce domain.Debouncer, rateLimiter domain.VoteRateLimiter, clock clockwork.Clock, configCache *ConfigCache) *Engine {
 	return &Engine{
 		sessions:    sessions,
 		sentiment:   sentiment,
 		debounce:    debounce,
+		rateLimiter: rateLimiter,
 		clock:       clock,
 		configCache: configCache,
 	}
@@ -58,23 +60,55 @@ func (e *Engine) GetCurrentValue(ctx context.Context, sessionUUID uuid.UUID) (fl
 }
 
 func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (float64, bool) {
+	// Track vote processing duration
+	start := e.clock.Now()
+	defer func() {
+		duration := e.clock.Since(start).Seconds()
+		metrics.VoteProcessingDuration.Observe(duration)
+	}()
+
 	sessionUUID, found, err := e.sessions.GetSessionByBroadcaster(ctx, broadcasterUserID)
 	if err != nil || !found {
+		metrics.VoteProcessingTotal.WithLabelValues("no_session").Inc()
 		return 0, false
 	}
 
 	config, err := e.sessions.GetSessionConfig(ctx, sessionUUID)
 	if err != nil || config == nil {
+		metrics.VoteProcessingTotal.WithLabelValues("no_session").Inc()
 		return 0, false
 	}
 
 	delta := matchTrigger(messageText, config)
 	if delta == 0 {
+		metrics.VoteProcessingTotal.WithLabelValues("invalid").Inc()
 		return 0, false
 	}
 
+	// Track trigger matches by type
+	if delta > 0 {
+		metrics.VoteTriggerMatches.WithLabelValues("for").Inc()
+	} else {
+		metrics.VoteTriggerMatches.WithLabelValues("against").Inc()
+	}
+
+	// Check per-user debounce (prevents individual user spam)
 	allowed, err := e.debounce.CheckDebounce(ctx, sessionUUID, chatterUserID)
 	if err != nil || !allowed {
+		metrics.VoteProcessingTotal.WithLabelValues("debounced").Inc()
+		return 0, false
+	}
+
+	// Check per-session rate limit (prevents coordinated bot attacks)
+	rateLimitAllowed, err := e.rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+	if err != nil {
+		// Fail open: allow vote if rate limiter fails (availability over strict enforcement)
+		slog.Error("Rate limit check failed, allowing vote", "error", err)
+		rateLimitAllowed = true
+	}
+	if !rateLimitAllowed {
+		slog.Debug("Vote rate limited", "session_uuid", sessionUUID.String())
+		metrics.VoteProcessingTotal.WithLabelValues("rate_limited").Inc()
 		return 0, false
 	}
 
@@ -82,9 +116,11 @@ func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUser
 	newValue, err := e.sentiment.ApplyVote(ctx, sessionUUID, delta, config.DecaySpeed, nowMs)
 	if err != nil {
 		slog.Error("ApplyVote error", "error", err)
+		metrics.VoteProcessingTotal.WithLabelValues("error").Inc()
 		return 0, false
 	}
 
+	metrics.VoteProcessingTotal.WithLabelValues("applied").Inc()
 	return newValue, true
 }
 

@@ -94,6 +94,19 @@ func (m *mockDebouncer) CheckDebounce(ctx context.Context, sessionUUID uuid.UUID
 	return false, nil
 }
 
+// --- Mock Vote Rate Limiter ---
+
+type mockVoteRateLimiter struct {
+	checkVoteRateLimitFn func(ctx context.Context, sessionUUID uuid.UUID) (bool, error)
+}
+
+func (m *mockVoteRateLimiter) CheckVoteRateLimit(ctx context.Context, sessionUUID uuid.UUID) (bool, error) {
+	if m.checkVoteRateLimitFn != nil {
+		return m.checkVoteRateLimitFn(ctx, sessionUUID)
+	}
+	return true, nil // Default: allow votes
+}
+
 // --- GetCurrentValue Tests ---
 
 func TestGetCurrentValue_ReturnsDecayedValue(t *testing.T) {
@@ -114,7 +127,7 @@ func TestGetCurrentValue_ReturnsDecayedValue(t *testing.T) {
 		},
 	}
 	testCache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock, testCache)
+	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, testCache)
 
 	val, err := engine.GetCurrentValue(context.Background(), uuid.New())
 	require.NoError(t, err)
@@ -126,7 +139,7 @@ func TestGetCurrentValue_ReturnsDecayedValue(t *testing.T) {
 func TestGetCurrentValue_NoSession(t *testing.T) {
 	fakeClock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(&mockSessionRepo{}, &mockSentimentStore{}, &mockDebouncer{}, fakeClock, testCache)
+	engine := NewEngine(&mockSessionRepo{}, &mockSentimentStore{}, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, testCache)
 
 	val, err := engine.GetCurrentValue(context.Background(), uuid.New())
 	require.NoError(t, err)
@@ -149,7 +162,7 @@ func TestGetCurrentValue_UsesClockTime(t *testing.T) {
 		},
 	}
 	testCache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock, testCache)
+	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, testCache)
 
 	expectedMs := fakeClock.Now().UnixMilli()
 	_, err := engine.GetCurrentValue(context.Background(), uuid.New())
@@ -175,7 +188,7 @@ func TestGetCurrentValue_DecayMath(t *testing.T) {
 		},
 	}
 	testCache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock, testCache)
+	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, testCache)
 
 	val, err := engine.GetCurrentValue(context.Background(), uuid.New())
 	require.NoError(t, err)
@@ -219,7 +232,7 @@ func TestProcessVote_Success(t *testing.T) {
 	sessions, sentiment, debounce := newHappyPathMocks()
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
+	engine := NewEngine(sessions, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.True(t, applied)
@@ -233,7 +246,7 @@ func TestProcessVote_SessionNotFound(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
+	engine := NewEngine(sessions, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -247,7 +260,7 @@ func TestProcessVote_SessionLookupError(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
+	engine := NewEngine(sessions, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -261,7 +274,7 @@ func TestProcessVote_ConfigNotFound(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
+	engine := NewEngine(sessions, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -272,7 +285,7 @@ func TestProcessVote_NoTriggerMatch(t *testing.T) {
 	sessions, sentiment, debounce := newHappyPathMocks()
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
+	engine := NewEngine(sessions, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "hello world")
 	assert.False(t, applied)
@@ -286,7 +299,7 @@ func TestProcessVote_Debounced(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
+	engine := NewEngine(sessions, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -300,7 +313,7 @@ func TestProcessVote_ApplyVoteError(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
+	engine := NewEngine(sessions, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -320,7 +333,7 @@ func TestProcessVote_UsesClockTime(t *testing.T) {
 	clock := clockwork.NewFakeClock()
 	expectedMs := clock.Now().UnixMilli()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
+	engine := NewEngine(sessions, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
 
 	_, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.True(t, applied)

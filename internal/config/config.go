@@ -30,6 +30,10 @@ type Config struct {
 	MaxConnectionsPerIP     int     `env:"MAX_CONNECTIONS_PER_IP" default:"100"`
 	ConnectionRatePerIP     float64 `env:"CONNECTION_RATE_PER_IP" default:"10"`
 	ConnectionRateBurst     int     `env:"CONNECTION_RATE_BURST" default:"20"`
+
+	// Vote rate limiting (token bucket)
+	VoteRateLimitCapacity int `env:"VOTE_RATE_LIMIT_CAPACITY" default:"100"`
+	VoteRateLimitRate     int `env:"VOTE_RATE_LIMIT_RATE" default:"100"`
 }
 
 func Load() (*Config, error) {

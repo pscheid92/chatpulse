@@ -1,0 +1,76 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: chatpulse_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      
+      - name: Install dependencies
+        run: make deps
+
+      - name: Validate package dependencies
+        run: ./scripts/check-deps.sh
+
+      - name: Run tests with coverage
+        run: make test-coverage
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/chatpulse_test?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+          SESSION_SECRET: test-session-secret-for-ci-only
+          TWITCH_CLIENT_ID: test-client-id
+          TWITCH_CLIENT_SECRET: test-client-secret
+          TWITCH_REDIRECT_URI: http://localhost:8080/auth/callback
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+      
+      - name: Check coverage threshold
+        run: |
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: $coverage%"
+          if (( $(echo "$coverage < 70" | bc -l) )); then
+            echo "❌ Coverage $coverage% is below threshold 70%"
+            exit 1
+          fi
+          echo "✅ Coverage $coverage% meets threshold 70%"

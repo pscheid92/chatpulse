@@ -1,5 +1,9 @@
 # ChatPulse
 
+[![Tests](https://github.com/pscheid92/chatpulse/actions/workflows/test.yml/badge.svg)](https://github.com/pscheid92/chatpulse/actions/workflows/test.yml)
+[![Coverage](https://codecov.io/gh/pscheid92/chatpulse/branch/main/graph/badge.svg)](https://codecov.io/gh/pscheid92/chatpulse)
+[![Go Report Card](https://goreportcard.com/badge/github.com/pscheid92/chatpulse)](https://goreportcard.com/report/github.com/pscheid92/chatpulse)
+
 A real-time chat sentiment tracking overlay for Twitch streamers. Monitor your chat's mood during polls, debates, or Q&A sessions with a glassmorphism overlay for OBS.
 
 A dedicated bot account reads chat on behalf of all streamers, making this a multi-tenant SaaS that supports horizontal scaling via Redis.
@@ -28,6 +32,22 @@ A dedicated bot account reads chat on behalf of all streamers, making this a mul
 3. **PostgreSQL**: Version 15 or higher
 
 4. **Public HTTPS URL**: Required for EventSub webhook delivery (use [ngrok](https://ngrok.com/) for local development)
+
+## Testing
+
+```bash
+make test           # Run all tests (unit + integration, ~15s)
+make test-short     # Run unit tests only (skip integration, <2s)
+make test-race      # Run with race detector
+make test-coverage  # Generate coverage report
+```
+
+**TDD workflow:**
+- Use `make test-short` for rapid feedback during development (<2s, no Docker)
+- Run `make test` before committing (full suite with testcontainers)
+- CI runs full suite on every push
+
+**Coverage targets:** 70% minimum overall, higher for critical paths (sentiment 90%, broadcast 85%)
 
 5. **Go**: Version 1.25+ (for local development only)
 

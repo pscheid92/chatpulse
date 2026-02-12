@@ -49,6 +49,47 @@ func (m *mockPgxPool) Ping(ctx context.Context) error {
 	return m.pingErr
 }
 
+func TestHandleStartup(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/health/startup", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	srv := newTestServer(t, &mockAppService{},
+		withRedisHealthCheck(&mockRedisClient{
+			libraries: []goredis.Library{
+				{Name: "chatpulse"},
+			},
+		}),
+		withPostgresHealthCheck(&mockPgxPool{}),
+	)
+
+	err := srv.handleStartup(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"status":"ready"}`, rec.Body.String())
+}
+
+func TestHandleStartup_RedisDown(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/health/startup", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	srv := newTestServer(t, &mockAppService{},
+		withRedisHealthCheck(&mockRedisClient{pingErr: errors.New("connection refused")}),
+		withPostgresHealthCheck(&mockPgxPool{}),
+	)
+
+	err := srv.handleStartup(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"status":"unhealthy"`)
+	assert.Contains(t, rec.Body.String(), `"failed_check":"redis"`)
+}
+
 func TestHandleLiveness(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/health/live", nil)
@@ -60,7 +101,11 @@ func TestHandleLiveness(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.JSONEq(t, `{"status":"ok"}`, rec.Body.String())
+
+	// Verify JSON structure
+	body := rec.Body.String()
+	assert.Contains(t, body, `"status":"ok"`)
+	assert.Contains(t, body, `"uptime"`)
 }
 
 func TestHandleReadiness_AllHealthy(t *testing.T) {
@@ -287,4 +332,24 @@ func TestCheckRedisFunc(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleVersion(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/version", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	srv := newTestServer(t, &mockAppService{})
+	err := srv.handleVersion(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify JSON structure contains expected fields
+	body := rec.Body.String()
+	assert.Contains(t, body, `"version"`)
+	assert.Contains(t, body, `"commit"`)
+	assert.Contains(t, body, `"build_time"`)
+	assert.Contains(t, body, `"go_version"`)
 }

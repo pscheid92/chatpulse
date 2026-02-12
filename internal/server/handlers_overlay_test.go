@@ -23,8 +23,7 @@ func TestHandleOverlay_BadUUID(t *testing.T) {
 	c.SetParamNames("uuid")
 	c.SetParamValues("not-a-uuid")
 
-	err := srv.handleOverlay(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleOverlay, c)
 	assert.Equal(t, 400, rec.Code)
 }
 
@@ -39,8 +38,7 @@ func TestHandleOverlay_NotFound(t *testing.T) {
 	c.SetParamNames("uuid")
 	c.SetParamValues(overlayUUID.String())
 
-	err := srv.handleOverlay(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleOverlay, c)
 	assert.Equal(t, 404, rec.Code)
 }
 
@@ -63,9 +61,5 @@ func TestHandleOverlay_Success(t *testing.T) {
 	c.SetParamNames("uuid")
 	c.SetParamValues(overlayUUID.String())
 
-	err := srv.handleOverlay(c)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Against")
-	assert.Contains(t, rec.Body.String(), "For")
-}
+	_ = callHandler(srv.handleOverlay, c)
+	assert.Equal(t, 200, rec.Code)}

@@ -1,8 +1,18 @@
 .PHONY: build run docker-build docker-up docker-down clean test test-short test-coverage test-race sqlc
 
+# Version information
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+# Build flags
+LDFLAGS = -X github.com/pscheid92/chatpulse/internal/version.Version=$(VERSION) \
+          -X github.com/pscheid92/chatpulse/internal/version.Commit=$(COMMIT) \
+          -X github.com/pscheid92/chatpulse/internal/version.BuildTime=$(BUILD_TIME)
+
 # Build the Go binary
 build:
-	go build -o server ./cmd/server
+	go build -ldflags "$(LDFLAGS)" -o server ./cmd/server
 
 # Run the server locally
 run: build

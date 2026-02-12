@@ -1,12 +1,14 @@
 package server
 
 import (
+	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/pscheid92/chatpulse/internal/domain"
+	apperrors "github.com/pscheid92/chatpulse/internal/errors"
 )
 
 const (
@@ -61,20 +63,24 @@ func validateConfig(forTrigger, againstTrigger, leftLabel, rightLabel string, de
 func (s *Server) handleDashboard(c echo.Context) error {
 	userID, ok := c.Get("userID").(uuid.UUID)
 	if !ok {
-		return c.String(500, "Internal error: invalid user ID")
+		return apperrors.InternalError("invalid user ID in context", nil)
 	}
 	ctx := c.Request().Context()
 
 	user, err := s.app.GetUserByID(ctx, userID)
 	if err != nil {
-		slog.Error("Failed to load user for dashboard", "error", err)
-		return c.String(500, "Failed to load user")
+		if errors.Is(err, domain.ErrUserNotFound) {
+			return apperrors.NotFoundError("user not found").WithField("user_id", userID.String())
+		}
+		return apperrors.InternalError("failed to load user", err).WithField("user_id", userID.String())
 	}
 
 	config, err := s.app.GetConfig(ctx, userID)
 	if err != nil {
-		slog.Error("Failed to load config for dashboard", "error", err)
-		return c.String(500, "Failed to load config")
+		if errors.Is(err, domain.ErrConfigNotFound) {
+			return apperrors.NotFoundError("config not found").WithField("user_id", userID.String())
+		}
+		return apperrors.InternalError("failed to load config", err).WithField("user_id", userID.String())
 	}
 
 	overlayURL := fmt.Sprintf("%s/overlay/%s", s.getBaseURL(c), user.OverlayUUID)
@@ -97,7 +103,7 @@ func (s *Server) handleDashboard(c echo.Context) error {
 func (s *Server) handleSaveConfig(c echo.Context) error {
 	userID, ok := c.Get("userID").(uuid.UUID)
 	if !ok {
-		return c.String(500, "Internal error: invalid user ID")
+		return apperrors.InternalError("invalid user ID in context", nil)
 	}
 	ctx := c.Request().Context()
 
@@ -109,22 +115,31 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 
 	var decaySpeed float64
 	if _, err := fmt.Sscanf(c.FormValue("decay_speed"), "%f", &decaySpeed); err != nil {
-		return c.String(400, "Invalid decay speed")
+		return apperrors.ValidationError("invalid decay speed format").
+			WithField("decay_speed", c.FormValue("decay_speed"))
 	}
 
 	if err := validateConfig(forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed); err != nil {
-		return c.String(400, fmt.Sprintf("Validation error: %v", err))
+		return apperrors.ValidationError(err.Error()).
+			WithField("for_trigger", forTrigger).
+			WithField("against_trigger", againstTrigger).
+			WithField("left_label", leftLabel).
+			WithField("right_label", rightLabel).
+			WithField("decay_speed", decaySpeed)
 	}
 
 	user, err := s.app.GetUserByID(ctx, userID)
 	if err != nil {
-		slog.Error("Failed to get user for config save", "error", err)
-		return c.String(500, "Failed to save config")
+		if errors.Is(err, domain.ErrUserNotFound) {
+			return apperrors.NotFoundError("user not found").WithField("user_id", userID.String())
+		}
+		return apperrors.InternalError("failed to get user", err).WithField("user_id", userID.String())
 	}
 
 	if err := s.app.SaveConfig(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, user.OverlayUUID); err != nil {
-		slog.Error("Failed to save config", "error", err)
-		return c.String(500, "Failed to save config")
+		return apperrors.InternalError("failed to save config", err).
+			WithField("user_id", userID.String()).
+			WithField("overlay_uuid", user.OverlayUUID.String())
 	}
 
 	return c.Redirect(302, "/dashboard")

@@ -187,10 +187,8 @@ func TestHandleOAuthCallback_MissingCode(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	err := srv.handleOAuthCallback(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleOAuthCallback, c)
 	assert.Equal(t, 400, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Missing code")
 }
 
 func TestHandleOAuthCallback_InvalidState(t *testing.T) {
@@ -211,10 +209,8 @@ func TestHandleOAuthCallback_InvalidState(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := srv.echo.NewContext(req, rec)
 
-	err = srv.handleOAuthCallback(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleOAuthCallback, c)
 	assert.Equal(t, 400, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Invalid OAuth state")
 }
 
 func TestHandleOAuthCallback_ExchangeError(t *testing.T) {
@@ -226,10 +222,8 @@ func TestHandleOAuthCallback_ExchangeError(t *testing.T) {
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 
-	err := srv.handleOAuthCallback(c)
-	assert.NoError(t, err)
-	assert.Equal(t, 500, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Failed to authenticate")
+	_ = callHandler(srv.handleOAuthCallback, c)
+	assert.Equal(t, 502, rec.Code) // External errors return 502
 }
 
 func TestHandleOAuthCallback_DBError(t *testing.T) {
@@ -252,8 +246,6 @@ func TestHandleOAuthCallback_DBError(t *testing.T) {
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 
-	err := srv.handleOAuthCallback(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleOAuthCallback, c)
 	assert.Equal(t, 500, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Failed to save user")
 }

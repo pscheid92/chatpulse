@@ -54,7 +54,7 @@ func TestConfigCache_Integration_HighHitRate(t *testing.T) {
 	}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, fakeClock, cache)
+	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
 
 	sessionUUID := uuid.New()
 	ctx := context.Background()
@@ -111,7 +111,7 @@ func TestConfigCache_Integration_TTLExpiry(t *testing.T) {
 	}
 
 	cache := NewConfigCache(5*time.Second, fakeClock)
-	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, fakeClock, cache)
+	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
 
 	sessionUUID := uuid.New()
 	ctx := context.Background()
@@ -168,7 +168,7 @@ func TestConfigCache_Integration_Invalidation(t *testing.T) {
 	}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, fakeClock, cache)
+	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
 
 	sessionUUID := uuid.New()
 	ctx := context.Background()
@@ -224,7 +224,7 @@ func TestConfigCache_Integration_MultipleSessionsIsolation(t *testing.T) {
 	}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, fakeClock, cache)
+	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
 
 	ctx := context.Background()
 
@@ -295,7 +295,7 @@ func TestConfigCache_Integration_ConcurrentAccess(t *testing.T) {
 	}
 
 	cache := NewConfigCache(10*time.Second, realClock)
-	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, realClock, cache)
+	engine := NewEngine(trackingRepo, sentiment, &mockDebouncer{}, &mockVoteRateLimiter{}, realClock, cache)
 
 	sessionUUID := uuid.New()
 	ctx := context.Background()

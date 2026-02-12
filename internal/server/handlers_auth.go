@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	apperrors "github.com/pscheid92/chatpulse/internal/errors"
 )
 
 const (
@@ -57,8 +58,7 @@ func generateOAuthState() (string, error) {
 func (s *Server) handleLoginPage(c echo.Context) error {
 	state, err := generateOAuthState()
 	if err != nil {
-		slog.Error("Failed to generate OAuth state", "error", err)
-		return c.String(500, "Internal error")
+		return apperrors.InternalError("failed to generate OAuth state", err)
 	}
 
 	session, err := s.sessionStore.Get(c.Request(), sessionName)
@@ -67,8 +67,7 @@ func (s *Server) handleLoginPage(c echo.Context) error {
 	}
 	session.Values[sessionKeyOAuthState] = state
 	if err := session.Save(c.Request(), c.Response().Writer); err != nil {
-		slog.Error("Failed to save OAuth state session", "error", err)
-		return c.String(500, "Internal error")
+		return apperrors.InternalError("failed to save OAuth state session", err)
 	}
 
 	authURL := fmt.Sprintf(
@@ -90,19 +89,19 @@ func (s *Server) handleLoginPage(c echo.Context) error {
 func (s *Server) handleOAuthCallback(c echo.Context) error {
 	code := c.QueryParam("code")
 	if code == "" {
-		return c.String(400, "Missing code parameter")
+		return apperrors.ValidationError("missing code parameter")
 	}
 
 	session, err := s.sessionStore.Get(c.Request(), sessionName)
 	if err != nil {
-		return c.String(400, "Invalid session")
+		return apperrors.ValidationError("invalid session")
 	}
 	expectedState, ok := session.Values[sessionKeyOAuthState].(string)
 	if !ok || expectedState == "" {
-		return c.String(400, "Missing OAuth state")
+		return apperrors.ValidationError("missing OAuth state")
 	}
 	if c.QueryParam("state") != expectedState {
-		return c.String(400, "Invalid OAuth state")
+		return apperrors.ValidationError("invalid OAuth state")
 	}
 	delete(session.Values, sessionKeyOAuthState)
 
@@ -111,15 +110,14 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 
 	result, err := s.oauthClient.ExchangeCodeForToken(ctx, code)
 	if err != nil {
-		slog.Error("Failed to exchange OAuth code", "error", err)
-		return c.String(500, "Failed to authenticate with Twitch")
+		return apperrors.ExternalError("failed to authenticate with Twitch", err)
 	}
 
 	tokenExpiry := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
 	user, err := s.app.UpsertUser(ctx, result.UserID, result.Username, result.AccessToken, result.RefreshToken, tokenExpiry)
 	if err != nil {
-		slog.Error("Failed to save user", "error", err)
-		return c.String(500, "Failed to save user")
+		return apperrors.InternalError("failed to save user", err).
+			WithField("twitch_user_id", result.UserID)
 	}
 
 	// Regenerate session ID after successful authentication to prevent session fixation attacks.
@@ -129,21 +127,18 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 	// hijack the authenticated session afterward.
 	session.Options.MaxAge = -1 // Mark old session for deletion
 	if err := session.Save(c.Request(), c.Response().Writer); err != nil {
-		slog.Error("Failed to invalidate old session", "error", err)
-		return c.String(500, "Failed to save session")
+		return apperrors.InternalError("failed to invalidate old session", err)
 	}
 
 	// Create new session with fresh ID
 	session, err = s.sessionStore.New(c.Request(), sessionName)
 	if err != nil {
-		slog.Error("Failed to create new session", "error", err)
-		return c.String(500, "Failed to save session")
+		return apperrors.InternalError("failed to create new session", err)
 	}
 
 	session.Values[sessionKeyToken] = user.ID.String()
 	if err := session.Save(c.Request(), c.Response().Writer); err != nil {
-		slog.Error("Failed to save session", "error", err)
-		return c.String(500, "Failed to save session")
+		return apperrors.InternalError("failed to save session", err)
 	}
 
 	return c.Redirect(302, "/dashboard")
@@ -155,14 +150,13 @@ func (s *Server) handleLogout(c echo.Context) error {
 		slog.Error("Warning: failed to get session during logout", "error", err)
 		session, err = s.sessionStore.New(c.Request(), sessionName)
 		if err != nil {
-			slog.Error("Error: failed to create new session during logout", "error", err)
+			return apperrors.InternalError("failed to create new session during logout", err)
 		}
 	}
 	session.Options.MaxAge = -1
 
 	if err := session.Save(c.Request(), c.Response().Writer); err != nil {
-		slog.Error("Failed to save logout session", "error", err)
-		return c.String(500, "Failed to logout due to session error. Please try again or clear your browser cookies.")
+		return apperrors.InternalError("failed to save logout session", err)
 	}
 
 	return c.Redirect(302, "/auth/login")

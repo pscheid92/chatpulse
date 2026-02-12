@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	apperrors "github.com/pscheid92/chatpulse/internal/errors"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
@@ -128,8 +129,12 @@ func newTestServer(t *testing.T, app domain.AppService, opts ...func(*Server)) *
 		MaxAge: 3600,
 	}
 
+	e := echo.New()
+	// Install error middleware for tests to match production behavior
+	e.Use(apperrors.Middleware())
+
 	srv := &Server{
-		echo:              echo.New(),
+		echo:              e,
 		config:            &config.Config{TwitchClientID: "test-client-id", TwitchRedirectURI: "http://localhost/auth/callback"},
 		app:               app,
 		sessionStore:      store,
@@ -141,6 +146,9 @@ func newTestServer(t *testing.T, app domain.AppService, opts ...func(*Server)) *
 	for _, opt := range opts {
 		opt(srv)
 	}
+
+	// Register routes so endpoints are available for testing
+	srv.registerRoutes()
 
 	return srv
 }
@@ -161,6 +169,11 @@ func withPostgresHealthCheck(pg postgresHealthChecker) func(*Server) {
 	return func(s *Server) {
 		s.postgresHealthCheck = pg
 	}
+}
+
+// callHandler wraps a handler with error middleware, matching production behavior
+func callHandler(handler echo.HandlerFunc, c echo.Context) error {
+	return apperrors.Middleware()(handler)(c)
 }
 
 func setSessionUserID(t *testing.T, srv *Server, req *http.Request, rec *httptest.ResponseRecorder, userID uuid.UUID) {

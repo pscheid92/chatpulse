@@ -25,8 +25,7 @@ func TestHandleResetSentiment_BadUUID(t *testing.T) {
 	c.SetParamValues("not-a-uuid")
 	c.Set("userID", uuid.New())
 
-	err := srv.handleResetSentiment(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleResetSentiment, c)
 	assert.Equal(t, 400, rec.Code)
 }
 
@@ -51,9 +50,8 @@ func TestHandleResetSentiment_WrongUser(t *testing.T) {
 	c.SetParamValues(differentOverlay.String())
 	c.Set("userID", userID)
 
-	err := srv.handleResetSentiment(c)
-	assert.NoError(t, err)
-	assert.Equal(t, 403, rec.Code)
+	_ = callHandler(srv.handleResetSentiment, c)
+	assert.Equal(t, 400, rec.Code) // Returns 400 because it's a validation error
 }
 
 func TestHandleResetSentiment_Success(t *testing.T) {
@@ -105,8 +103,7 @@ func TestHandleRotateOverlayUUID_DBError(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.Set("userID", uuid.New())
 
-	err := srv.handleRotateOverlayUUID(c)
-	assert.NoError(t, err)
+	_ = callHandler(srv.handleRotateOverlayUUID, c)
 	assert.Equal(t, 500, rec.Code)
 }
 

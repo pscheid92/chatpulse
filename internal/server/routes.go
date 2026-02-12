@@ -7,8 +7,10 @@ import (
 
 func (s *Server) registerRoutes() {
 	// Observability endpoints (no auth required)
+	s.echo.GET("/health/startup", s.handleStartup)
 	s.echo.GET("/health/live", s.handleLiveness)
 	s.echo.GET("/health/ready", s.handleReadiness)
+	s.echo.GET("/version", s.handleVersion)
 	s.echo.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 
 	// Root - redirect to dashboard
