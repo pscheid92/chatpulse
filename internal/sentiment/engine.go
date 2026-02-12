@@ -8,28 +8,49 @@ import (
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/metrics"
 )
 
 const voteDelta = 10.0
 
 type Engine struct {
-	sessions  domain.SessionRepository
-	sentiment domain.SentimentStore
-	debounce  domain.Debouncer
-	clock     clockwork.Clock
+	sessions    domain.SessionRepository
+	sentiment   domain.SentimentStore
+	debounce    domain.Debouncer
+	clock       clockwork.Clock
+	configCache *ConfigCache
 }
 
-func NewEngine(sessions domain.SessionRepository, sentiment domain.SentimentStore, debounce domain.Debouncer, clock clockwork.Clock) *Engine {
-	return &Engine{sessions: sessions, sentiment: sentiment, debounce: debounce, clock: clock}
+func NewEngine(sessions domain.SessionRepository, sentiment domain.SentimentStore, debounce domain.Debouncer, clock clockwork.Clock, configCache *ConfigCache) *Engine {
+	return &Engine{
+		sessions:    sessions,
+		sentiment:   sentiment,
+		debounce:    debounce,
+		clock:       clock,
+		configCache: configCache,
+	}
 }
 
 func (e *Engine) GetCurrentValue(ctx context.Context, sessionUUID uuid.UUID) (float64, error) {
-	config, err := e.sessions.GetSessionConfig(ctx, sessionUUID)
-	if err != nil {
-		return 0, err
-	}
-	if config == nil {
-		return 0, nil
+	// Try cache first
+	config, hit := e.configCache.Get(sessionUUID)
+	if !hit {
+		// Cache miss - fetch from Redis
+		metrics.ConfigCacheMisses.Inc()
+
+		fetchedConfig, err := e.sessions.GetSessionConfig(ctx, sessionUUID)
+		if err != nil {
+			return 0, err
+		}
+		if fetchedConfig == nil {
+			return 0, nil
+		}
+
+		// Cache the fetched config
+		e.configCache.Set(sessionUUID, *fetchedConfig)
+		config = fetchedConfig
+	} else {
+		metrics.ConfigCacheHits.Inc()
 	}
 
 	nowMs := e.clock.Now().UnixMilli()
@@ -69,6 +90,13 @@ func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUser
 
 func (e *Engine) ResetSentiment(ctx context.Context, sessionUUID uuid.UUID) error {
 	return e.sentiment.ResetSentiment(ctx, sessionUUID)
+}
+
+// InvalidateConfigCache explicitly removes a config from the cache.
+// This should be called when a config is updated to ensure the next
+// GetCurrentValue() call fetches the fresh config from Redis.
+func (e *Engine) InvalidateConfigCache(sessionUUID uuid.UUID) {
+	e.configCache.Invalidate(sessionUUID)
 }
 
 func matchTrigger(messageText string, config *domain.ConfigSnapshot) float64 {

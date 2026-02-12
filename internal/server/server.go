@@ -8,11 +8,14 @@ import (
 	"net/http"
 
 	"github.com/gorilla/sessions"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/labstack/echo-contrib/echoprometheus"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/pscheid92/chatpulse/internal/broadcast"
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 const sessionMaxAgeDays = 7
@@ -34,9 +37,15 @@ type Server struct {
 	loginTemplate     *template.Template
 	dashboardTemplate *template.Template
 	overlayTemplate   *template.Template
+	db                *pgxpool.Pool
+	redisClient       *goredis.Client
+	connLimits        *ConnectionLimits
+	// For testing only - allows injecting mock health checkers
+	redisHealthCheck    redisHealthChecker
+	postgresHealthCheck postgresHealthChecker
 }
 
-func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster, webhook webhookHandler) (*Server, error) {
+func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster, webhook webhookHandler, db *pgxpool.Pool, redisClient *goredis.Client) (*Server, error) {
 	// Parse templates once at startup
 	loginTmpl, err := template.ParseFiles("web/templates/login.html")
 	if err != nil {
@@ -58,6 +67,7 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 	// Middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
+	e.Use(echoprometheus.NewMiddleware("chatpulse")) // Metrics endpoint at /metrics
 
 	// Session store
 	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
@@ -80,6 +90,19 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 		CookieSameSite: http.SameSiteStrictMode,
 	})
 
+	// Initialize connection limiter
+	connLimits := NewConnectionLimits(
+		int64(cfg.MaxWebSocketConnections),
+		cfg.MaxConnectionsPerIP,
+		cfg.ConnectionRatePerIP,
+		cfg.ConnectionRateBurst,
+	)
+	slog.Info("Connection limits initialized",
+		"max_global", cfg.MaxWebSocketConnections,
+		"max_per_ip", cfg.MaxConnectionsPerIP,
+		"rate_per_ip", cfg.ConnectionRatePerIP,
+		"rate_burst", cfg.ConnectionRateBurst)
+
 	srv := &Server{
 		echo:              e,
 		config:            cfg,
@@ -92,6 +115,9 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 		dashboardTemplate: dashboardTmpl,
 		overlayTemplate:   overlayTmpl,
 		csrfMiddleware:    csrfMiddleware,
+		db:                db,
+		redisClient:       redisClient,
+		connLimits:        connLimits,
 	}
 
 	// Register routes

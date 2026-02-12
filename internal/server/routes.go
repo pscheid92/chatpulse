@@ -2,9 +2,15 @@ package server
 
 import (
 	"github.com/labstack/echo/v4"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func (s *Server) registerRoutes() {
+	// Observability endpoints (no auth required)
+	s.echo.GET("/health/live", s.handleLiveness)
+	s.echo.GET("/health/ready", s.handleReadiness)
+	s.echo.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
+
 	// Root - redirect to dashboard
 	s.echo.GET("/", func(c echo.Context) error {
 		return c.Redirect(302, "/dashboard")

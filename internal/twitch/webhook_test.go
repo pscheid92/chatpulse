@@ -231,7 +231,9 @@ func setupWebhookTest(t *testing.T) (*WebhookHandler, *testSessionRepo, string) 
 	store.addSession(testSessionUUID, broadcasterID, config)
 
 	debouncer := newTestDebouncer()
-	engine := sentiment.NewEngine(store, store, debouncer, clockwork.NewRealClock())
+	clock := clockwork.NewRealClock()
+	cache := sentiment.NewConfigCache(10*time.Second, clock)
+	engine := sentiment.NewEngine(store, store, debouncer, clock, cache)
 	handler := NewWebhookHandler(testWebhookSecret, engine)
 	return handler, store, broadcasterID
 }

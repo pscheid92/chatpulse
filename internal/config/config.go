@@ -24,6 +24,12 @@ type Config struct {
 	RedisURL           string `env:"REDIS_URL"`
 	LogLevel           string `env:"LOG_LEVEL" default:"info"`
 	LogFormat          string `env:"LOG_FORMAT" default:"text"`
+
+	// WebSocket connection limits
+	MaxWebSocketConnections int     `env:"MAX_WEBSOCKET_CONNECTIONS" default:"10000"`
+	MaxConnectionsPerIP     int     `env:"MAX_CONNECTIONS_PER_IP" default:"100"`
+	ConnectionRatePerIP     float64 `env:"CONNECTION_RATE_PER_IP" default:"10"`
+	ConnectionRateBurst     int     `env:"CONNECTION_RATE_BURST" default:"20"`
 }
 
 func Load() (*Config, error) {

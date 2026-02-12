@@ -2,25 +2,39 @@ package redis
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"testing"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
-var testRedisURL string
+var (
+	testRedisURL string
+	redContainer testcontainers.Container
+)
 
 func TestMain(m *testing.M) {
+	// Parse flags to check for -short
+	flag.Parse()
+
+	// Skip container setup if running in short mode
+	if testing.Short() {
+		os.Exit(m.Run())
+	}
+
 	ctx := context.Background()
-	container, err := redis.Run(ctx, "redis:7-alpine")
+	var err error
+	redContainer, err = redis.Run(ctx, "redis:7-alpine")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to start redis container: %v\n", err)
 		os.Exit(1)
 	}
 
-	endpoint, err := container.Endpoint(ctx, "")
+	endpoint, err := redContainer.Endpoint(ctx, "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to get redis endpoint: %v\n", err)
 		os.Exit(1)
@@ -28,7 +42,7 @@ func TestMain(m *testing.M) {
 	testRedisURL = "redis://" + endpoint
 
 	defer func() {
-		if err := container.Terminate(ctx); err != nil {
+		if err := redContainer.Terminate(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to terminate redis container: %v\n", err)
 		}
 	}()

@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"testing"
@@ -23,6 +24,14 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// Parse flags to check for -short
+	flag.Parse()
+
+	// Skip container setup if running in short mode
+	if testing.Short() {
+		os.Exit(m.Run())
+	}
+
 	ctx := context.Background()
 
 	// Start PostgreSQL container once for all tests

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/metrics"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -168,6 +170,9 @@ func (s *Service) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, 
 		slog.Error("Failed to update live session config", "error", err)
 	}
 
+	// Invalidate config cache so next GetCurrentValue() fetches fresh config
+	s.engine.InvalidateConfigCache(overlayUUID)
+
 	return nil
 }
 
@@ -178,7 +183,14 @@ func (s *Service) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid
 
 // CleanupOrphans removes sessions that have been disconnected longer than orphanMaxAge.
 // Uses a timeout to prevent unbounded scan operations on large Redis datasets.
+// Race condition handling: skips sessions with ref_count > 0 (reconnected during scan).
 func (s *Service) CleanupOrphans(ctx context.Context) {
+	start := s.clock.Now()
+	defer func() {
+		metrics.OrphanCleanupScansTotal.Inc()
+		metrics.OrphanCleanupDurationSeconds.Observe(s.clock.Since(start).Seconds())
+	}()
+
 	// Add timeout to prevent unbounded scan operations
 	scanCtx, cancel := context.WithTimeout(ctx, cleanupScanTimeout)
 	defer cancel()
@@ -189,26 +201,69 @@ func (s *Service) CleanupOrphans(ctx context.Context) {
 		return
 	}
 
+	var deletedSessions []uuid.UUID
+
 	for _, id := range orphans {
 		if err := s.store.DeleteSession(ctx, id); err != nil {
-			slog.Error("DeleteSession error", "session_uuid", id.String(), "error", err)
+			if errors.Is(err, domain.ErrSessionActive) {
+				// Expected: session reconnected during scan, skip deletion
+				slog.Debug("Skipped active session during cleanup",
+					"session_uuid", id.String(),
+					"ref_count", "positive")
+				metrics.OrphanSessionsSkippedTotal.WithLabelValues("active").Inc()
+				continue
+			}
+			// Unexpected error
+			slog.Error("DeleteSession error",
+				"session_uuid", id.String(),
+				"error", err)
+			metrics.OrphanSessionsSkippedTotal.WithLabelValues("error").Inc()
+			continue
 		}
+
+		// Successfully deleted
+		metrics.OrphanSessionsDeletedTotal.Inc()
+		deletedSessions = append(deletedSessions, id)
 	}
 
-	if s.twitch != nil {
+	// Background unsubscribe for deleted sessions only
+	if s.twitch != nil && len(deletedSessions) > 0 {
 		s.cleanupWg.Go(func() {
 			bgCtx := context.Background()
-			for _, overlayUUID := range orphans {
+			for _, overlayUUID := range deletedSessions {
 				user, err := s.users.GetByOverlayUUID(bgCtx, overlayUUID)
 				if err != nil {
-					slog.Error("Failed to look up user for orphan session", "session_uuid", overlayUUID.String(), "error", err)
+					if errors.Is(err, domain.ErrUserNotFound) {
+						// User was deleted, subscription is orphaned but can't unsubscribe
+						slog.Debug("User not found for orphan session", "session_uuid", overlayUUID.String())
+						continue
+					}
+					slog.Error("Failed to look up user for orphan session",
+						"session_uuid", overlayUUID.String(),
+						"error", err)
+					metrics.CleanupUnsubscribeErrorsTotal.Inc()
 					continue
 				}
+
 				if err := s.twitch.Unsubscribe(bgCtx, user.ID); err != nil {
-					slog.Error("Failed to unsubscribe orphan session", "session_uuid", overlayUUID.String(), "error", err)
+					if errors.Is(err, domain.ErrSubscriptionNotFound) {
+						// Idempotent: already unsubscribed, success
+						slog.Debug("Subscription already removed",
+							"session_uuid", overlayUUID.String(),
+							"user_id", user.ID.String())
+					} else {
+						slog.Error("Failed to unsubscribe orphan session",
+							"session_uuid", overlayUUID.String(),
+							"user_id", user.ID.String(),
+							"error", err)
+						metrics.CleanupUnsubscribeErrorsTotal.Inc()
+					}
 					continue
 				}
-				slog.Info("Cleaned up orphan session", "session_uuid", overlayUUID.String())
+
+				slog.Info("Cleaned up orphan session",
+					"session_uuid", overlayUUID.String(),
+					"user_id", user.ID.String())
 			}
 		})
 	}

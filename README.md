@@ -97,10 +97,12 @@ make run
 ```
 make build          # Build binary -> ./server
 make run            # Build and run locally
-make test           # Run all tests (unit + integration)
-make test-short     # Run unit tests only (fast, no containers)
-make test-race      # Run tests with race detector
-make test-coverage  # Generate coverage report
+make test              # Run all tests (unit + integration, ~15s)
+make test-short        # Run unit tests only (fast, <2s, no Docker)
+make test-unit         # Alias for test-short
+make test-integration  # Run integration tests only (~12s, requires Docker)
+make test-race         # Run tests with race detector
+make test-coverage     # Generate coverage report
 make fmt            # Format code
 make lint           # Run golangci-lint
 make deps           # Download and tidy dependencies

@@ -66,6 +66,7 @@ internal/
     handlers_dashboard.go   Dashboard page, config save, input validation
     handlers_api.go         REST API endpoints (reset sentiment, rotate overlay UUID)
     handlers_overlay.go     Overlay page + WebSocket upgrade
+    connection_limiter.go   WebSocket connection limits (3-layer DoS protection: global, per-IP, rate limiting)
     oauth_client.go         twitchOAuthClient interface + HTTP implementation
   twitch/
     eventsub.go             EventSubManager: Twitch API client, conduit lifecycle, DB-backed subscription management
@@ -118,6 +119,10 @@ All defined in `.env.example`.
 
 **Optional**:
 - `TOKEN_ENCRYPTION_KEY` — 64 hex chars (32 bytes) for AES-256-GCM token encryption at rest; if empty, tokens stored in plaintext
+- `MAX_WEBSOCKET_CONNECTIONS` — Maximum total connections per instance (default: 10000)
+- `MAX_CONNECTIONS_PER_IP` — Maximum connections from a single IP (default: 100)
+- `CONNECTION_RATE_PER_IP` — Maximum new connections per second per IP (default: 10)
+- `CONNECTION_RATE_BURST` — Rate limiter burst allowance (default: 20)
 
 ## Database
 
@@ -172,7 +177,8 @@ The actor follows this shape:
 
 - No actor, no goroutines. All mutable state lives in Redis.
 - Depends on three focused interfaces: `domain.SessionRepository` (session queries), `domain.SentimentStore` (vote/decay operations), and `domain.Debouncer` (per-user rate limiting).
-- `GetCurrentValue(ctx, sessionUUID)` reads the session config, then calls `sentimentStore.GetSentiment()` with the current clock time. The Redis Function computes the time-decayed value atomically.
+- **Config Cache**: Includes an in-memory `ConfigCache` with 10s TTL that reduces Redis config reads by 99%+. Cache is transparently checked on every `GetCurrentValue()` call. Invalidated explicitly on config updates via `InvalidateConfigCache()`.
+- `GetCurrentValue(ctx, sessionUUID)` checks the config cache first (99% hit rate), falls back to Redis on miss, then calls `sentimentStore.GetSentiment()` with the current clock time. The Redis Function computes the time-decayed value atomically.
 - `ProcessVote(ctx, broadcasterUserID, chatterUserID, messageText)` encapsulates the full vote pipeline: broadcaster lookup → trigger match → debounce check → atomic vote application.
 - `ResetSentiment(ctx, sessionUUID)` delegates to `sentimentStore.ResetSentiment()`.
 - Implements `domain.Engine`, consumed by both the `Broadcaster`'s tick loop (reads), the webhook handler (writes), and the app layer (reset).
@@ -195,18 +201,31 @@ Abstracts per-user vote rate limiting (1 method: `CheckDebounce`). Single implem
 
 - **`Debouncer`** (`redis/debouncer.go`): Implements `domain.Debouncer`. Uses Redis `SETNX` with 1s TTL (auto-expires, no pruning needed).
 
+### Vote Rate Limiter Interface (`domain/rate_limit.go`)
+
+Abstracts per-session vote rate limiting using token bucket algorithm (1 method: `CheckVoteRateLimit`). Single implementation:
+
+- **`VoteRateLimiter`** (`redis/vote_rate_limiter.go`): Implements `domain.VoteRateLimiter`. Token bucket via Redis Lua function (`check_vote_rate_limit` in `vote_rate_limit` library). Allows burst traffic (100 tokens initially) while limiting sustained rate (100 tokens/min). Multi-instance safe (atomic Redis Functions). 5-minute TTL auto-expires inactive sessions. Fail-open design: allows votes if Redis errors occur (availability over strict enforcement).
+
 ### Vote Processing Pipeline
 
-Votes flow through `engine.ProcessVote()`, which orchestrates three focused interfaces (`SessionRepository` for queries, `SentimentStore` for vote application, `Debouncer` for rate limiting). The webhook handler calls this method through the `domain.Engine` interface. The bot account's `user_id` in the EventSub subscription means Twitch sends all chat messages from channels the bot has joined:
+Votes flow through `engine.ProcessVote()`, which orchestrates four focused interfaces (`SessionRepository` for queries, `SentimentStore` for vote application, `Debouncer` for per-user rate limiting, `VoteRateLimiter` for per-session rate limiting). The webhook handler calls this method through the `domain.Engine` interface. The bot account's `user_id` in the EventSub subscription means Twitch sends all chat messages from channels the bot has joined:
 
 1. Twitch sends `channel.chat.message` webhook → Kappopher verifies HMAC
 2. `sessions.GetSessionByBroadcaster(broadcasterUserID)` → session UUID
 3. `sessions.GetSessionConfig(sessionUUID)` → config
 4. `sentiment.matchTrigger(messageText, config)` → delta (+10, -10, or 0)
-5. `debouncer.CheckDebounce(sessionUUID, chatterUserID)` → allowed (SETNX in Redis)
-6. `sentimentStore.ApplyVote(sessionUUID, delta)` → new value (Redis Function: decay + clamp)
+5. `debouncer.CheckDebounce(sessionUUID, chatterUserID)` → allowed (SETNX in Redis, 1s per user)
+6. `rateLimiter.CheckVoteRateLimit(sessionUUID)` → allowed (token bucket, 100 burst + 100/min sustained)
+7. `sentimentStore.ApplyVote(sessionUUID, delta)` → new value (Redis Function: decay + clamp)
 
-Step 6's Redis Function atomically applies the time-decayed vote in Redis. The `Broadcaster`'s next tick (≤50ms later) reads the updated value via `Engine.GetCurrentValue` and broadcasts to local WebSocket clients.
+Step 7's Redis Function atomically applies the time-decayed vote in Redis. The `Broadcaster`'s next tick (≤50ms later) reads the updated value via `Engine.GetCurrentValue` and broadcasts to local WebSocket clients.
+
+**Rate Limiting Strategy**:
+- **Per-user debounce** (step 5): Prevents individual spam (1 vote/second per user)
+- **Per-session rate limit** (step 6): Prevents coordinated bot attacks (100 burst, 100/min sustained)
+- **Fail-open**: Vote allowed if rate limiter errors (Redis outage doesn't block all votes)
+- **Metrics**: `vote_processing_total{result="rate_limited"}`, `vote_rate_limit_checks_total{result}`
 
 ### Redis Architecture (`internal/redis/`)
 
@@ -224,26 +243,70 @@ Step 6's Redis Function atomically applies the time-decayed vote in Redis. The `
 
 ### HTTP Server (`internal/server/`)
 
-- **Echo Framework**: Uses Echo v4 with Logger and Recover middleware. Sessions via gorilla/sessions with `sessionMaxAgeDays` (7) expiry, secure cookies in production. Templates are parsed once at startup and cached in the `Server` struct. `NewServer` returns `(*Server, error)`.
+- **Echo Framework**: Uses Echo v4 with Logger and Recover middleware. Sessions via gorilla/sessions with `sessionMaxAgeDays` (7) expiry, secure cookies in production. `NewServer` returns `(*Server, error)`.
+- **Template Caching**: HTML templates (`web/templates/*.html`) are parsed once at startup via `template.ParseFiles()` and cached in the `Server` struct fields (`loginTemplate`, `dashboardTemplate`, `overlayTemplate`). **Production behavior:** Fast rendering (no I/O per request), fail-fast (invalid templates crash at startup, not during request handling). **Development trade-off:** Template changes require app restart to take effect (no hot-reload). Parse errors are fatal — `NewServer()` returns error if any template fails to parse. Templates rendered via `renderTemplate()` helper (`handlers.go`), which executes cached templates directly.
 - **Handler File Organization**: Handlers are split by domain — `handlers_auth.go` (auth middleware, OAuth, login/logout), `handlers_dashboard.go` (dashboard page, config save, validation), `handlers_api.go` (REST API), `handlers_overlay.go` (overlay page, WebSocket). Shared helpers (`renderTemplate`, `getBaseURL`, session constants) live in `handlers.go`.
 - **Auth Middleware** (`requireAuth` in `handlers_auth.go`): Checks session for user ID, parses UUID, stores in Echo context. Redirects to `/auth/login` if not authenticated.
 - **OAuth Flow**: Uses the `twitchOAuthClient` interface (mockable for tests). `GET /auth/login` → generate CSRF state + store in session → Twitch OAuth (scope: `channel:bot`, `state` param) → `/auth/callback` → verify state matches session → `oauthClient.ExchangeCodeForToken()` → `twitchTokenResult` → upsert to DB → create session → `/dashboard`.
 - **WebSocket Lifecycle** (`handlers_overlay.go`): `GET /ws/overlay/:uuid` → parse overlay UUID → lookup user → `app.EnsureSessionActive` → `app.IncrRefCount` → upgrade to WebSocket → `broadcaster.Register` → read pump blocks → `broadcaster.Unregister` → `app.OnSessionEmpty`.
 - **Graceful Shutdown**: `SIGINT`/`SIGTERM` → `runGracefulShutdown` returns a `done` channel → `server.Shutdown` → `appSvc.Stop` (stops cleanup timer) → `broadcaster.Stop` → `eventsubManager.Cleanup` → `close(done)`. Main goroutine waits on `<-done` after `srv.Start()` returns, ensuring all deferred cleanup (DB close, Redis close) executes properly.
 
+### WebSocket Connection Limits (`internal/server/connection_limiter.go`)
+
+Three-layer defense against DoS attacks and resource exhaustion:
+
+**Layer 1: Global Connection Limit** (atomic counter, lock-free):
+- Tracks total active connections across all IPs
+- Default: 10,000 connections per instance (configurable via `MAX_WEBSOCKET_CONNECTIONS`)
+- Returns 503 Service Unavailable when exceeded
+- Prevents file descriptor exhaustion
+
+**Layer 2: Per-IP Connection Limit** (mutex-protected map):
+- Limits connections from a single IP address
+- Default: 100 connections per IP (configurable via `MAX_CONNECTIONS_PER_IP`)
+- Returns 429 Too Many Requests when exceeded
+- Handles NAT scenarios (corporate networks behind single IP)
+- Auto-cleanup when IP count reaches zero
+
+**Layer 3: Connection Rate Limiting** (token bucket algorithm):
+- Prevents connection spam and rapid reconnect attacks
+- Default: 10 connections/sec per IP, burst of 20 (configurable via `CONNECTION_RATE_PER_IP`, `CONNECTION_RATE_BURST`)
+- Returns 429 Too Many Requests when exceeded
+- Uses `golang.org/x/time/rate` package
+- Per-IP rate limiters with automatic cleanup (inactive for 10 minutes)
+
+**Enforcement order**: Rate limit → Global limit → Per-IP limit. Checked in `handlers_overlay.go` before WebSocket upgrade via `connLimits.Acquire(clientIP)`. Proper cleanup via `defer connLimits.Release(clientIP)` ensures slots are freed even if upgrade fails. Uses `c.RealIP()` for X-Forwarded-For support behind proxies.
+
+**Rollback on partial failure**: If per-IP limit fails after global limit succeeds, global count is decremented automatically.
+
+**Metrics** (Prometheus):
+- `websocket_connections_rejected_total{reason}` — counter by rejection reason (rate_limit, global_limit, ip_limit)
+- `websocket_connection_capacity_percent` — gauge (0-100%)
+- `websocket_unique_ips` — gauge (number of unique IPs with active connections)
+
+**Configuration** (`.env`):
+```bash
+MAX_WEBSOCKET_CONNECTIONS=10000  # Global limit per instance
+MAX_CONNECTIONS_PER_IP=100       # Per-IP limit
+CONNECTION_RATE_PER_IP=10        # Connections per second per IP
+CONNECTION_RATE_BURST=20         # Rate limiter burst allowance
+```
+
+**Monitoring and Operations**: See [`docs/operations/connection-limits.md`](docs/operations/connection-limits.md) for tuning scenarios (corporate NAT, high-capacity instances, bot attacks), Prometheus alerting rules, load testing instructions, and troubleshooting.
+
 ### Application Layer (`app/service.go`)
 
 - Orchestrates all use cases: session activation, ref counting, config saves, overlay UUID rotation, orphan cleanup.
 - `EnsureSessionActive`: Uses `singleflight` to collapse concurrent activations. Checks if session exists in Redis; if not, loads user + config from DB, activates in store, and subscribes via Twitch EventSub.
 - `OnSessionEmpty`: Decrements Redis ref count; marks session as disconnected when ref count reaches 0 (no instances serving it).
-- **Cleanup Timer**: 30s ticker calls `CleanupOrphans`, which lists sessions disconnected for >30s, deletes them from Redis, and fires Twitch unsubscribe in a background goroutine.
+- **Orphan Cleanup Robustness**: 30s ticker calls `CleanupOrphans`, which lists sessions disconnected for >30s. Race condition prevention: validates `ref_count` before deletion via `DeleteSession`, returning `domain.ErrSessionActive` if `ref_count > 0` (session reconnected during scan). Skipped sessions logged at DEBUG level with reason ("active" or "error"). Only successfully deleted sessions trigger background Twitch unsubscribe. Idempotent unsubscribe handles `ErrSubscriptionNotFound` gracefully (DEBUG log, no error metric). Comprehensive metrics: `OrphanCleanupScansTotal`, `OrphanSessionsDeletedTotal`, `OrphanSessionsSkippedTotal{reason}`, `OrphanCleanupDurationSeconds`, `CleanupUnsubscribeErrorsTotal`. See `docs/operations/orphan-cleanup.md` for monitoring and troubleshooting.
 - Accepts `domain.UserRepository`, `domain.ConfigRepository`, `domain.SessionRepository`, `domain.Engine`, and `domain.TwitchService` (nil-safe for the Twitch dependency when webhooks are not configured). `ResetSentiment` delegates to the `Engine`, which in turn delegates to `SentimentStore`.
 - Also exposes 4 pass-through read methods (`GetUserByID`, `GetUserByOverlayUUID`, `GetConfig`, `UpsertUser`) so handlers never access repositories directly.
 
 ### Domain Package (`internal/domain/`)
 
 Concept-oriented files containing all shared types and cross-cutting interfaces:
-- **`errors.go`**: Sentinel errors `ErrUserNotFound`, `ErrConfigNotFound`, `ErrSubscriptionNotFound` — returned by repository `Get*` methods when no row matches and by `Update*` methods when 0 rows are affected. Repositories translate `pgx.ErrNoRows` (for `:one` queries) and zero `RowsAffected()` (for `:execresult` queries) into these domain errors so consumers never import `pgx` directly.
+- **`errors.go`**: Sentinel errors `ErrUserNotFound`, `ErrConfigNotFound`, `ErrSubscriptionNotFound`, `ErrSessionActive` — returned by repository `Get*` methods when no row matches and by `Update*` methods when 0 rows are affected. `ErrSessionActive` returned by `DeleteSession` when `ref_count > 0` (session reconnected, unsafe to delete). Repositories translate `pgx.ErrNoRows` (for `:one` queries) and zero `RowsAffected()` (for `:execresult` queries) into these domain errors so consumers never import `pgx` directly.
 - **`user.go`**: `User` type, `UserRepository` interface (5 methods)
 - **`config.go`**: `Config`, `ConfigSnapshot` types, `ConfigRepository` interface (2 methods)
 - **`session.go`**: `SessionRepository` interface (11 methods), `SessionUpdate` type
@@ -256,6 +319,9 @@ Concept-oriented files containing all shared types and cross-cutting interfaces:
 
 ### Other Architecture Notes
 
+- **Repository vs Service Naming**: The codebase uses two naming patterns based on purpose. **Repository pattern** (CRUD operations on entities): Interface = `domain.XxxRepository`, Implementation = `database.XxxRepo` or `redis.XxxRepo`. Example: `UserRepository` interface implemented by `database.UserRepo`. **Service pattern** (specialized operations, not CRUD): Interface and implementation use the same name (no `Impl` suffix - Go antipattern). Package disambiguates. Example: `SentimentStore` interface implemented by `redis.SentimentStore`, `Debouncer` interface implemented by `redis.Debouncer`. Rationale: Repository pattern benefits from name distinction (Repo vs Repository) for IDE navigation and grep. Service pattern doesn't need suffix since operations aren't generic CRUD.
+- **Config Caching**: In-memory TTL-based cache (10s TTL) reduces Redis config reads by 99%+. Broadcaster ticks 20×/sec, first tick misses cache (1 Redis read), next 199 ticks hit cache (0 Redis reads) = 99.5% hit rate. Automatic eviction via background timer (1-minute interval). Explicitly invalidated on config updates. Thread-safe via RWMutex. Memory: ~122 bytes/session (negligible at 10K sessions = 2 MB). See `docs/architecture/config-caching.md` for full details. Implemented in `sentiment.ConfigCache`, integrated into `sentiment.Engine.GetCurrentValue()`.
+- **Template Caching**: Templates (`web/templates/*.html`) are parsed once at startup and cached in the `Server` struct (`loginTemplate`, `dashboardTemplate`, `overlayTemplate`). **Production:** Fast rendering (no parsing overhead), fail-fast on invalid templates at startup. **Development:** Template changes require app restart (acceptable for infrequent template changes). Alternative considered: Hot-reload in dev mode (check `APP_ENV`, parse on each request) - rejected for minimal DX improvement vs added complexity. Workaround: Use air or modd for auto-restart. Template paths are hardcoded (`web/templates/login.html`, etc.) as template location is stable.
 - **Trigger Matching**: `matchTrigger()` — unexported pure function in `engine.go`, case-insensitive exact match (trimmed). "For" trigger takes priority when both match. Returns +`voteDelta`, -`voteDelta`, or 0 (`voteDelta` = 10.0).
 - **Vote Clamping**: Values clamped to [-100, 100].
 - **Debounce**: 1 second per user per session. `domain.Debouncer` interface, implemented by `redis.Debouncer` using `SETNX` with 1s TTL (auto-expires, no pruning needed).
@@ -301,7 +367,7 @@ The `Broadcaster` uses an actor pattern. Tests use synchronous queries (e.g., `G
 
 ## Testing
 
-141 tests across 8 packages. Run with `make test` or `go test ./...`.
+181 tests across 8 packages. Run with `make test` or `go test ./...`.
 
 ### Test Types
 
@@ -320,19 +386,110 @@ The `Broadcaster` uses an actor pattern. Tests use synchronous queries (e.g., `G
 - Run with `make test-coverage` to generate `coverage.out` and `coverage.html`
 - Race detection: `make test-race` (runs tests with `-race`)
 
+### Test File Organization
+
+**Naming conventions:**
+
+- **Unit tests:** `<feature>_test.go`
+  - Use mocks for all external dependencies
+  - Fast execution (<100ms per test)
+  - No Docker, no testcontainers
+  - Example: `internal/sentiment/engine_test.go`, `internal/server/handlers_unit_test.go`
+
+- **Integration tests:** `<feature>_integration_test.go`
+  - Use real infrastructure (PostgreSQL, Redis via testcontainers)
+  - Slower execution (100ms-1s per test)
+  - Require Docker daemon running
+  - Example: `internal/redis/session_repository_integration_test.go`, `internal/database/user_repository_integration_test.go`
+
+**Running specific test types:**
+
+```bash
+# All tests (unit + integration, ~15s)
+make test
+
+# Unit tests only (fast feedback, <2s)
+make test-short
+make test-unit  # Alias for test-short
+
+# Integration tests only (~12s)
+make test-integration
+
+# Single package
+go test ./internal/redis
+go test -short ./internal/app  # Unit tests only in app package
+```
+
+**Mixed test files:**
+
+Some packages contain BOTH unit and integration tests in the same file:
+- Integration tests check `testing.Short()` and skip if `-short` flag set
+- This is acceptable but separate files are preferred for clarity
+
+Example pattern:
+```go
+func TestIntegrationFeature(t *testing.T) {
+    if testing.Short() {
+        t.Skip("Skipping integration test")
+    }
+    // Integration test code...
+}
+```
+
+**Test infrastructure files:**
+
+Shared test helpers use plain `_test.go` naming (not `_integration_test.go`):
+- Example: `internal/server/handlers_test.go` contains mocks + setup helpers
+- Used by both unit and integration tests
+
+### Integration Tests with Testcontainers
+
+Integration tests use **testcontainers** for PostgreSQL and Redis (real infrastructure, not mocks):
+
+**Benefits:**
+- Real database behavior (catches schema/query issues, constraint violations)
+- Production-like environment (same PostgreSQL/Redis versions)
+- Docker standardization across team (no "works on my machine")
+
+**Overhead:**
+- First run: 3-7s container startup (PostgreSQL + Redis pull + start)
+- Subsequent runs: <1s (containers cached in Docker)
+- CI: 15s total (acceptable for full integration coverage)
+
+**TDD workflow:**
+1. Use `go test -short ./...` or `make test-short` for rapid feedback (<2s, no Docker)
+2. Run full suite before commit (`make test`, ~15s with containers)
+3. CI runs full suite on every push
+
+**Why testcontainers over mocks?**
+- Database mocks don't catch SQL errors, constraint violations, or migration issues
+- Redis mocks don't replicate Lua function behavior or atomic operation guarantees
+- Integration tests provide higher confidence for data layer (real PostgreSQL queries, real Redis Functions)
+
+**Skipping integration tests:**
+All integration tests check `testing.Short()`:
+```go
+if testing.Short() {
+    t.Skip("Skipping integration test")
+}
+```
+
 ### Test Files
 
 - `internal/config/config_test.go` — env loading, defaults, validation, encryption key validation, webhook config validation
 - `internal/crypto/crypto_test.go` — AesGcmCryptoService: key validation, encrypt/decrypt roundtrip, unique nonces, tampered ciphertext, NoopService passthrough (9 tests)
-- `internal/database/postgres_test.go` — connection, tern migrations, schema verification (testcontainers)
-- `internal/database/user_repository_test.go` — user CRUD, token encryption via crypto.Service, overlay UUID rotation, not-found error paths, encryption key mismatch (testcontainers)
-- `internal/database/config_repository_test.go` — config read/update, not-found error path (testcontainers)
-- `internal/database/eventsub_repository_test.go` — EventSub subscription CRUD, upsert, list; includes `createTestUser` helper (testcontainers)
+- `internal/database/postgres_integration_test.go` — connection, tern migrations, schema verification (testcontainers)
+- `internal/database/user_repository_integration_test.go` — user CRUD, token encryption via crypto.Service, overlay UUID rotation, not-found error paths, encryption key mismatch (testcontainers)
+- `internal/database/config_repository_integration_test.go` — config read/update, not-found error path (testcontainers)
+- `internal/database/eventsub_repository_integration_test.go` — EventSub subscription CRUD, upsert, list; includes `createTestUser` helper (testcontainers)
 - `internal/redis/integration_test.go` — test setup: testcontainers Redis, `setupTestClient` helper
 - `internal/redis/client_integration_test.go` — Redis Function loading test (testcontainers)
 - `internal/redis/session_repository_integration_test.go` — session CRUD, broadcaster mapping, ref counting, orphan listing (testcontainers)
 - `internal/redis/sentiment_store_integration_test.go` — vote application, clamping, decay, sentiment read (testcontainers)
 - `internal/redis/debouncer_integration_test.go` — debounce TTL behavior (testcontainers)
+- `internal/sentiment/config_cache_test.go` — ConfigCache unit tests: cache hit/miss, TTL expiry, eviction, invalidation, concurrency (12 tests)
+- `internal/sentiment/config_cache_integration_test.go` — ConfigCache integration tests: 99.99% hit rate validation, TTL refresh, invalidation, multi-session isolation, concurrent access (5 tests)
+- `internal/sentiment/config_cache_bench_test.go` — ConfigCache benchmarks: Get/Set performance, memory usage (100/1K/10K sessions), cache hit vs miss (13× faster), concurrent workloads (9 benchmarks)
 - `internal/sentiment/engine_test.go` — GetCurrentValue (4 tests) + ProcessVote (8 tests) + matchTrigger (9 tests): three focused mocks (`mockSessionRepo`, `mockSentimentStore`, `mockDebouncer`)
 - `internal/app/service_test.go` — EnsureSessionActive, OnSessionEmpty, IncrRefCount, ResetSentiment, SaveConfig, RotateOverlayUUID, CleanupOrphans, Stop (14 tests)
 - `internal/broadcast/broadcaster_test.go` — register, tick broadcast, multiple clients, session empty callback, client cap, value updates (7 tests)
@@ -342,6 +499,8 @@ The `Broadcaster` uses an actor pattern. Tests use synchronous queries (e.g., `G
 - `internal/server/handlers_dashboard_test.go` — handleDashboard, handleSaveConfig (5 tests)
 - `internal/server/handlers_api_test.go` — handleResetSentiment, handleRotateOverlayUUID (5 tests)
 - `internal/server/handlers_overlay_test.go` — handleOverlay (3 tests)
+- `internal/server/connection_limiter_test.go` — connection limits unit tests: global limit, per-IP limit, rate limit, concurrent access, capacity, cleanup, rollback (19 tests)
+- `internal/server/connection_limits_integration_test.go` — connection limits integration tests: global limit enforcement, per-IP limit enforcement, rate limit enforcement, release on disconnect, concurrent connections (6 tests)
 - `internal/twitch/webhook_test.go` — webhook handler tests with HMAC-signed requests: trigger matching, debounce, invalid signature, non-chat events (5 tests)
 
 ### Test Dependencies
@@ -351,6 +510,24 @@ The `Broadcaster` uses an actor pattern. Tests use synchronous queries (e.g., `G
 - **`testcontainers-go`** — container orchestration (v0.40.0)
 - **`testcontainers-go/modules/postgres`** — PostgreSQL module
 - **`testcontainers-go/modules/redis`** — Redis module
+
+### Coverage Targets
+
+**Minimum:** 70% overall coverage (enforced in CI)
+
+**Per-package targets:**
+- `sentiment/`: 90%+ (core business logic, critical for correctness)
+- `broadcast/`: 85%+ (concurrency patterns need thorough testing)
+- `redis/`: 80%+ (integration tests cover most Redis operations)
+- `app/`: 80%+ (orchestration layer, many edge cases)
+- `server/`: 75%+ (handler logic, auth flows)
+- `database/`: 75%+ (repository CRUD operations)
+- `crypto/`: 90%+ (security-sensitive code)
+- `config/`: 60%+ (simple validation logic)
+- `twitch/`: 75%+ (webhook processing, EventSub integration)
+- `metrics/`: 60%+ (metric definitions, registration)
+
+**Note:** 100% coverage is not the goal. Focus on critical paths (domain logic, Redis operations, HTTP handlers). Template rendering and simple getters are lower priority.
 
 ### Database Integration Tests (testcontainers)
 

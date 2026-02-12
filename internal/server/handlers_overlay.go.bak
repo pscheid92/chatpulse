@@ -149,15 +149,10 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 		return fmt.Errorf("failed to register client with broadcaster: %w", err)
 	}
 
-	// Track successful connection
-	metrics.WebSocketConnectionsTotal.WithLabelValues("success").Inc()
-	metrics.WebSocketConnectionsCurrent.Inc()
-
-	// Record metrics when the handler exits
+	// Record connection duration when the handler exits
 	defer func() {
 		duration := time.Since(connectionStart).Seconds()
 		metrics.WebSocketConnectionDuration.Observe(duration)
-		metrics.WebSocketConnectionsCurrent.Dec()
 	}()
 
 	// Read pump — blocks until connection closes

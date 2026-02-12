@@ -88,6 +88,17 @@ func (s *SessionRepo) DeleteSession(ctx context.Context, sid uuid.UUID) error {
 	sk := sessionKey(sid)
 	rk := refCountKey(sid)
 
+	// Check ref count before deleting to prevent race condition deletions
+	refCount, err := s.rdb.Get(ctx, rk).Int64()
+	if err != nil && !errors.Is(err, goredis.Nil) {
+		return fmt.Errorf("failed to check ref count before delete: %w", err)
+	}
+
+	if refCount > 0 {
+		// Session is still active on another instance, skip deletion
+		return fmt.Errorf("%w: ref_count=%d", domain.ErrSessionActive, refCount)
+	}
+
 	broadcasterID, err := s.rdb.HGet(ctx, sk, fieldBroadcasterID).Result()
 	if err != nil && !errors.Is(err, goredis.Nil) {
 		return err

@@ -151,6 +151,18 @@ func withOAuthClient(oauth twitchOAuthClient) func(*Server) {
 	}
 }
 
+func withRedisHealthCheck(redis redisHealthChecker) func(*Server) {
+	return func(s *Server) {
+		s.redisHealthCheck = redis
+	}
+}
+
+func withPostgresHealthCheck(pg postgresHealthChecker) func(*Server) {
+	return func(s *Server) {
+		s.postgresHealthCheck = pg
+	}
+}
+
 func setSessionUserID(t *testing.T, srv *Server, req *http.Request, rec *httptest.ResponseRecorder, userID uuid.UUID) {
 	t.Helper()
 	session, err := srv.sessionStore.Get(req, sessionName)

@@ -143,7 +143,12 @@ func main() {
 	sentimentStore := redis.NewSentimentStore(redisClient)
 	debouncer := redis.NewDebouncer(redisClient)
 
-	engine := sentiment.NewEngine(store, sentimentStore, debouncer, clock)
+	// Create config cache with 10-second TTL
+	configCache := sentiment.NewConfigCache(10*time.Second, clock)
+	stopEviction := configCache.StartEvictionTimer(1 * time.Minute)
+	defer stopEviction()
+
+	engine := sentiment.NewEngine(store, sentimentStore, debouncer, clock, configCache)
 
 	// Construct repositories
 	var cryptoSvc crypto.Service = crypto.NoopService{}
@@ -187,9 +192,9 @@ func main() {
 		srvErr error
 	)
 	if webhookHdlr != nil {
-		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, webhookHdlr)
+		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, webhookHdlr, pool, redisClient)
 	} else {
-		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, nil)
+		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, nil, pool, redisClient)
 	}
 	if srvErr != nil {
 		slog.Error("Failed to create server", "error", srvErr)

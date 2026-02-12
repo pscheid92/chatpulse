@@ -47,6 +47,10 @@ func (m *mockEngine) ResetSentiment(_ context.Context, _ uuid.UUID) error {
 	return nil
 }
 
+func (m *mockEngine) InvalidateConfigCache(_ uuid.UUID) {
+	// No-op for mock
+}
+
 func (m *mockEngine) setValue(v float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

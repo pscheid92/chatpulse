@@ -203,6 +203,10 @@ func (m *mockEngine) ResetSentiment(ctx context.Context, sessionUUID uuid.UUID) 
 	return nil
 }
 
+func (m *mockEngine) InvalidateConfigCache(_ uuid.UUID) {
+	// No-op for mock
+}
+
 // newTestService creates a Service without starting the cleanup timer.
 func newTestService(users domain.UserRepository, configs domain.ConfigRepository, store *mockSessionRepo, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock) *Service {
 	return &Service{

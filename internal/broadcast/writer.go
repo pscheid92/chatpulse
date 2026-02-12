@@ -6,6 +6,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/jonboulle/clockwork"
+	"github.com/pscheid92/chatpulse/internal/metrics"
 )
 
 const (
@@ -48,13 +49,19 @@ func (cw *clientWriter) run() {
 			if !ok {
 				return
 			}
+			// Track message send duration
+			start := cw.clock.Now()
 			cw.updateWriteDeadline()
 			if err := cw.connection.WriteMessage(websocket.TextMessage, msg); err != nil {
 				return
 			}
+			sendDuration := cw.clock.Since(start).Seconds()
+			metrics.WebSocketMessageSendDuration.Observe(sendDuration)
 		case <-ticker.Chan():
 			cw.updateWriteDeadline()
 			if err := cw.connection.WriteMessage(websocket.PingMessage, nil); err != nil {
+				// Ping failed - client likely disconnected
+				metrics.WebSocketPingFailures.Inc()
 				return
 			}
 		case <-cw.doneChannel:

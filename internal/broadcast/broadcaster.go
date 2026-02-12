@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/metrics"
 )
 
 const (
@@ -188,6 +189,11 @@ func (b *Broadcaster) handleRegister(c registerCmd) {
 
 	cw := newClientWriter(c.connection, b.clock)
 	clients[c.connection] = cw
+
+	// Update metrics
+	metrics.BroadcasterActiveSessions.Set(float64(len(b.activeClients)))
+	metrics.BroadcasterConnectedClients.Inc()
+
 	slog.Debug("Client registered", "session_uuid", c.sessionUUID.String(), "total_clients", len(clients))
 	c.errorChannel <- nil
 }
@@ -206,8 +212,12 @@ func (b *Broadcaster) handleUnregister(c unregisterCmd) {
 	cw.stop()
 	delete(clients, c.connection)
 
+	// Update metrics
+	metrics.BroadcasterConnectedClients.Dec()
+
 	if len(clients) == 0 {
 		delete(b.activeClients, c.sessionUUID)
+		metrics.BroadcasterActiveSessions.Set(float64(len(b.activeClients)))
 		if b.onSessionEmpty != nil {
 			b.onSessionEmpty(c.sessionUUID)
 		}
@@ -218,7 +228,11 @@ func (b *Broadcaster) handleUnregister(c unregisterCmd) {
 }
 
 func (b *Broadcaster) handleTick() {
+	tickStart := b.clock.Now()
+
 	for sessionUUID, clients := range b.activeClients {
+		broadcastStart := b.clock.Now()
+
 		// Per-session timeout to prevent Redis hangs from blocking the broadcaster
 		ctx, cancel := context.WithTimeout(context.Background(), redisTimeout)
 		value, err := b.engine.GetCurrentValue(ctx, sessionUUID)
@@ -251,10 +265,19 @@ func (b *Broadcaster) handleTick() {
 
 		for _, conn := range slow {
 			slog.Warn("Disconnecting slow client", "session_uuid", sessionUUID.String())
+			metrics.BroadcasterSlowClientsEvicted.Inc()
 			cmd := unregisterCmd{sessionUUID: sessionUUID, connection: conn}
 			b.handleUnregister(cmd)
 		}
+
+		// Track per-session broadcast duration
+		broadcastDuration := b.clock.Since(broadcastStart).Seconds()
+		metrics.BroadcasterBroadcastDuration.Observe(broadcastDuration)
 	}
+
+	// Track overall tick duration
+	tickDuration := b.clock.Since(tickStart).Seconds()
+	metrics.BroadcasterTickDuration.Observe(tickDuration)
 }
 
 func (b *Broadcaster) handleStop() {

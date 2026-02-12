@@ -113,7 +113,8 @@ func TestGetCurrentValue_ReturnsDecayedValue(t *testing.T) {
 			return 42.5, nil
 		},
 	}
-	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock)
+	testCache := NewConfigCache(10*time.Second, fakeClock)
+	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock, testCache)
 
 	val, err := engine.GetCurrentValue(context.Background(), uuid.New())
 	require.NoError(t, err)
@@ -124,7 +125,8 @@ func TestGetCurrentValue_ReturnsDecayedValue(t *testing.T) {
 
 func TestGetCurrentValue_NoSession(t *testing.T) {
 	fakeClock := clockwork.NewFakeClock()
-	engine := NewEngine(&mockSessionRepo{}, &mockSentimentStore{}, &mockDebouncer{}, fakeClock)
+	testCache := NewConfigCache(10*time.Second, fakeClock)
+	engine := NewEngine(&mockSessionRepo{}, &mockSentimentStore{}, &mockDebouncer{}, fakeClock, testCache)
 
 	val, err := engine.GetCurrentValue(context.Background(), uuid.New())
 	require.NoError(t, err)
@@ -146,7 +148,8 @@ func TestGetCurrentValue_UsesClockTime(t *testing.T) {
 			return 10.0, nil
 		},
 	}
-	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock)
+	testCache := NewConfigCache(10*time.Second, fakeClock)
+	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock, testCache)
 
 	expectedMs := fakeClock.Now().UnixMilli()
 	_, err := engine.GetCurrentValue(context.Background(), uuid.New())
@@ -171,7 +174,8 @@ func TestGetCurrentValue_DecayMath(t *testing.T) {
 			return expected, nil
 		},
 	}
-	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock)
+	testCache := NewConfigCache(10*time.Second, fakeClock)
+	engine := NewEngine(sessions, sentiment, &mockDebouncer{}, fakeClock, testCache)
 
 	val, err := engine.GetCurrentValue(context.Background(), uuid.New())
 	require.NoError(t, err)
@@ -214,7 +218,8 @@ func newHappyPathMocks() (*mockSessionRepo, *mockSentimentStore, *mockDebouncer)
 func TestProcessVote_Success(t *testing.T) {
 	sessions, sentiment, debounce := newHappyPathMocks()
 	clock := clockwork.NewFakeClock()
-	engine := NewEngine(sessions, sentiment, debounce, clock)
+	testCache := NewConfigCache(10*time.Second, clock)
+	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.True(t, applied)
@@ -226,7 +231,9 @@ func TestProcessVote_SessionNotFound(t *testing.T) {
 	sessions.getSessionByBroadcasterFn = func(_ context.Context, _ string) (uuid.UUID, bool, error) {
 		return uuid.Nil, false, nil
 	}
-	engine := NewEngine(sessions, sentiment, debounce, clockwork.NewFakeClock())
+	clock := clockwork.NewFakeClock()
+	testCache := NewConfigCache(10*time.Second, clock)
+	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -238,7 +245,9 @@ func TestProcessVote_SessionLookupError(t *testing.T) {
 	sessions.getSessionByBroadcasterFn = func(_ context.Context, _ string) (uuid.UUID, bool, error) {
 		return uuid.Nil, false, errors.New("redis error")
 	}
-	engine := NewEngine(sessions, sentiment, debounce, clockwork.NewFakeClock())
+	clock := clockwork.NewFakeClock()
+	testCache := NewConfigCache(10*time.Second, clock)
+	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -250,7 +259,9 @@ func TestProcessVote_ConfigNotFound(t *testing.T) {
 	sessions.getSessionConfigFn = func(_ context.Context, _ uuid.UUID) (*domain.ConfigSnapshot, error) {
 		return nil, nil
 	}
-	engine := NewEngine(sessions, sentiment, debounce, clockwork.NewFakeClock())
+	clock := clockwork.NewFakeClock()
+	testCache := NewConfigCache(10*time.Second, clock)
+	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -259,7 +270,9 @@ func TestProcessVote_ConfigNotFound(t *testing.T) {
 
 func TestProcessVote_NoTriggerMatch(t *testing.T) {
 	sessions, sentiment, debounce := newHappyPathMocks()
-	engine := NewEngine(sessions, sentiment, debounce, clockwork.NewFakeClock())
+	clock := clockwork.NewFakeClock()
+	testCache := NewConfigCache(10*time.Second, clock)
+	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "hello world")
 	assert.False(t, applied)
@@ -271,7 +284,9 @@ func TestProcessVote_Debounced(t *testing.T) {
 	debounce.checkDebounceFn = func(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
 		return false, nil
 	}
-	engine := NewEngine(sessions, sentiment, debounce, clockwork.NewFakeClock())
+	clock := clockwork.NewFakeClock()
+	testCache := NewConfigCache(10*time.Second, clock)
+	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -283,7 +298,9 @@ func TestProcessVote_ApplyVoteError(t *testing.T) {
 	sentiment.applyVoteFn = func(_ context.Context, _ uuid.UUID, _, _ float64, _ int64) (float64, error) {
 		return 0, errors.New("lua script error")
 	}
-	engine := NewEngine(sessions, sentiment, debounce, clockwork.NewFakeClock())
+	clock := clockwork.NewFakeClock()
+	testCache := NewConfigCache(10*time.Second, clock)
+	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
 
 	val, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.False(t, applied)
@@ -302,7 +319,8 @@ func TestProcessVote_UsesClockTime(t *testing.T) {
 
 	clock := clockwork.NewFakeClock()
 	expectedMs := clock.Now().UnixMilli()
-	engine := NewEngine(sessions, sentiment, debounce, clock)
+	testCache := NewConfigCache(10*time.Second, clock)
+	engine := NewEngine(sessions, sentiment, debounce, clock, testCache)
 
 	_, applied := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.True(t, applied)

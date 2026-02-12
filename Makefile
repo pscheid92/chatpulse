@@ -33,6 +33,13 @@ test:
 test-short:
 	go test -short -v ./...
 
+# Run only integration tests
+test-integration:
+	go test -v -run='.*' ./internal/database/...integration_test.go ./internal/redis/...integration_test.go ./internal/sentiment/...integration_test.go
+
+# Alias for test-short
+test-unit: test-short
+
 # Run tests with coverage report
 test-coverage:
 	go test -coverprofile=coverage.out ./...
