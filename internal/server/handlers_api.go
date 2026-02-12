@@ -2,7 +2,7 @@ package server
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -24,6 +24,7 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 
 	user, err := s.app.GetUserByID(ctx, userID)
 	if err != nil {
+		slog.Error("Failed to load user for sentiment reset", "error", err)
 		return c.JSON(500, map[string]string{"error": "Failed to load user"})
 	}
 
@@ -32,7 +33,7 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 	}
 
 	if err := s.app.ResetSentiment(ctx, overlayUUID); err != nil {
-		log.Printf("Failed to reset sentiment: %v", err)
+		slog.Error("Failed to reset sentiment", "error", err)
 		return c.JSON(500, map[string]string{"error": "Failed to reset"})
 	}
 
@@ -48,7 +49,7 @@ func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
 
 	newUUID, err := s.app.RotateOverlayUUID(ctx, userID)
 	if err != nil {
-		log.Printf("Failed to rotate overlay UUID: %v", err)
+		slog.Error("Failed to rotate overlay UUID", "error", err)
 		return c.JSON(500, map[string]string{"error": "Failed to rotate URL"})
 	}
 

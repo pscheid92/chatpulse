@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"html/template"
-	"log"
+	"log/slog"
 
 	"github.com/labstack/echo/v4"
 )
@@ -19,7 +19,7 @@ const (
 func renderTemplate(c echo.Context, tmpl *template.Template, data any) error {
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		log.Printf("Template execution failed for %s: %v", c.Request().URL.Path, err)
+		slog.Error("Template execution failed", "path", c.Request().URL.Path, "error", err)
 		return c.String(500, "Failed to render page")
 	}
 	return c.HTMLBlob(200, buf.Bytes())

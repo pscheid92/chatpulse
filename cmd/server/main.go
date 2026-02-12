@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/database"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/logging"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/pscheid92/chatpulse/internal/redis"
@@ -35,13 +37,15 @@ type webhookResult struct {
 func initWebhooks(cfg *config.Config, engine domain.Engine, eventSubRepo domain.EventSubRepository) webhookResult {
 	eventsubManager, err := twitch.NewEventSubManager(cfg.TwitchClientID, cfg.TwitchClientSecret, eventSubRepo, cfg.WebhookCallbackURL, cfg.WebhookSecret, cfg.BotUserID)
 	if err != nil {
-		log.Fatalf("Failed to create EventSub manager: %v", err)
+		slog.Error("Failed to create EventSub manager", "error", err)
+		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := eventsubManager.Setup(ctx); err != nil {
-		log.Fatalf("failed to setup webhook conduit: %v", err)
+		slog.Error("Failed to setup webhook conduit", "error", err)
+		os.Exit(1)
 	}
 
 	webhookHandler := twitch.NewWebhookHandler(cfg.WebhookSecret, engine)
@@ -59,12 +63,12 @@ func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *b
 
 	go func() {
 		<-sigChan
-		log.Println("Shutdown signal received, cleaning up...")
+		slog.Info("Shutdown signal received, cleaning up...")
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Server shutdown error: %v", err)
+			slog.Error("Server shutdown error", "error", err)
 		}
 
 		appSvc.Stop()
@@ -74,7 +78,7 @@ func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *b
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := conduitMgr.Cleanup(shutdownCtx); err != nil {
-				log.Printf("Failed to clean up conduit: %v", err)
+				slog.Error("Failed to clean up conduit", "error", err)
 			}
 		}
 
@@ -87,6 +91,7 @@ func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *b
 func setupConfig() *config.Config {
 	cfg, err := config.Load()
 	if err != nil {
+		// Use log before slog is initialized
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	return cfg
@@ -98,11 +103,13 @@ func setupDB(cfg *config.Config) *pgxpool.Pool {
 
 	db, err := database.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		slog.Error("Failed to connect to database", "error", err)
+		os.Exit(1)
 	}
 
 	if err := database.RunMigrations(ctx, db); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+		slog.Error("Failed to run migrations", "error", err)
+		os.Exit(1)
 	}
 
 	return db
@@ -111,7 +118,8 @@ func setupDB(cfg *config.Config) *pgxpool.Pool {
 func setupRedis(ctx context.Context, cfg *config.Config) *goredis.Client {
 	client, err := redis.NewClient(ctx, cfg.RedisURL)
 	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		slog.Error("Failed to connect to Redis", "error", err)
+		os.Exit(1)
 	}
 	return client
 }
@@ -120,6 +128,11 @@ func main() {
 	clock := clockwork.NewRealClock()
 
 	cfg := setupConfig()
+
+	// Initialize structured logging
+	logging.InitLogger(cfg.LogLevel, cfg.LogFormat)
+	slog.Info("Application starting", "env", cfg.AppEnv, "port", cfg.Port)
+
 	pool := setupDB(cfg)
 	defer pool.Close()
 
@@ -138,7 +151,8 @@ func main() {
 		var err error
 		cryptoSvc, err = crypto.NewAesGcmCryptoService(cfg.TokenEncryptionKey)
 		if err != nil {
-			log.Fatalf("Failed to create crypto service: %v", err)
+			slog.Error("Failed to create crypto service", "error", err)
+			os.Exit(1)
 		}
 	}
 
@@ -161,7 +175,7 @@ func main() {
 
 	onFirstClient := func(sessionUUID uuid.UUID) {
 		if err := appSvc.IncrRefCount(context.Background(), sessionUUID); err != nil {
-			log.Printf("Failed to increment ref count for session %s: %v", sessionUUID, err)
+			slog.Error("Failed to increment ref count", "session_uuid", sessionUUID.String(), "error", err)
 		}
 	}
 	onSessionEmpty := func(sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(context.Background(), sessionUUID) }
@@ -178,14 +192,16 @@ func main() {
 		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, nil)
 	}
 	if srvErr != nil {
-		log.Fatalf("Failed to create server: %v", srvErr)
+		slog.Error("Failed to create server", "error", srvErr)
+		os.Exit(1)
 	}
 
 	done := runGracefulShutdown(srv, appSvc, broadcaster, eventsubMgr)
 
-	log.Printf("Starting server on port %s", cfg.Port)
+	slog.Info("Server starting", "port", cfg.Port)
 	if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("Server error: %v", err)
+		slog.Error("Server error", "error", err)
+		os.Exit(1)
 	}
 
 	<-done

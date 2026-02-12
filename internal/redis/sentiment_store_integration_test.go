@@ -130,3 +130,45 @@ func TestGetSentiment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 80.0, rawVal)
 }
+
+func TestApplyVote_InvalidRedisValue(t *testing.T) {
+	sentiment, sessions := setupTestSentimentStore(t)
+	ctx := context.Background()
+
+	overlayUUID := uuid.New()
+	config := domain.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
+	err := sessions.ActivateSession(ctx, overlayUUID, "broadcaster1", config)
+	require.NoError(t, err)
+
+	// Corrupt the stored value with non-numeric data
+	err = sentiment.rdb.HSet(ctx, sessionKey(overlayUUID), "value", "not-a-number").Err()
+	require.NoError(t, err)
+
+	now := time.Now().UnixMilli()
+
+	// ApplyVote should fail when Lua function returns invalid float
+	_, err = sentiment.ApplyVote(ctx, overlayUUID, 10.0, 1.0, now)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "returned invalid float value")
+}
+
+func TestGetSentiment_InvalidRedisValue(t *testing.T) {
+	sentiment, sessions := setupTestSentimentStore(t)
+	ctx := context.Background()
+
+	overlayUUID := uuid.New()
+	config := domain.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
+	err := sessions.ActivateSession(ctx, overlayUUID, "broadcaster1", config)
+	require.NoError(t, err)
+
+	// Corrupt the stored value with non-numeric data
+	err = sentiment.rdb.HSet(ctx, sessionKey(overlayUUID), "value", "corrupted").Err()
+	require.NoError(t, err)
+
+	now := time.Now().UnixMilli()
+
+	// GetSentiment should fail when Lua function returns invalid float
+	_, err = sentiment.GetSentiment(ctx, overlayUUID, 1.0, now)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "returned invalid float value")
+}

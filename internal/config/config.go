@@ -3,7 +3,7 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/joho/godotenv"
 	"go-simpler.org/env"
@@ -22,11 +22,13 @@ type Config struct {
 	WebhookSecret      string `env:"WEBHOOK_SECRET"`
 	BotUserID          string `env:"BOT_USER_ID"`
 	RedisURL           string `env:"REDIS_URL"`
+	LogLevel           string `env:"LOG_LEVEL" default:"info"`
+	LogFormat          string `env:"LOG_FORMAT" default:"text"`
 }
 
 func Load() (*Config, error) {
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables")
+		slog.Info("No .env file found, using environment variables")
 	}
 
 	var cfg Config

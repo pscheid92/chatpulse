@@ -580,3 +580,71 @@ func TestStop(t *testing.T) {
 	svc.Stop()
 	svc.Stop()
 }
+
+// TestCleanupOrphans_ConcurrentCleanupCalls verifies that concurrent cleanup
+// calls are safe with respect to the WaitGroup used for tracking background
+// Twitch unsubscribe goroutines. This test specifically validates Go 1.26's
+// sync.WaitGroup.Go() method which handles internal synchronization.
+func TestCleanupOrphans_ConcurrentCleanupCalls(t *testing.T) {
+	orphan1 := uuid.New()
+	orphan2 := uuid.New()
+	userID1 := uuid.New()
+	userID2 := uuid.New()
+
+	users := &mockUserRepo{
+		getByOverlayUUIDFn: func(_ context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
+			if overlayUUID == orphan1 {
+				return &domain.User{ID: userID1, OverlayUUID: orphan1}, nil
+			}
+			return &domain.User{ID: userID2, OverlayUUID: orphan2}, nil
+		},
+	}
+
+	store := &mockSessionRepo{
+		listOrphansFn: func(_ context.Context, _ time.Duration) ([]uuid.UUID, error) {
+			return []uuid.UUID{orphan1, orphan2}, nil
+		},
+	}
+
+	unsubscribeCount := make(chan struct{}, 4) // Buffered channel for safe counting
+	twitch := &mockTwitch{
+		unsubscribeFn: func(_ context.Context, _ uuid.UUID) error {
+			// Simulate slow unsubscribe operation
+			time.Sleep(50 * time.Millisecond)
+			unsubscribeCount <- struct{}{}
+			return nil
+		},
+	}
+
+	clock := clockwork.NewFakeClock()
+	svc := newTestService(users, &mockConfigRepo{}, store, &mockEngine{}, twitch, clock)
+
+	// Call CleanupOrphans concurrently from multiple goroutines
+	// This tests that WaitGroup.Go() handles concurrent Add() calls safely
+	done := make(chan struct{}, 2)
+	go func() {
+		svc.CleanupOrphans(context.Background())
+		done <- struct{}{}
+	}()
+	go func() {
+		svc.CleanupOrphans(context.Background())
+		done <- struct{}{}
+	}()
+
+	// Wait for both cleanup calls to return
+	<-done
+	<-done
+
+	// Wait for all 4 background unsubscribe goroutines to complete (2 calls × 2 orphans)
+	for i := 0; i < 4; i++ {
+		select {
+		case <-unsubscribeCount:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for goroutine %d/4", i+1)
+		}
+	}
+
+	// Stop should wait for all goroutines (should be no-op since they're done)
+	svc.Stop()
+}

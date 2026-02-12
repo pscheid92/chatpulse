@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -231,6 +232,41 @@ func TestListOrphans_NoOrphans(t *testing.T) {
 	orphans, err := store.ListOrphans(ctx, 1*time.Minute)
 	require.NoError(t, err)
 	assert.Empty(t, orphans)
+}
+
+func TestListOrphans_ContextTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	store, clock := setupTestRepo(t)
+	config := domain.ConfigSnapshot{ForTrigger: "a", AgainstTrigger: "b", DecaySpeed: 1.0}
+
+	// Create several orphaned sessions
+	for i := 0; i < 10; i++ {
+		sessionUUID := uuid.New()
+		err := store.ActivateSession(context.Background(), sessionUUID, fmt.Sprintf("broadcaster-%d", i), config)
+		require.NoError(t, err)
+		err = store.MarkDisconnected(context.Background(), sessionUUID)
+		require.NoError(t, err)
+	}
+	clock.Advance(5 * time.Minute)
+
+	// Create a context with very short timeout (1ms)
+	// This should cause the scan to be cancelled partway through
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	// Wait for timeout to expire
+	time.Sleep(2 * time.Millisecond)
+
+	orphans, err := store.ListOrphans(ctx, 1*time.Minute)
+
+	// Should return context error
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	// May have found some orphans before timeout
+	t.Logf("Found %d orphans before timeout", len(orphans))
 }
 
 // --- Ref counting ---

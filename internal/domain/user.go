@@ -12,7 +12,11 @@ type User struct {
 	OverlayUUID    uuid.UUID
 	TwitchUserID   string
 	TwitchUsername string
-	// TODO: Should we break up the tokens from the general user info?
+	// Tokens are kept in User struct for simplicity. Rationale:
+	// - User and tokens have identical lifecycle (created/updated together)
+	// - No use case for querying users without tokens or vice versa
+	// - Separation would add complexity (JOIN queries, dual updates) without clear benefit
+	// - Token encryption is handled at repository layer, not domain layer
 	AccessToken  string
 	RefreshToken string
 	TokenExpiry  time.Time

@@ -14,6 +14,18 @@ func TestValidateConfig_EmptyTriggerFor(t *testing.T) {
 	assert.Contains(t, err.Error(), "for trigger cannot be empty")
 }
 
+func TestValidateConfig_WhitespaceOnlyTrigger(t *testing.T) {
+	// Edge case: 500 spaces should be rejected (becomes empty after trim)
+	// This tests the issue where len() check happens before trim
+	spaces := make([]byte, 500)
+	for i := range spaces {
+		spaces[i] = ' '
+	}
+	err := validateConfig(string(spaces), "no", "Left", "Right", 1.0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "for trigger cannot be empty")
+}
+
 func TestValidateConfig_EmptyTriggerAgainst(t *testing.T) {
 	err := validateConfig("yes", "  ", "Left", "Right", 1.0)
 	assert.Error(t, err)

@@ -2,7 +2,7 @@ package app
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	orphanMaxAge    = 30 * time.Second
-	cleanupInterval = 30 * time.Second
+	orphanMaxAge      = 30 * time.Second
+	cleanupInterval   = 30 * time.Second
+	cleanupScanTimeout = 30 * time.Second
 )
 
 // Service is the application layer — the only component that references multiple
@@ -108,7 +109,7 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 		if s.twitch != nil {
 			if err := s.twitch.Subscribe(ctx, user.ID, user.TwitchUserID); err != nil {
 				if delErr := s.store.DeleteSession(ctx, overlayUUID); delErr != nil {
-					log.Printf("Failed to rollback session %s after subscribe failure: %v", overlayUUID, delErr)
+					slog.Error("Failed to rollback session after subscribe failure", "session_uuid", overlayUUID.String(), "error", delErr)
 				}
 				return nil, err
 			}
@@ -125,15 +126,15 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 func (s *Service) OnSessionEmpty(ctx context.Context, sessionUUID uuid.UUID) {
 	count, err := s.store.DecrRefCount(ctx, sessionUUID)
 	if err != nil {
-		log.Printf("DecrRefCount error for session %s: %v", sessionUUID, err)
+		slog.Error("DecrRefCount error", "session_uuid", sessionUUID.String(), "error", err)
 		return
 	}
 
 	if count <= 0 {
 		if err := s.store.MarkDisconnected(ctx, sessionUUID); err != nil {
-			log.Printf("MarkDisconnected error for session %s: %v", sessionUUID, err)
+			slog.Error("MarkDisconnected error", "session_uuid", sessionUUID.String(), "error", err)
 		}
-		log.Printf("Session %s marked as disconnected (ref_count=%d)", sessionUUID, count)
+		slog.Info("Session marked as disconnected", "session_uuid", sessionUUID.String(), "ref_count", count)
 	}
 }
 
@@ -164,7 +165,7 @@ func (s *Service) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, 
 	}
 	// Best-effort update of live session
 	if err := s.store.UpdateConfig(ctx, overlayUUID, snapshot); err != nil {
-		log.Printf("Failed to update live session config: %v", err)
+		slog.Error("Failed to update live session config", "error", err)
 	}
 
 	return nil
@@ -176,16 +177,21 @@ func (s *Service) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid
 }
 
 // CleanupOrphans removes sessions that have been disconnected longer than orphanMaxAge.
+// Uses a timeout to prevent unbounded scan operations on large Redis datasets.
 func (s *Service) CleanupOrphans(ctx context.Context) {
-	orphans, err := s.store.ListOrphans(ctx, orphanMaxAge)
+	// Add timeout to prevent unbounded scan operations
+	scanCtx, cancel := context.WithTimeout(ctx, cleanupScanTimeout)
+	defer cancel()
+
+	orphans, err := s.store.ListOrphans(scanCtx, orphanMaxAge)
 	if err != nil {
-		log.Printf("ListOrphans error: %v", err)
+		slog.Error("ListOrphans error", "error", err)
 		return
 	}
 
 	for _, id := range orphans {
 		if err := s.store.DeleteSession(ctx, id); err != nil {
-			log.Printf("DeleteSession error for %s: %v", id, err)
+			slog.Error("DeleteSession error", "session_uuid", id.String(), "error", err)
 		}
 	}
 
@@ -195,14 +201,14 @@ func (s *Service) CleanupOrphans(ctx context.Context) {
 			for _, overlayUUID := range orphans {
 				user, err := s.users.GetByOverlayUUID(bgCtx, overlayUUID)
 				if err != nil {
-					log.Printf("Failed to look up user for orphan session %s: %v", overlayUUID, err)
+					slog.Error("Failed to look up user for orphan session", "session_uuid", overlayUUID.String(), "error", err)
 					continue
 				}
 				if err := s.twitch.Unsubscribe(bgCtx, user.ID); err != nil {
-					log.Printf("Failed to unsubscribe orphan session %s: %v", overlayUUID, err)
+					slog.Error("Failed to unsubscribe orphan session", "session_uuid", overlayUUID.String(), "error", err)
 					continue
 				}
-				log.Printf("Cleaned up orphan session %s", overlayUUID)
+				slog.Info("Cleaned up orphan session", "session_uuid", overlayUUID.String())
 			}
 		})
 	}
@@ -221,7 +227,7 @@ func (s *Service) startCleanupTimer() {
 			}
 		}
 	}()
-	log.Println("Cleanup timer started (30s interval)")
+	slog.Info("Cleanup timer started", "interval", "30s")
 }
 
 // Stop stops the cleanup timer and waits for in-flight cleanup goroutines to finish.

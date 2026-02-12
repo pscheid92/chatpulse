@@ -21,6 +21,7 @@ type clientWriter struct {
 	sendChannel chan []byte
 	doneChannel chan struct{}
 	stopOnce    sync.Once
+	wg          sync.WaitGroup
 }
 
 func newClientWriter(connection *websocket.Conn, clock clockwork.Clock) *clientWriter {
@@ -31,6 +32,7 @@ func newClientWriter(connection *websocket.Conn, clock clockwork.Clock) *clientW
 		doneChannel: make(chan struct{}),
 	}
 	cw.configurePongHandler()
+	cw.wg.Add(1)
 	go cw.run()
 	return cw
 }
@@ -38,6 +40,7 @@ func newClientWriter(connection *websocket.Conn, clock clockwork.Clock) *clientW
 func (cw *clientWriter) run() {
 	ticker := cw.clock.NewTicker(pingInterval)
 	defer ticker.Stop()
+	defer cw.wg.Done()
 
 	for {
 		select {
@@ -65,6 +68,7 @@ func (cw *clientWriter) stop() {
 		close(cw.doneChannel)
 		_ = cw.connection.Close()
 	})
+	cw.wg.Wait()
 }
 
 func (cw *clientWriter) configurePongHandler() {

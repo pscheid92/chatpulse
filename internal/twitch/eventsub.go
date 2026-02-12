@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -71,7 +71,7 @@ func (m *EventSubManager) Setup(ctx context.Context) error {
 	var conduit *helix.Conduit
 	if len(resp.Data) > 0 {
 		conduit = &resp.Data[0]
-		log.Printf("Found existing conduit %s", conduit.ID)
+		slog.Info("Found existing conduit", "conduit_id", conduit.ID)
 	} else {
 		conduit, err = m.client.CreateConduit(ctx, 1)
 		if err != nil {
@@ -80,7 +80,7 @@ func (m *EventSubManager) Setup(ctx context.Context) error {
 		if conduit == nil {
 			return fmt.Errorf("no conduit returned from Twitch API")
 		}
-		log.Printf("Created conduit %s with %d shards", conduit.ID, conduit.ShardCount)
+		slog.Info("Created conduit", "conduit_id", conduit.ID, "shard_count", conduit.ShardCount)
 	}
 
 	m.conduitID = conduit.ID
@@ -90,7 +90,7 @@ func (m *EventSubManager) Setup(ctx context.Context) error {
 	err = m.configureShard(ctx, conduit.ID)
 	if err != nil {
 		// Stale conduit from a previous crash — delete and create fresh
-		log.Printf("Shard configuration failed for conduit %s, recreating: %v", conduit.ID, err)
+		slog.Error("Shard configuration failed, recreating conduit", "conduit_id", conduit.ID, "error", err)
 		if delErr := m.client.DeleteConduit(ctx, conduit.ID); delErr != nil {
 			return fmt.Errorf("failed to delete stale conduit: %w", delErr)
 		}
@@ -107,7 +107,7 @@ func (m *EventSubManager) Setup(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("Conduit %s configured with webhook shard pointing to %s", conduit.ID, m.callbackURL)
+	slog.Info("Conduit configured with webhook shard", "conduit_id", conduit.ID, "callback_url", m.callbackURL)
 	return nil
 }
 
@@ -136,7 +136,7 @@ func (m *EventSubManager) Cleanup(ctx context.Context) error {
 	if err := m.client.DeleteConduit(ctx, m.conduitID); err != nil {
 		return fmt.Errorf("failed to delete conduit: %w", err)
 	}
-	log.Printf("Deleted conduit %s", m.conduitID)
+	slog.Info("Deleted conduit", "conduit_id", m.conduitID)
 	return nil
 }
 
@@ -149,7 +149,7 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 		return fmt.Errorf("failed to check existing subscription: %w", err)
 	}
 	if existing != nil {
-		log.Printf("EventSub subscription already exists for user %s", userID)
+		slog.Info("EventSub subscription already exists", "user_id", userID)
 		return nil
 	}
 
@@ -170,7 +170,7 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 		// 409 Conflict means the subscription already exists on Twitch (e.g. DB record
 		// was lost but Twitch still has it). Treat as success — the subscription is active.
 		if apiErr, ok := errors.AsType[*helix.APIError](err); ok && apiErr.StatusCode == http.StatusConflict {
-			log.Printf("EventSub subscription already exists on Twitch for broadcaster %s, treating as success", broadcasterUserID)
+			slog.Info("EventSub subscription already exists on Twitch, treating as success", "broadcaster_user_id", broadcasterUserID)
 			return nil
 		}
 		return fmt.Errorf("failed to create EventSub subscription: %w", err)
@@ -183,12 +183,12 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 	if err := m.db.Create(ctx, userID, broadcasterUserID, sub.ID, m.conduitID); err != nil {
 		// Best effort: try to clean up the Twitch subscription
 		if cleanupErr := m.client.DeleteEventSubSubscription(ctx, sub.ID); cleanupErr != nil {
-			log.Printf("Warning: failed to clean up Twitch subscription %s after DB persist failure: %v", sub.ID, cleanupErr)
+			slog.Error("Failed to clean up Twitch subscription after DB persist failure", "subscription_id", sub.ID, "error", cleanupErr)
 		}
 		return fmt.Errorf("failed to persist subscription: %w", err)
 	}
 
-	log.Printf("Subscribed to chat messages for broadcaster %s (subscription %s)", broadcasterUserID, sub.ID)
+	slog.Info("Subscribed to chat messages", "broadcaster_user_id", broadcasterUserID, "subscription_id", sub.ID)
 	return nil
 }
 
@@ -204,7 +204,7 @@ func (m *EventSubManager) Unsubscribe(ctx context.Context, userID uuid.UUID) err
 
 	// Delete from Twitch API
 	if err := m.client.DeleteEventSubSubscription(ctx, sub.SubscriptionID); err != nil {
-		log.Printf("Warning: failed to delete Twitch subscription %s: %v", sub.SubscriptionID, err)
+		slog.Error("Failed to delete Twitch subscription", "subscription_id", sub.SubscriptionID, "error", err)
 		// Continue to delete from DB anyway
 	}
 
@@ -213,6 +213,6 @@ func (m *EventSubManager) Unsubscribe(ctx context.Context, userID uuid.UUID) err
 		return fmt.Errorf("failed to delete subscription from DB: %w", err)
 	}
 
-	log.Printf("Unsubscribed from chat messages for user %s", userID)
+	slog.Info("Unsubscribed from chat messages", "user_id", userID)
 	return nil
 }

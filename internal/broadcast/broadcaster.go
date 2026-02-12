@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +16,8 @@ import (
 const (
 	maxClientsPerSession = 50
 	tickInterval         = 50 * time.Millisecond
+	redisTimeout         = 2 * time.Second
+	commandTimeout       = 5 * time.Second
 )
 
 type sessionClients map[*websocket.Conn]*clientWriter
@@ -59,6 +61,7 @@ type Broadcaster struct {
 	engine         domain.Engine
 	onFirstClient  func(sessionUUID uuid.UUID)
 	onSessionEmpty func(sessionUUID uuid.UUID)
+	done           chan struct{}
 }
 
 // NewBroadcaster creates a new broadcaster.
@@ -73,6 +76,7 @@ func NewBroadcaster(engine domain.Engine, onFirstClient func(uuid.UUID), onSessi
 		engine:         engine,
 		onFirstClient:  onFirstClient,
 		onSessionEmpty: onSessionEmpty,
+		done:           make(chan struct{}),
 	}
 	go b.run()
 	return b
@@ -83,7 +87,17 @@ func NewBroadcaster(engine domain.Engine, onFirstClient func(uuid.UUID), onSessi
 func (b *Broadcaster) Register(sessionUUID uuid.UUID, conn *websocket.Conn) error {
 	errCh := make(chan error, 1)
 	b.cmdCh <- registerCmd{sessionUUID: sessionUUID, connection: conn, errorChannel: errCh}
-	return <-errCh
+
+	// Use timeout to prevent blocking forever if broadcaster is stuck
+	timer := b.clock.NewTimer(commandTimeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-timer.Chan():
+		return fmt.Errorf("register command timed out after %v", commandTimeout)
+	}
 }
 
 // Unregister removes a client from a session.
@@ -92,20 +106,45 @@ func (b *Broadcaster) Unregister(sessionUUID uuid.UUID, conn *websocket.Conn) {
 }
 
 // GetClientCount returns the number of connected clients for a session.
+// Returns -1 if the command times out.
 func (b *Broadcaster) GetClientCount(sessionUUID uuid.UUID) int {
 	replyCh := make(chan int, 1)
 	b.cmdCh <- getClientCountCmd{sessionUUID: sessionUUID, replyChannel: replyCh}
-	return <-replyCh
+
+	// Use timeout to prevent blocking forever if broadcaster is stuck
+	timer := b.clock.NewTimer(commandTimeout)
+	defer timer.Stop()
+
+	select {
+	case count := <-replyCh:
+		return count
+	case <-timer.Chan():
+		slog.Warn("GetClientCount timed out", "timeout", commandTimeout)
+		return -1
+	}
 }
 
 // Stop shuts down the broadcaster, closing all client connections.
+// Blocks until the broadcaster goroutine has exited or timeout (10s) is reached.
 func (b *Broadcaster) Stop() {
 	b.cmdCh <- stopCmd{}
+
+	// Wait for goroutine to exit with timeout
+	timeout := b.clock.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+
+	select {
+	case <-b.done:
+		// Clean shutdown
+	case <-timeout.Chan():
+		slog.Warn("Broadcaster Stop() timed out waiting for goroutine exit")
+	}
 }
 
 func (b *Broadcaster) run() {
 	ticker := b.clock.NewTicker(tickInterval)
 	defer ticker.Stop()
+	defer close(b.done)
 
 	for {
 		select {
@@ -121,7 +160,7 @@ func (b *Broadcaster) run() {
 				b.handleStop()
 				return
 			default:
-				log.Printf("Broadcaster: unknown command type %T", cmd)
+				slog.Warn("Broadcaster received unknown command type", "command_type", fmt.Sprintf("%T", cmd))
 			}
 		case <-ticker.Chan():
 			b.handleTick()
@@ -137,7 +176,7 @@ func (b *Broadcaster) handleRegister(c registerCmd) {
 	}
 
 	if len(clients) >= maxClientsPerSession {
-		log.Printf("Rejecting client for session %s: max clients (%d) reached", c.sessionUUID, maxClientsPerSession)
+		slog.Warn("Rejecting client: max clients reached", "session_uuid", c.sessionUUID.String(), "max_clients", maxClientsPerSession)
 		c.connection.Close()
 		c.errorChannel <- fmt.Errorf("max clients per session (%d) reached", maxClientsPerSession)
 		return
@@ -149,7 +188,7 @@ func (b *Broadcaster) handleRegister(c registerCmd) {
 
 	cw := newClientWriter(c.connection, b.clock)
 	clients[c.connection] = cw
-	log.Printf("Client registered for session %s (total: %d)", c.sessionUUID, len(clients))
+	slog.Debug("Client registered", "session_uuid", c.sessionUUID.String(), "total_clients", len(clients))
 	c.errorChannel <- nil
 }
 
@@ -172,25 +211,32 @@ func (b *Broadcaster) handleUnregister(c unregisterCmd) {
 		if b.onSessionEmpty != nil {
 			b.onSessionEmpty(c.sessionUUID)
 		}
-		log.Printf("Last client disconnected for session %s", c.sessionUUID)
+		slog.Info("Last client disconnected", "session_uuid", c.sessionUUID.String())
 	} else {
-		log.Printf("Client unregistered for session %s (remaining: %d)", c.sessionUUID, len(clients))
+		slog.Debug("Client unregistered", "session_uuid", c.sessionUUID.String(), "remaining_clients", len(clients))
 	}
 }
 
 func (b *Broadcaster) handleTick() {
-	ctx := context.Background()
 	for sessionUUID, clients := range b.activeClients {
+		// Per-session timeout to prevent Redis hangs from blocking the broadcaster
+		ctx, cancel := context.WithTimeout(context.Background(), redisTimeout)
 		value, err := b.engine.GetCurrentValue(ctx, sessionUUID)
+		cancel()
+
 		if err != nil {
-			log.Printf("GetCurrentValue error for session %s: %v", sessionUUID, err)
+			if err == context.DeadlineExceeded {
+				slog.Warn("Redis timeout", "session_uuid", sessionUUID.String(), "timeout", redisTimeout)
+			} else {
+				slog.Error("GetCurrentValue error", "session_uuid", sessionUUID.String(), "error", err)
+			}
 			continue
 		}
 
 		update := domain.SessionUpdate{Value: value, Status: "active"}
 		data, err := json.Marshal(update)
 		if err != nil {
-			log.Printf("Failed to marshal broadcast message: %v", err)
+			slog.Error("Failed to marshal broadcast message", "error", err)
 			continue
 		}
 
@@ -204,7 +250,7 @@ func (b *Broadcaster) handleTick() {
 		}
 
 		for _, conn := range slow {
-			log.Printf("Disconnecting slow client for session %s", sessionUUID)
+			slog.Warn("Disconnecting slow client", "session_uuid", sessionUUID.String())
 			cmd := unregisterCmd{sessionUUID: sessionUUID, connection: conn}
 			b.handleUnregister(cmd)
 		}

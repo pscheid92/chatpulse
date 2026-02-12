@@ -5,7 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/tern/v2/migrate"
@@ -56,9 +56,9 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 	currentVersion, err := migrator.GetCurrentVersion(ctx)
 	if err != nil {
-		log.Printf("Notice: could not get current version (likely fresh DB): %v", err)
+		slog.Debug("Could not get current DB version (likely fresh DB)", "error", err)
 	} else {
-		log.Printf("Current DB version: %d", currentVersion)
+		slog.Info("Current DB version", "version", currentVersion)
 	}
 
 	if err := migrator.Migrate(ctx); err != nil {

@@ -2,7 +2,7 @@ package sentiment
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -60,7 +60,7 @@ func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUser
 	nowMs := e.clock.Now().UnixMilli()
 	newValue, err := e.sentiment.ApplyVote(ctx, sessionUUID, delta, config.DecaySpeed, nowMs)
 	if err != nil {
-		log.Printf("ApplyVote error: %v", err)
+		slog.Error("ApplyVote error", "error", err)
 		return 0, false
 	}
 

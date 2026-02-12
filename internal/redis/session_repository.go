@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -181,6 +181,13 @@ func (s *SessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]
 	var cursor uint64
 
 	for {
+		// Check context cancellation/timeout before each scan iteration
+		select {
+		case <-ctx.Done():
+			return orphans, fmt.Errorf("scan cancelled after finding %d orphans: %w", len(orphans), ctx.Err())
+		default:
+		}
+
 		keys, nextCursor, err := s.rdb.Scan(ctx, cursor, "session:*", 100).Result()
 		if err != nil {
 			return nil, fmt.Errorf("scan failed: %w", err)
@@ -205,7 +212,7 @@ func (s *SessionRepo) checkOrphan(ctx context.Context, key string, now time.Time
 	val, err := s.rdb.HGet(ctx, key, fieldLastDisconnect).Result()
 	if err != nil {
 		if !errors.Is(err, goredis.Nil) {
-			log.Printf("ListOrphans: failed to read %s: %v", key, err)
+			slog.Error("ListOrphans: failed to read key", "key", key, "error", err)
 		}
 		return uuid.Nil, false
 	}
@@ -221,7 +228,7 @@ func (s *SessionRepo) checkOrphan(ctx context.Context, key string, now time.Time
 
 	id, err := uuid.Parse(strings.TrimPrefix(key, "session:"))
 	if err != nil {
-		log.Printf("ListOrphans: invalid UUID key %s: %v", key, err)
+		slog.Warn("ListOrphans: invalid UUID key", "key", key, "error", err)
 		return uuid.Nil, false
 	}
 

@@ -193,6 +193,7 @@
             <p>Welcome, {{.Username}}!</p>
             <div class="header-actions">
                 <form method="POST" action="/auth/logout" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <button type="submit" class="button-logout">Logout</button>
                 </form>
             </div>
@@ -203,6 +204,7 @@
             <div class="section">
                 <h2 class="section-title">Configuration</h2>
                 <form method="POST" action="/dashboard/config">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <div class="form-group">
                         <label for="for_trigger">For Trigger Word:</label>
                         <input type="text" id="for_trigger" name="for_trigger" value="{{.ForTrigger}}" required>
@@ -275,7 +277,12 @@
                 return;
             }
             try {
-                const response = await fetch('/api/rotate-overlay-uuid', { method: 'POST' });
+                const response = await fetch('/api/rotate-overlay-uuid', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-Token': '{{.CSRFToken}}'
+                    }
+                });
                 if (response.ok) {
                     window.location.reload();
                 } else {
@@ -288,7 +295,12 @@
 
         async function resetOverlay() {
             try {
-                const response = await fetch('/api/reset/{{.OverlayUUID}}', { method: 'POST' });
+                const response = await fetch('/api/reset/{{.OverlayUUID}}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-Token': '{{.CSRFToken}}'
+                    }
+                });
                 if (response.ok) {
                     alert('Overlay reset successfully!');
                 } else {

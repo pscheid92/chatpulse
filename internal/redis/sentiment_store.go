@@ -36,7 +36,11 @@ func (s *SentimentStore) ApplyVote(ctx context.Context, sid uuid.UUID, delta, de
 		return 0, fmt.Errorf("%s function failed: %w", fnApplyVote, err)
 	}
 
-	return strconv.ParseFloat(result, 64)
+	value, err := strconv.ParseFloat(result, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s returned invalid float value %q: %w", fnApplyVote, result, err)
+	}
+	return value, nil
 }
 
 func (s *SentimentStore) GetSentiment(ctx context.Context, sid uuid.UUID, decayRate float64, nowMs int64) (float64, error) {
@@ -51,7 +55,11 @@ func (s *SentimentStore) GetSentiment(ctx context.Context, sid uuid.UUID, decayR
 		return 0, fmt.Errorf("%s function failed: %w", fnGetSentiment, err)
 	}
 
-	return strconv.ParseFloat(result, 64)
+	value, err := strconv.ParseFloat(result, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s returned invalid float value %q: %w", fnGetSentiment, result, err)
+	}
+	return value, nil
 }
 
 func (s *SentimentStore) ResetSentiment(ctx context.Context, sid uuid.UUID) error {

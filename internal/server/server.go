@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/sessions"
@@ -30,6 +30,7 @@ type Server struct {
 	webhook           webhookHandler
 	oauthClient       twitchOAuthClient
 	sessionStore      *sessions.CookieStore
+	csrfMiddleware    echo.MiddlewareFunc
 	loginTemplate     *template.Template
 	dashboardTemplate *template.Template
 	overlayTemplate   *template.Template
@@ -68,6 +69,17 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 		SameSite: http.SameSiteLaxMode,
 	}
 
+	// Configure CSRF middleware for authenticated routes
+	csrfMiddleware := middleware.CSRFWithConfig(middleware.CSRFConfig{
+		TokenLookup:    "form:csrf_token,header:X-CSRF-Token",
+		CookieName:     "csrf_token",
+		CookiePath:     "/",
+		CookieMaxAge:   86400 * sessionMaxAgeDays,
+		CookieHTTPOnly: true,
+		CookieSecure:   cfg.AppEnv == "production",
+		CookieSameSite: http.SameSiteStrictMode,
+	})
+
 	srv := &Server{
 		echo:              e,
 		config:            cfg,
@@ -79,6 +91,7 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 		loginTemplate:     loginTmpl,
 		dashboardTemplate: dashboardTmpl,
 		overlayTemplate:   overlayTmpl,
+		csrfMiddleware:    csrfMiddleware,
 	}
 
 	// Register routes
@@ -88,7 +101,7 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 }
 
 func (s *Server) Start() error {
-	log.Printf("Starting server on port %s", s.config.Port)
+	slog.Info("Starting server", "port", s.config.Port)
 	return s.echo.Start(fmt.Sprintf(":%s", s.config.Port))
 }
 
