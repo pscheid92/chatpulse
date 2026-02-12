@@ -84,7 +84,7 @@ func TestClientWriter_ActivityResetsIdleTimer(t *testing.T) {
 
 func TestClientWriter_GracefulStop(t *testing.T) {
 	engine := &mockEngine{value: 42.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 
 	sessionUUID := uuid.New()
 	server, client := newTestConnPair(t)
@@ -116,7 +116,7 @@ func TestClientWriter_GracefulStop(t *testing.T) {
 
 func TestClientWriter_StopIdempotent(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	sessionUUID := uuid.New()
@@ -144,7 +144,7 @@ func TestClientWriter_StopIdempotent(t *testing.T) {
 
 func TestClientWriter_ConcurrentStop(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	sessionUUID := uuid.New()

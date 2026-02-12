@@ -8,9 +8,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/metrics"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 )
 

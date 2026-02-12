@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/metrics"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -190,6 +191,8 @@ func (s *SessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]
 	now := s.clock.Now()
 	var orphans []uuid.UUID
 	var cursor uint64
+	keysProcessed := 0
+	const maxKeysPerScan = 1000 // Process at most 1000 keys per cleanup run
 
 	for {
 		// Check context cancellation/timeout before each scan iteration
@@ -205,6 +208,18 @@ func (s *SessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]
 		}
 
 		for _, key := range keys {
+			keysProcessed++
+
+			// Stop if we've hit the per-run limit
+			if keysProcessed >= maxKeysPerScan {
+				metrics.OrphanCleanupKeyLimitReachedTotal.Inc()
+				slog.Info("cleanup key limit reached",
+					"keys_processed", keysProcessed,
+					"orphans_found", len(orphans))
+				metrics.OrphanCleanupKeysScannedTotal.Add(float64(keysProcessed))
+				return orphans, nil
+			}
+
 			if id, isOrphan := s.checkOrphan(ctx, key, now, maxAge); isOrphan {
 				orphans = append(orphans, id)
 			}
@@ -216,6 +231,7 @@ func (s *SessionRepo) ListOrphans(ctx context.Context, maxAge time.Duration) ([]
 		}
 	}
 
+	metrics.OrphanCleanupKeysScannedTotal.Add(float64(keysProcessed))
 	return orphans, nil
 }
 

@@ -81,10 +81,10 @@ func TestMetricsEndpointContainsExpectedMetrics(t *testing.T) {
 
 	// Verify expected metrics are present (only test metrics we've explicitly generated)
 	expectedMetrics := []string{
-		"redis_operations_total",          // Generated above
-		"broadcaster_active_sessions",     // Generated above
-		"websocket_connections_current",   // Generated above
-		"vote_processing_total",           // Generated above
+		"redis_operations_total",        // Generated above
+		"broadcaster_active_sessions",   // Generated above
+		"websocket_connections_current", // Generated above
+		"vote_processing_total",         // Generated above
 	}
 
 	for _, metricName := range expectedMetrics {

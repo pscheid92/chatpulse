@@ -210,13 +210,15 @@ func (m *mockEngine) InvalidateConfigCache(_ uuid.UUID) {
 // newTestService creates a Service without starting the cleanup timer.
 func newTestService(users domain.UserRepository, configs domain.ConfigRepository, store *mockSessionRepo, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock) *Service {
 	return &Service{
-		users:         users,
-		configs:       configs,
-		store:         store,
-		engine:        engine,
-		twitch:        twitch,
-		clock:         clock,
-		cleanupStopCh: make(chan struct{}),
+		users:           users,
+		configs:         configs,
+		store:           store,
+		engine:          engine,
+		twitch:          twitch,
+		clock:           clock,
+		cleanupStopCh:   make(chan struct{}),
+		orphanMaxAge:    30 * time.Second,
+		cleanupInterval: 30 * time.Second,
 	}
 }
 
@@ -505,7 +507,7 @@ func TestCleanupOrphans_DeletesSessions(t *testing.T) {
 
 	store := &mockSessionRepo{
 		listOrphansFn: func(_ context.Context, maxAge time.Duration) ([]uuid.UUID, error) {
-			assert.Equal(t, orphanMaxAge, maxAge)
+			assert.Equal(t, 30*time.Second, maxAge)
 			return []uuid.UUID{orphan1, orphan2}, nil
 		},
 		deleteSessionFn: func(_ context.Context, id uuid.UUID) error {

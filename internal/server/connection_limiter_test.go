@@ -244,10 +244,10 @@ func TestConnectionRateLimiter_Cleanup(t *testing.T) {
 
 func TestConnectionLimits_Acquire(t *testing.T) {
 	limits := NewConnectionLimits(
-		100,  // global max
-		10,   // per-IP max
-		5.0,  // 5 connections per second
-		5,    // burst of 5
+		100, // global max
+		10,  // per-IP max
+		5.0, // 5 connections per second
+		5,   // burst of 5
 	)
 
 	// Normal acquire should succeed
@@ -261,10 +261,10 @@ func TestConnectionLimits_Acquire(t *testing.T) {
 
 func TestConnectionLimits_GlobalLimitExceeded(t *testing.T) {
 	limits := NewConnectionLimits(
-		2,    // global max: 2
-		100,  // per-IP max
+		2,     // global max: 2
+		100,   // per-IP max
 		100.0, // high rate limit
-		100,  // high burst
+		100,   // high burst
 	)
 
 	// Acquire 2 slots
@@ -285,10 +285,10 @@ func TestConnectionLimits_GlobalLimitExceeded(t *testing.T) {
 
 func TestConnectionLimits_PerIPLimitExceeded(t *testing.T) {
 	limits := NewConnectionLimits(
-		100,  // global max
-		2,    // per-IP max: 2
+		100,   // global max
+		2,     // per-IP max: 2
 		100.0, // high rate limit
-		100,  // high burst
+		100,   // high burst
 	)
 
 	// Acquire 2 slots for same IP
@@ -338,10 +338,10 @@ func TestConnectionLimits_RateLimitExceeded(t *testing.T) {
 
 func TestConnectionLimits_RollbackOnFailure(t *testing.T) {
 	limits := NewConnectionLimits(
-		100, // global max
-		1,   // per-IP max: 1 (will cause failure)
+		100,   // global max
+		1,     // per-IP max: 1 (will cause failure)
 		100.0, // high rate
-		100, // high burst
+		100,   // high burst
 	)
 
 	// First acquire succeeds
@@ -364,10 +364,10 @@ func TestConnectionLimits_RollbackOnFailure(t *testing.T) {
 
 func TestConnectionLimits_Concurrent(t *testing.T) {
 	limits := NewConnectionLimits(
-		50,   // global max: 50
-		5,    // per-IP max: 5
+		50,    // global max: 50
+		5,     // per-IP max: 5
 		100.0, // high rate (won't be hit in this test)
-		100,  // high burst
+		100,   // high burst
 	)
 
 	var wg sync.WaitGroup

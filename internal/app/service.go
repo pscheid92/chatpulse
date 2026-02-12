@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -15,37 +17,47 @@ import (
 )
 
 const (
-	orphanMaxAge      = 30 * time.Second
-	cleanupInterval   = 30 * time.Second
-	cleanupScanTimeout = 30 * time.Second
+	// Performance-critical constants (intentionally not configurable - see CLAUDE.md)
+	cleanupScanTimeout    = 30 * time.Second // Maximum time for ListOrphans SCAN operation
+	maxCleanupBackoff     = 5 * time.Minute  // Maximum exponential backoff duration
+	maxKeysPerCleanupRun  = 1000             // Redis SCAN batch size
+	maxUnsubscribeRetries = 5                // Twitch API retry attempts
 )
 
 // Service is the application layer — the only component that references multiple
 // domain components. It orchestrates all use cases.
 type Service struct {
-	users           domain.UserRepository
-	configs         domain.ConfigRepository
-	store           domain.SessionRepository
-	engine          domain.Engine
-	twitch          domain.TwitchService
-	activationGroup singleflight.Group
-	clock           clockwork.Clock
-	cleanupStopCh   chan struct{}
-	stopOnce        sync.Once
-	cleanupWg       sync.WaitGroup
+	users            domain.UserRepository
+	configs          domain.ConfigRepository
+	store            domain.SessionRepository
+	engine           domain.Engine
+	twitch           domain.TwitchService
+	activationGroup  singleflight.Group
+	clock            clockwork.Clock
+	cleanupStopCh    chan struct{}
+	stopOnce         sync.Once
+	cleanupWg        sync.WaitGroup
+	cleanupFailures  int           // consecutive cleanup failures
+	cleanupBackoff   time.Duration // current backoff duration
+	cleanupMu        sync.Mutex    // protects cleanup state
+	orphanMaxAge     time.Duration
+	cleanupInterval  time.Duration
 }
 
 // NewService creates the application layer service.
 // twitch may be nil if webhooks are not configured.
-func NewService(users domain.UserRepository, configs domain.ConfigRepository, store domain.SessionRepository, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock) *Service {
+// orphanMaxAge and cleanupInterval control orphan session cleanup timing.
+func NewService(users domain.UserRepository, configs domain.ConfigRepository, store domain.SessionRepository, engine domain.Engine, twitch domain.TwitchService, clock clockwork.Clock, orphanMaxAge, cleanupInterval time.Duration) *Service {
 	s := &Service{
-		users:         users,
-		configs:       configs,
-		store:         store,
-		engine:        engine,
-		twitch:        twitch,
-		clock:         clock,
-		cleanupStopCh: make(chan struct{}),
+		users:           users,
+		configs:         configs,
+		store:           store,
+		engine:          engine,
+		twitch:          twitch,
+		clock:           clock,
+		cleanupStopCh:   make(chan struct{}),
+		orphanMaxAge:    orphanMaxAge,
+		cleanupInterval: cleanupInterval,
 	}
 
 	s.startCleanupTimer()
@@ -74,24 +86,39 @@ func (s *Service) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, 
 
 // EnsureSessionActive activates a session if not already active, or resumes it.
 // Uses singleflight to collapse concurrent activations for the same session.
+// EnsureSessionActive ensures a session is active (exists in Redis and has EventSub subscription).
+// Uses singleflight with DoChan to provide per-caller timeout protection while deduplicating
+// concurrent activation attempts.
+//
+// Timeout behavior:
+// - Activation runs with 30s generous timeout (shared across all concurrent callers)
+// - Each caller respects their own context timeout (e.g., 5s WebSocket deadline)
+// - If a caller times out, activation continues in background (benefits future callers)
+// - If activation fails, all waiting callers receive the same error (shared fate)
 func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID) error {
-	_, err, _ := s.activationGroup.Do(overlayUUID.String(), func() (any, error) {
-		exists, err := s.store.SessionExists(ctx, overlayUUID)
+	// Use DoChan for non-blocking singleflight with per-caller timeout control
+	ch := s.activationGroup.DoChan(overlayUUID.String(), func() (any, error) {
+		// Create activation context with generous 30s timeout
+		// This is the shared execution - should be generous to handle slow DB/Twitch API
+		activationCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		exists, err := s.store.SessionExists(activationCtx, overlayUUID)
 		if err != nil {
 			return nil, err
 		}
 
 		if exists {
-			return nil, s.store.ResumeSession(ctx, overlayUUID)
+			return nil, s.store.ResumeSession(activationCtx, overlayUUID)
 		}
 
 		// New session — need DB lookup
-		user, err := s.users.GetByOverlayUUID(ctx, overlayUUID)
+		user, err := s.users.GetByOverlayUUID(activationCtx, overlayUUID)
 		if err != nil {
 			return nil, err
 		}
 
-		config, err := s.configs.GetByUserID(ctx, user.ID)
+		config, err := s.configs.GetByUserID(activationCtx, user.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -104,13 +131,13 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 			DecaySpeed:     config.DecaySpeed,
 		}
 
-		if err := s.store.ActivateSession(ctx, overlayUUID, user.TwitchUserID, snapshot); err != nil {
+		if err := s.store.ActivateSession(activationCtx, overlayUUID, user.TwitchUserID, snapshot); err != nil {
 			return nil, err
 		}
 
 		if s.twitch != nil {
-			if err := s.twitch.Subscribe(ctx, user.ID, user.TwitchUserID); err != nil {
-				if delErr := s.store.DeleteSession(ctx, overlayUUID); delErr != nil {
+			if err := s.twitch.Subscribe(activationCtx, user.ID, user.TwitchUserID); err != nil {
+				if delErr := s.store.DeleteSession(activationCtx, overlayUUID); delErr != nil {
 					slog.Error("Failed to rollback session after subscribe failure", "session_uuid", overlayUUID.String(), "error", delErr)
 				}
 				return nil, err
@@ -119,7 +146,20 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 
 		return nil, nil
 	})
-	return err
+
+	// Each caller waits with their own context timeout
+	select {
+	case result := <-ch:
+		return result.Err
+	case <-ctx.Done():
+		// Caller's context timed out (e.g., 5s WebSocket deadline)
+		// Activation may still be running in background (benefits future callers)
+		slog.Warn("session activation timeout (caller-specific)",
+			"session_uuid", overlayUUID,
+			"error", ctx.Err())
+		metrics.SessionActivationTimeoutsTotal.WithLabelValues("context_deadline").Inc()
+		return fmt.Errorf("session activation timeout: %w", ctx.Err())
+	}
 }
 
 // OnSessionEmpty is called when the last local client disconnects from a session.
@@ -184,7 +224,8 @@ func (s *Service) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid
 // CleanupOrphans removes sessions that have been disconnected longer than orphanMaxAge.
 // Uses a timeout to prevent unbounded scan operations on large Redis datasets.
 // Race condition handling: skips sessions with ref_count > 0 (reconnected during scan).
-func (s *Service) CleanupOrphans(ctx context.Context) {
+// Returns error if cleanup fails (triggers failure budget backoff).
+func (s *Service) CleanupOrphans(ctx context.Context) error {
 	start := s.clock.Now()
 	defer func() {
 		metrics.OrphanCleanupScansTotal.Inc()
@@ -195,10 +236,10 @@ func (s *Service) CleanupOrphans(ctx context.Context) {
 	scanCtx, cancel := context.WithTimeout(ctx, cleanupScanTimeout)
 	defer cancel()
 
-	orphans, err := s.store.ListOrphans(scanCtx, orphanMaxAge)
+	orphans, err := s.store.ListOrphans(scanCtx, s.orphanMaxAge)
 	if err != nil {
 		slog.Error("ListOrphans error", "error", err)
-		return
+		return err
 	}
 
 	var deletedSessions []uuid.UUID
@@ -267,15 +308,82 @@ func (s *Service) CleanupOrphans(ctx context.Context) {
 			}
 		})
 	}
+
+	return nil
 }
 
 func (s *Service) startCleanupTimer() {
-	ticker := s.clock.NewTicker(cleanupInterval)
+	// Add random jitter (0-10s) to spread cleanup load across instances
+	// This reduces thundering herd problem (all instances starting cleanup simultaneously)
+	jitter := time.Duration(rand.Intn(10)) * time.Second
+	firstInterval := s.cleanupInterval + jitter
+
+	// Use regular interval after first tick
+	ticker := s.clock.NewTicker(s.cleanupInterval)
+
+	// Initial delay with jitter
+	initialTimer := s.clock.NewTimer(firstInterval)
+
 	go func() {
+		// Wait for initial jittered delay
+		select {
+		case <-initialTimer.Chan():
+			// First cleanup after jittered interval
+		case <-s.cleanupStopCh:
+			initialTimer.Stop()
+			ticker.Stop()
+			return
+		}
+
+		// Then continue with regular ticker
 		for {
 			select {
 			case <-ticker.Chan():
-				s.CleanupOrphans(context.Background())
+				// Check failure budget before running
+				s.cleanupMu.Lock()
+				failures := s.cleanupFailures
+				s.cleanupMu.Unlock()
+
+				if failures > 0 {
+					// Exponential backoff: 30s, 60s, 120s, 240s, 300s (max)
+					backoff := time.Duration(1<<uint(failures-1)) * s.cleanupInterval
+					if backoff > maxCleanupBackoff {
+						backoff = maxCleanupBackoff
+					}
+
+					slog.Info("cleanup backoff after failures",
+						"failures", failures,
+						"backoff_seconds", backoff.Seconds())
+
+					// Sleep with interruption support
+					timer := s.clock.NewTimer(backoff)
+					select {
+					case <-timer.Chan():
+						// Backoff complete
+					case <-s.cleanupStopCh:
+						timer.Stop()
+						ticker.Stop()
+						return
+					}
+				}
+
+				// Run cleanup
+				err := s.CleanupOrphans(context.Background())
+
+				s.cleanupMu.Lock()
+				if err != nil {
+					s.cleanupFailures++
+					metrics.OrphanCleanupFailuresTotal.Inc()
+					slog.Error("cleanup failed", "error", err, "failures", s.cleanupFailures)
+				} else {
+					// Reset on success
+					if s.cleanupFailures > 0 {
+						slog.Info("cleanup recovered", "previous_failures", s.cleanupFailures)
+					}
+					s.cleanupFailures = 0
+				}
+				s.cleanupMu.Unlock()
+
 			case <-s.cleanupStopCh:
 				ticker.Stop()
 				return

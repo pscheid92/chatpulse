@@ -62,4 +62,5 @@ func TestHandleOverlay_Success(t *testing.T) {
 	c.SetParamValues(overlayUUID.String())
 
 	_ = callHandler(srv.handleOverlay, c)
-	assert.Equal(t, 200, rec.Code)}
+	assert.Equal(t, 200, rec.Code)
+}

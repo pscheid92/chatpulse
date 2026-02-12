@@ -37,7 +37,8 @@ type WebhookHandler struct {
 //   - Defense-in-depth against replay attacks using expired messages
 //
 // Vote processing pipeline:
-//   broadcaster lookup → trigger match → debounce check → atomic vote application
+//
+//	broadcaster lookup → trigger match → debounce check → atomic vote application
 //
 // See webhook_test.go for comprehensive security test coverage including:
 // invalid signatures, missing headers, malformed signatures, tampering attacks, and replay attempts.

@@ -14,8 +14,11 @@ import (
 )
 
 const (
-	defaultShardID  = "0"
-	appTokenTimeout = 15 * time.Second
+	defaultShardID     = "0"
+	appTokenTimeout    = 15 * time.Second
+	maxRetries         = 3
+	initialBackoff     = 1 * time.Second
+	rateLimitBackoff   = 30 * time.Second
 )
 
 // subscriptionStore is the subset of database operations needed for subscription management.
@@ -140,8 +143,28 @@ func (m *EventSubManager) Cleanup(ctx context.Context) error {
 	return nil
 }
 
+// isEventSubRateLimited checks if an error is a 429 rate limit response
+func isEventSubRateLimited(err error) bool {
+	if apiErr, ok := errors.AsType[*helix.APIError](err); ok {
+		return apiErr.StatusCode == http.StatusTooManyRequests
+	}
+	return false
+}
+
+// isEventSubRetriable checks if an error is retriable (5xx or 429)
+func isEventSubRetriable(err error) bool {
+	if apiErr, ok := errors.AsType[*helix.APIError](err); ok {
+		// 5xx errors are retriable, 429 is retriable with longer backoff
+		// 4xx errors (except 429) are permanent (bad request, invalid broadcaster ID, etc.)
+		return apiErr.StatusCode >= 500 || apiErr.StatusCode == http.StatusTooManyRequests
+	}
+	// Network errors, timeouts, context cancellations are retriable
+	return true
+}
+
 // Subscribe creates an EventSub subscription for a broadcaster via the conduit.
 // Idempotent: if a subscription already exists in DB, it returns nil.
+// Retries transient failures (5xx, 429) with exponential backoff.
 func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broadcasterUserID string) error {
 	// Check if subscription already exists
 	existing, err := m.db.GetByUserID(ctx, userID)
@@ -153,6 +176,64 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 		return nil
 	}
 
+	// Retry loop with exponential backoff
+	backoff := initialBackoff
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		sub, err := m.attemptSubscribe(ctx, userID, broadcasterUserID)
+		if err == nil {
+			// Success
+			slog.Info("Subscribed to chat messages",
+				"broadcaster_user_id", broadcasterUserID,
+				"subscription_id", sub.ID,
+				"attempt", attempt)
+			return nil
+		}
+
+		// Check if error is retriable
+		if isEventSubRateLimited(err) {
+			// 429 rate limit - use longer backoff
+			backoff = rateLimitBackoff
+			slog.Warn("EventSub rate limited, backing off",
+				"broadcaster_user_id", broadcasterUserID,
+				"attempt", attempt,
+				"backoff_seconds", backoff.Seconds())
+		} else if !isEventSubRetriable(err) {
+			// Permanent error (4xx except 429) - don't retry
+			slog.Error("EventSub subscribe failed with permanent error",
+				"broadcaster_user_id", broadcasterUserID,
+				"error", err)
+			return fmt.Errorf("EventSub subscribe failed (permanent): %w", err)
+		}
+
+		// Retry with backoff (unless last attempt)
+		if attempt < maxRetries {
+			slog.Warn("EventSub subscribe failed, retrying",
+				"broadcaster_user_id", broadcasterUserID,
+				"attempt", attempt,
+				"backoff_seconds", backoff.Seconds(),
+				"error", err)
+
+			select {
+			case <-time.After(backoff):
+				backoff *= 2 // Exponential backoff
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
+			}
+		} else {
+			// Exhausted retries
+			slog.Error("EventSub subscribe failed after retries",
+				"broadcaster_user_id", broadcasterUserID,
+				"attempts", maxRetries,
+				"error", err)
+			return fmt.Errorf("EventSub subscribe failed after %d attempts: %w", maxRetries, err)
+		}
+	}
+
+	return fmt.Errorf("EventSub subscribe failed after %d attempts", maxRetries)
+}
+
+// attemptSubscribe is a single attempt to create an EventSub subscription
+func (m *EventSubManager) attemptSubscribe(ctx context.Context, userID uuid.UUID, broadcasterUserID string) (*helix.EventSubSubscription, error) {
 	// Create subscription via Twitch API
 	sub, err := m.client.CreateEventSubSubscription(ctx, &helix.CreateEventSubSubscriptionParams{
 		Type:    "channel.chat.message",
@@ -171,12 +252,13 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 		// was lost but Twitch still has it). Treat as success — the subscription is active.
 		if apiErr, ok := errors.AsType[*helix.APIError](err); ok && apiErr.StatusCode == http.StatusConflict {
 			slog.Info("EventSub subscription already exists on Twitch, treating as success", "broadcaster_user_id", broadcasterUserID)
-			return nil
+			// Return a placeholder subscription (we don't have the ID, but that's okay)
+			return &helix.EventSubSubscription{ID: "existing"}, nil
 		}
-		return fmt.Errorf("failed to create EventSub subscription: %w", err)
+		return nil, err
 	}
 	if sub == nil {
-		return fmt.Errorf("no subscription returned from Twitch API")
+		return nil, fmt.Errorf("no subscription returned from Twitch API")
 	}
 
 	// Persist to DB
@@ -185,14 +267,14 @@ func (m *EventSubManager) Subscribe(ctx context.Context, userID uuid.UUID, broad
 		if cleanupErr := m.client.DeleteEventSubSubscription(ctx, sub.ID); cleanupErr != nil {
 			slog.Error("Failed to clean up Twitch subscription after DB persist failure", "subscription_id", sub.ID, "error", cleanupErr)
 		}
-		return fmt.Errorf("failed to persist subscription: %w", err)
+		return nil, fmt.Errorf("failed to persist subscription: %w", err)
 	}
 
-	slog.Info("Subscribed to chat messages", "broadcaster_user_id", broadcasterUserID, "subscription_id", sub.ID)
-	return nil
+	return sub, nil
 }
 
 // Unsubscribe removes an EventSub subscription for a user.
+// Retries transient failures when deleting from Twitch API.
 func (m *EventSubManager) Unsubscribe(ctx context.Context, userID uuid.UUID) error {
 	sub, err := m.db.GetByUserID(ctx, userID)
 	if errors.Is(err, domain.ErrSubscriptionNotFound) {
@@ -202,17 +284,66 @@ func (m *EventSubManager) Unsubscribe(ctx context.Context, userID uuid.UUID) err
 		return fmt.Errorf("failed to get subscription: %w", err)
 	}
 
-	// Delete from Twitch API
-	if err := m.client.DeleteEventSubSubscription(ctx, sub.SubscriptionID); err != nil {
-		slog.Error("Failed to delete Twitch subscription", "subscription_id", sub.SubscriptionID, "error", err)
-		// Continue to delete from DB anyway
+	// Delete from Twitch API with retry
+	backoff := initialBackoff
+	deleted := false
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := m.client.DeleteEventSubSubscription(ctx, sub.SubscriptionID)
+		if err == nil {
+			deleted = true
+			break
+		}
+
+		// Check if error is retriable
+		if !isEventSubRetriable(err) {
+			// Permanent error - log and continue (still delete from DB)
+			slog.Error("EventSub unsubscribe failed with permanent error",
+				"subscription_id", sub.SubscriptionID,
+				"error", err)
+			break
+		}
+
+		// Retry with backoff (unless last attempt)
+		if attempt < maxRetries {
+			if isEventSubRateLimited(err) {
+				backoff = rateLimitBackoff
+			}
+
+			slog.Warn("EventSub unsubscribe failed, retrying",
+				"subscription_id", sub.SubscriptionID,
+				"attempt", attempt,
+				"backoff_seconds", backoff.Seconds(),
+				"error", err)
+
+			select {
+			case <-time.After(backoff):
+				backoff *= 2
+			case <-ctx.Done():
+				// Context cancelled - still try to delete from DB
+				slog.Warn("Context cancelled during unsubscribe retry, will delete from DB anyway")
+				break
+			}
+		} else {
+			// Exhausted retries - log as orphan and continue (delete from DB anyway)
+			slog.Error("EventSub unsubscribe failed after retries, subscription may be orphaned",
+				"subscription_id", sub.SubscriptionID,
+				"attempts", maxRetries,
+				"error", err)
+		}
 	}
 
-	// Delete from DB
+	// Delete from DB (always attempt, even if Twitch delete failed)
 	if err := m.db.Delete(ctx, userID); err != nil {
 		return fmt.Errorf("failed to delete subscription from DB: %w", err)
 	}
 
-	slog.Info("Unsubscribed from chat messages", "user_id", userID)
+	if deleted {
+		slog.Info("Unsubscribed from chat messages", "user_id", userID, "subscription_id", sub.SubscriptionID)
+	} else {
+		slog.Warn("Deleted subscription from DB but Twitch unsubscribe may have failed",
+			"user_id", userID,
+			"subscription_id", sub.SubscriptionID)
+	}
+
 	return nil
 }

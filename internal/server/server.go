@@ -20,8 +20,6 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-const sessionMaxAgeDays = 7
-
 // webhookHandler handles EventSub webhook requests (nil if webhooks not configured)
 type webhookHandler interface {
 	HandleEventSub(c echo.Context) error
@@ -77,7 +75,7 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
 	sessionStore.Options = &sessions.Options{
 		Path:     "/",
-		MaxAge:   86400 * sessionMaxAgeDays,
+		MaxAge:   int(cfg.SessionMaxAge.Seconds()),
 		HttpOnly: true,
 		Secure:   cfg.AppEnv == "production",
 		SameSite: http.SameSiteLaxMode,
@@ -88,7 +86,7 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 		TokenLookup:    "form:csrf_token,header:X-CSRF-Token",
 		CookieName:     "csrf_token",
 		CookiePath:     "/",
-		CookieMaxAge:   86400 * sessionMaxAgeDays,
+		CookieMaxAge:   int(cfg.SessionMaxAge.Seconds()),
 		CookieHTTPOnly: true,
 		CookieSecure:   cfg.AppEnv == "production",
 		CookieSameSite: http.SameSiteStrictMode,

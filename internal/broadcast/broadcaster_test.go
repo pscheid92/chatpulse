@@ -21,9 +21,9 @@ import (
 
 // mockEngine returns a fixed value for all sessions.
 type mockEngine struct {
-	mu       sync.Mutex
-	value    float64
-	delayFn  func(context.Context) error // Optional delay/error injection
+	mu      sync.Mutex
+	value   float64
+	delayFn func(context.Context) error // Optional delay/error injection
 }
 
 func (m *mockEngine) GetCurrentValue(ctx context.Context, _ uuid.UUID) (float64, error) {
@@ -65,7 +65,7 @@ func testBroadcaster(t *testing.T, engine *mockEngine, onSessionEmpty func(uuid.
 		engine = &mockEngine{}
 	}
 
-	broadcaster := NewBroadcaster(engine, nil, onSessionEmpty, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, onSessionEmpty, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	upgrader := ws.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -205,20 +205,20 @@ func TestBroadcaster_GetClientCount(t *testing.T) {
 
 func TestBroadcaster_MaxClientsPerSession(t *testing.T) {
 	engine := &mockEngine{}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	sessionUUID := uuid.New()
 
-	conns := make([]*ws.Conn, 0, maxClientsPerSession)
-	for i := range maxClientsPerSession {
+	conns := make([]*ws.Conn, 0, 50)
+	for i := range 50 {
 		server, client := newTestConnPair(t)
 		err := broadcaster.Register(sessionUUID, server)
 		require.NoError(t, err, "client %d should register successfully", i)
 		conns = append(conns, client)
 	}
 
-	assert.Equal(t, maxClientsPerSession, broadcaster.GetClientCount(sessionUUID))
+	assert.Equal(t, 50, broadcaster.GetClientCount(sessionUUID))
 
 	// The next client should be rejected
 	server, client := newTestConnPair(t)
@@ -259,7 +259,7 @@ func newTestConnPair(t *testing.T) (server *ws.Conn, client *ws.Conn) {
 
 func TestBroadcaster_NoClientsNoPanic(t *testing.T) {
 	engine := &mockEngine{value: 50.0}
-	_ = NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	_ = NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 	// Just verify no panic with ticks running and no clients
 	time.Sleep(100 * time.Millisecond)
 }
@@ -304,7 +304,7 @@ func TestBroadcasterStopCleansUpGoroutines(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
 	// Create broadcaster with multiple sessions and clients
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 	afterCreate := runtime.NumGoroutine()
 
 	session1 := uuid.New()
@@ -371,7 +371,7 @@ func TestBroadcasterStopWithActiveClients(t *testing.T) {
 	}
 
 	engine := &mockEngine{value: 42.0}
-	broadcaster := NewBroadcaster(engine, nil, onEmpty, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, onEmpty, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 
 	session1 := uuid.New()
 	session2 := uuid.New()
@@ -409,7 +409,7 @@ func TestBroadcasterStopWithActiveClients(t *testing.T) {
 
 func TestBroadcasterStopIdempotent(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 
 	session := uuid.New()
 	server, client := newTestConnPair(t)
@@ -428,7 +428,7 @@ func TestBroadcasterStopIdempotent(t *testing.T) {
 
 func TestBroadcasterStopBlocksCommandProcessing(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 
 	session := uuid.New()
 	server, client := newTestConnPair(t)
@@ -479,7 +479,7 @@ func TestBroadcaster_RedisTimeoutHandling(t *testing.T) {
 		},
 	}
 
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	server, client := newTestConnPair(t)
@@ -521,7 +521,7 @@ func TestBroadcaster_CommandTimeoutHandling(t *testing.T) {
 		},
 	}
 
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock())
+	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
 	t.Cleanup(func() {
 		close(blockForever)
 		broadcaster.Stop()

@@ -105,6 +105,71 @@ var (
 			Buckets: []float64{.0001, .0005, .001, .005, .01, .025, .05, .1},
 		},
 	)
+
+	// BroadcasterPanicsTotal tracks broadcaster panic recoveries
+	BroadcasterPanicsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "broadcaster_panics_total",
+			Help: "Total broadcaster panic recoveries",
+		},
+	)
+
+	// BroadcasterCommandChannelDepth tracks current command channel depth
+	BroadcasterCommandChannelDepth = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "broadcaster_command_channel_depth",
+			Help: "Current command channel depth",
+		},
+	)
+
+	// BroadcasterStopTimeoutsTotal tracks broadcaster stops that exceeded timeout
+	BroadcasterStopTimeoutsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "broadcaster_stop_timeouts_total",
+			Help: "Broadcaster stops that exceeded timeout",
+		},
+	)
+
+	// BroadcasterCallbackErrorsTotal tracks onFirstClient callback errors
+	BroadcasterCallbackErrorsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "broadcaster_callback_errors_total",
+			Help: "onFirstClient callback errors",
+		},
+	)
+
+	// BroadcasterSessionCircuitOpensTotal tracks sessions with circuit opened due to failures
+	BroadcasterSessionCircuitOpensTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "broadcaster_session_circuit_opens_total",
+			Help: "Sessions with circuit opened due to failures",
+		},
+	)
+
+	// BroadcasterSlowTicksTotal tracks ticks exceeding duration budget
+	BroadcasterSlowTicksTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "broadcaster_slow_ticks_total",
+			Help: "Ticks exceeding duration budget",
+		},
+	)
+
+	// BroadcasterAbortedTicksTotal tracks ticks aborted early due to budget
+	BroadcasterAbortedTicksTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "broadcaster_aborted_ticks_total",
+			Help: "Ticks aborted early due to budget",
+		},
+	)
+
+	// BroadcasterSessionCircuitState tracks per-session circuit breaker state (0=closed, 1=open)
+	BroadcasterSessionCircuitState = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "broadcaster_session_circuit_state",
+			Help: "Per-session circuit breaker state (0=closed, 1=open)",
+		},
+		[]string{"session_uuid"},
+	)
 )
 
 // WebSocket Metrics
@@ -339,11 +404,44 @@ var (
 		},
 	)
 
+	// SessionActivationTimeoutsTotal tracks session activation timeouts by reason
+	SessionActivationTimeoutsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "session_activation_timeouts_total",
+			Help: "Total session activation timeouts by reason (context_deadline/activation_failed)",
+		},
+		[]string{"reason"},
+	)
+
 	// CleanupUnsubscribeErrorsTotal tracks background unsubscribe failures
 	CleanupUnsubscribeErrorsTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "cleanup_unsubscribe_errors_total",
 			Help: "Total number of background Twitch unsubscribe failures during cleanup",
+		},
+	)
+
+	// OrphanCleanupFailuresTotal tracks total number of cleanup failures (triggers backoff)
+	OrphanCleanupFailuresTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "orphan_cleanup_failures_total",
+			Help: "Total number of cleanup failures (triggers backoff)",
+		},
+	)
+
+	// OrphanCleanupKeysScannedTotal tracks total number of Redis keys scanned during cleanup
+	OrphanCleanupKeysScannedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "orphan_cleanup_keys_scanned_total",
+			Help: "Total number of Redis keys scanned during cleanup",
+		},
+	)
+
+	// OrphanCleanupKeyLimitReachedTotal tracks times cleanup hit key limit
+	OrphanCleanupKeyLimitReachedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "orphan_cleanup_key_limit_reached_total",
+			Help: "Total number of times cleanup hit key limit (1000 keys/run)",
 		},
 	)
 )

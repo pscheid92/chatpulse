@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/joho/godotenv"
 	"go-simpler.org/env"
@@ -34,6 +35,22 @@ type Config struct {
 	// Vote rate limiting (token bucket)
 	VoteRateLimitCapacity int `env:"VOTE_RATE_LIMIT_CAPACITY" default:"100"`
 	VoteRateLimitRate     int `env:"VOTE_RATE_LIMIT_RATE" default:"100"`
+
+	// PostgreSQL connection pool configuration
+	DBMinConns          int32         `env:"DB_MIN_CONNS" default:"2"`
+	DBMaxConns          int32         `env:"DB_MAX_CONNS" default:"10"`
+	DBMaxConnIdleTime   time.Duration `env:"DB_MAX_CONN_IDLE_TIME" default:"5m"`
+	DBHealthCheckPeriod time.Duration `env:"DB_HEALTH_CHECK_PERIOD" default:"1m"`
+	DBConnectTimeout    time.Duration `env:"DB_CONNECT_TIMEOUT" default:"5s"`
+	DBMaxRetries        int           `env:"DB_MAX_RETRIES" default:"3"`
+	DBInitialBackoff    time.Duration `env:"DB_INITIAL_BACKOFF" default:"1s"`
+
+	// Performance tuning (optional, defaults optimized for production)
+	BroadcasterMaxClientsPerSession int           `env:"BROADCASTER_MAX_CLIENTS_PER_SESSION" default:"50"`
+	BroadcasterTickInterval         time.Duration `env:"BROADCASTER_TICK_INTERVAL" default:"50ms"`
+	CleanupInterval                 time.Duration `env:"CLEANUP_INTERVAL" default:"30s"`
+	OrphanMaxAge                    time.Duration `env:"ORPHAN_MAX_AGE" default:"30s"`
+	SessionMaxAge                   time.Duration `env:"SESSION_MAX_AGE" default:"168h"` // 7 days
 }
 
 func Load() (*Config, error) {

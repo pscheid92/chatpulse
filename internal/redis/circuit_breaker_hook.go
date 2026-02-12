@@ -42,16 +42,16 @@ type cachedValue struct {
 const cacheTTL = 5 * time.Minute
 
 // NewCircuitBreakerHook creates a new circuit breaker hook with the following settings:
-// - MaxRequests: 3 (half-open allows 3 test requests)
-// - Interval: 60s (rolling window for failure counting)
-// - Timeout: 10s (how long circuit stays open before half-open)
+// - MaxRequests: 1 (half-open allows 1 conservative test request)
+// - Interval: 10s (rolling window for failure counting - fast detection)
+// - Timeout: 30s (how long circuit stays open before half-open - gives Redis time to recover)
 // - ReadyToTrip: Opens after 5 requests with 60% failure rate
 func NewCircuitBreakerHook() *CircuitBreakerHook {
 	settings := gobreaker.Settings{
 		Name:        "redis",
-		MaxRequests: 3, // In half-open, allow 3 test requests
-		Interval:    60 * time.Second,
-		Timeout:     10 * time.Second,
+		MaxRequests: 1, // In half-open, allow 1 test request (conservative)
+		Interval:    10 * time.Second,
+		Timeout:     30 * time.Second,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			// Open circuit if we have at least 5 requests and 60% are failures
 			if counts.Requests < 5 {

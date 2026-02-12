@@ -10,10 +10,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/metrics"
 	"github.com/pscheid92/chatpulse/internal/redis"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/app"
 	"github.com/pscheid92/chatpulse/internal/broadcast"
@@ -99,23 +98,6 @@ func setupConfig() *config.Config {
 	return cfg
 }
 
-func setupDB(cfg *config.Config) *pgxpool.Pool {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	db, err := database.Connect(ctx, cfg.DatabaseURL)
-	if err != nil {
-		slog.Error("Failed to connect to database", "error", err)
-		os.Exit(1)
-	}
-
-	if err := database.RunMigrations(ctx, db); err != nil {
-		slog.Error("Failed to run migrations", "error", err)
-		os.Exit(1)
-	}
-
-	return db
-}
 
 func setupRedis(ctx context.Context, cfg *config.Config) *goredis.Client {
 	client, err := redis.NewClient(ctx, cfg.RedisURL)
@@ -124,6 +106,32 @@ func setupRedis(ctx context.Context, cfg *config.Config) *goredis.Client {
 		os.Exit(1)
 	}
 	return client
+}
+
+// checkUlimit verifies file descriptor limits are sufficient for WebSocket connections.
+// Logs a warning if the limit is below recommended threshold.
+func checkUlimit(maxConnections int) {
+	var rlimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err != nil {
+		slog.Warn("Failed to check file descriptor limit", "error", err)
+		return
+	}
+
+	// Each WebSocket connection uses 1 FD, plus overhead for DB, Redis, HTTP, logs, etc.
+	// Recommend 2x the max connections to ensure headroom
+	recommended := uint64(maxConnections * 2)
+
+	if rlimit.Cur < recommended {
+		slog.Warn("File descriptor limit may be too low for WebSocket connections",
+			"current", rlimit.Cur,
+			"recommended", recommended,
+			"max_connections", maxConnections,
+			"note", "Consider running 'ulimit -n "+string(rune(recommended))+"' or updating system limits")
+	} else {
+		slog.Info("File descriptor limit check passed",
+			"current", rlimit.Cur,
+			"max_connections", maxConnections)
+	}
 }
 
 func main() {
@@ -150,8 +158,39 @@ func main() {
 		"commit", buildInfo.Commit,
 		"build_time", buildInfo.BuildTime)
 
-	pool := setupDB(cfg)
+	// Check file descriptor limits for WebSocket connections
+	checkUlimit(cfg.MaxWebSocketConnections)
+
+	// Connect to database with retry logic (30s max)
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer dbCancel()
+	poolCfg := database.PoolConfig{
+		MinConns:          cfg.DBMinConns,
+		MaxConns:          cfg.DBMaxConns,
+		MaxConnIdleTime:   cfg.DBMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DBHealthCheckPeriod,
+		ConnectTimeout:    cfg.DBConnectTimeout,
+		MaxRetries:        cfg.DBMaxRetries,
+		InitialBackoff:    cfg.DBInitialBackoff,
+	}
+	pool, err := database.ConnectWithConfig(dbCtx, cfg.DatabaseURL, poolCfg)
+	if err != nil {
+		slog.Error("failed to connect to database after retries", "error", err)
+		os.Exit(1)
+	}
 	defer pool.Close()
+
+	// Run migrations with advisory lock (prevents concurrent execution)
+	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer migrationCancel()
+	if err := database.RunMigrationsWithLock(migrationCtx, pool); err != nil {
+		slog.Error("failed to run migrations", "error", err)
+		os.Exit(1)
+	}
+
+	// Start pool stats exporter (updates Prometheus metrics every 10s)
+	stopPoolExporter := database.StartPoolStatsExporter(pool)
+	defer stopPoolExporter()
 
 	redisClient := setupRedis(context.Background(), cfg)
 	defer func() { _ = redisClient.Close() }()
@@ -194,7 +233,7 @@ func main() {
 		twitchSvc = eventsubMgr
 	}
 
-	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, clock)
+	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, clock, 30*time.Second, 30*time.Second)
 
 	onFirstClient := func(sessionUUID uuid.UUID) {
 		if err := appSvc.IncrRefCount(context.Background(), sessionUUID); err != nil {
@@ -202,7 +241,7 @@ func main() {
 		}
 	}
 	onSessionEmpty := func(sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(context.Background(), sessionUUID) }
-	broadcaster := broadcast.NewBroadcaster(engine, onFirstClient, onSessionEmpty, clock)
+	broadcaster := broadcast.NewBroadcaster(engine, onFirstClient, onSessionEmpty, clock, 50, 50*time.Millisecond)
 
 	// Create and start the HTTP server (pass nil explicitly to avoid typed-nil interface)
 	var (

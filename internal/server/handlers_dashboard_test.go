@@ -34,7 +34,8 @@ func TestHandleSaveConfig_BadDecay(t *testing.T) {
 	c.Set("userID", uuid.New())
 
 	_ = callHandler(srv.handleSaveConfig, c)
-	assert.Equal(t, 400, rec.Code)}
+	assert.Equal(t, 400, rec.Code)
+}
 
 func TestHandleSaveConfig_ValidationError(t *testing.T) {
 	srv := newTestServer(t, &mockAppService{})
@@ -54,7 +55,8 @@ func TestHandleSaveConfig_ValidationError(t *testing.T) {
 	c.Set("userID", uuid.New())
 
 	_ = callHandler(srv.handleSaveConfig, c)
-	assert.Equal(t, 400, rec.Code)}
+	assert.Equal(t, 400, rec.Code)
+}
 
 func TestHandleSaveConfig_Success(t *testing.T) {
 	userID := uuid.New()
@@ -127,4 +129,5 @@ func TestHandleDashboard_Success(t *testing.T) {
 	c.Set("userID", userID)
 
 	_ = callHandler(srv.handleDashboard, c)
-	assert.Equal(t, 200, rec.Code)}
+	assert.Equal(t, 200, rec.Code)
+}

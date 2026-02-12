@@ -526,9 +526,9 @@ func TestValidateTimestampFreshness_FreshMessage(t *testing.T) {
 	now := time.Now()
 
 	testCases := []struct {
-		name      string
+		name        string
 		messageTime time.Time
-		expected  bool
+		expected    bool
 	}{
 		{"exact time", now, true},
 		{"1 second old", now.Add(-1 * time.Second), true},

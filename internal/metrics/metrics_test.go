@@ -106,8 +106,8 @@ func TestCounterMetrics(t *testing.T) {
 
 func TestGaugeMetrics(t *testing.T) {
 	tests := []struct {
-		name    string
-		metric  prometheus.Gauge
+		name     string
+		metric   prometheus.Gauge
 		setValue float64
 	}{
 		{
@@ -236,11 +236,11 @@ func TestLabelCardinality(t *testing.T) {
 	// Verify label cardinality is reasonable (prevent label explosion)
 
 	tests := []struct {
-		name            string
-		metric          *prometheus.CounterVec
-		labels          []prometheus.Labels
-		maxCardinality  int
-		expectUnique    int
+		name           string
+		metric         *prometheus.CounterVec
+		labels         []prometheus.Labels
+		maxCardinality int
+		expectUnique   int
 	}{
 		{
 			name:   "redis operations have bounded labels",

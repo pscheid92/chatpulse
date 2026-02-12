@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/broadcast"
@@ -16,7 +17,6 @@ import (
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/google/uuid"
 )
 
 func TestConnectionLimitsIntegration_GlobalLimit(t *testing.T) {
@@ -48,7 +48,7 @@ func TestConnectionLimitsIntegration_GlobalLimit(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
 	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
@@ -113,7 +113,7 @@ func TestConnectionLimitsIntegration_PerIPLimit(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
 	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
@@ -159,8 +159,8 @@ func TestConnectionLimitsIntegration_RateLimit(t *testing.T) {
 	cfg := &config.Config{
 		MaxWebSocketConnections: 100,
 		MaxConnectionsPerIP:     100,
-		ConnectionRatePerIP:     2,  // 2 per second
-		ConnectionRateBurst:     2,  // Burst of 2
+		ConnectionRatePerIP:     2, // 2 per second
+		ConnectionRateBurst:     2, // Burst of 2
 	}
 
 	mockApp := &mockAppService{
@@ -179,7 +179,7 @@ func TestConnectionLimitsIntegration_RateLimit(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
 	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
@@ -247,7 +247,7 @@ func TestConnectionLimitsIntegration_ReleaseOnDisconnect(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
 	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
@@ -313,7 +313,7 @@ func TestConnectionLimitsIntegration_ConcurrentConnections(t *testing.T) {
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
 	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
