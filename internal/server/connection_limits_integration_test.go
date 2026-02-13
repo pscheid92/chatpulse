@@ -47,13 +47,10 @@ func TestConnectionLimitsIntegration_GlobalLimit(t *testing.T) {
 		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 			return &domain.Config{}, nil
 		},
-		ensureSessionActiveFn: func(ctx context.Context, overlayUUID uuid.UUID) error {
-			return nil
-		},
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
 	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
@@ -111,13 +108,10 @@ func TestConnectionLimitsIntegration_PerIPLimit(t *testing.T) {
 		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 			return &domain.Config{}, nil
 		},
-		ensureSessionActiveFn: func(ctx context.Context, overlayUUID uuid.UUID) error {
-			return nil
-		},
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
 	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
@@ -176,13 +170,10 @@ func TestConnectionLimitsIntegration_RateLimit(t *testing.T) {
 		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 			return &domain.Config{}, nil
 		},
-		ensureSessionActiveFn: func(ctx context.Context, overlayUUID uuid.UUID) error {
-			return nil
-		},
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
 	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
@@ -241,13 +232,10 @@ func TestConnectionLimitsIntegration_ReleaseOnDisconnect(t *testing.T) {
 		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 			return &domain.Config{}, nil
 		},
-		ensureSessionActiveFn: func(ctx context.Context, overlayUUID uuid.UUID) error {
-			return nil
-		},
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
 	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
@@ -306,13 +294,10 @@ func TestConnectionLimitsIntegration_ConcurrentConnections(t *testing.T) {
 		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 			return &domain.Config{}, nil
 		},
-		ensureSessionActiveFn: func(ctx context.Context, overlayUUID uuid.UUID) error {
-			return nil
-		},
 	}
 
 	clock := clockwork.NewFakeClock()
-	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
+	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
 	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)

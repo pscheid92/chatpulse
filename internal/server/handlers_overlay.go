@@ -138,19 +138,12 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 			WithField("overlay_uuid", overlayUUID.String())
 	}
 
-	// Ensure session is active in Redis (activate or resume)
-	if err := s.app.EnsureSessionActive(ctx, user.OverlayUUID); err != nil {
-		return apperrors.InternalError("failed to activate session", err).
-			WithField("overlay_uuid", user.OverlayUUID.String()).
-			WithField("user_id", user.ID.String())
-	}
-
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		return apperrors.InternalError("failed to upgrade WebSocket", err)
 	}
 
-	if err := s.broadcaster.Register(user.OverlayUUID, conn); err != nil {
+	if err := s.broadcaster.Subscribe(user.TwitchUserID, conn); err != nil {
 		conn.Close()
 		return apperrors.InternalError("failed to register client with broadcaster", err).
 			WithField("overlay_uuid", user.OverlayUUID.String())
@@ -174,7 +167,7 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 		}
 	}
 
-	s.broadcaster.Unregister(user.OverlayUUID, conn)
+	s.broadcaster.Unsubscribe(user.TwitchUserID, conn)
 
 	return nil //nolint:nilerr // ReadMessage err is block-scoped; outer err is nil
 }

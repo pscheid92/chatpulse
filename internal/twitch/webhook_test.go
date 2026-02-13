@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/Its-donkey/kappopher/helix"
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/sentiment"
@@ -27,11 +26,11 @@ const (
 	testChatterID     = "chatter-1"
 )
 
-// testSessionRepo is a minimal in-memory SessionStore for webhook tests.
-type testSessionRepo struct {
-	mu                   sync.Mutex
-	sessions             map[uuid.UUID]*testSession
-	broadcasterToSession map[string]uuid.UUID
+// testStore is a minimal in-memory store for webhook tests.
+// Implements domain.ConfigSource and domain.SentimentStore.
+type testStore struct {
+	mu       sync.Mutex
+	sessions map[string]*testSession // keyed by broadcasterID
 }
 
 type testSession struct {
@@ -39,31 +38,23 @@ type testSession struct {
 	Config domain.ConfigSnapshot
 }
 
-func newTestSessionStore() *testSessionRepo {
-	return &testSessionRepo{
-		sessions:             make(map[uuid.UUID]*testSession),
-		broadcasterToSession: make(map[string]uuid.UUID),
+func newTestStore() *testStore {
+	return &testStore{
+		sessions: make(map[string]*testSession),
 	}
 }
 
-func (s *testSessionRepo) addSession(sessionUUID uuid.UUID, broadcasterID string, config domain.ConfigSnapshot) {
+func (s *testStore) addSession(broadcasterID string, config domain.ConfigSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[sessionUUID] = &testSession{Value: 0, Config: config}
-	s.broadcasterToSession[broadcasterID] = sessionUUID
+	s.sessions[broadcasterID] = &testSession{Value: 0, Config: config}
 }
 
-func (s *testSessionRepo) GetSessionByBroadcaster(_ context.Context, broadcasterUserID string) (uuid.UUID, bool, error) {
+// GetConfigByBroadcaster implements domain.ConfigSource.
+func (s *testStore) GetConfigByBroadcaster(_ context.Context, broadcasterID string) (*domain.ConfigSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, ok := s.broadcasterToSession[broadcasterUserID]
-	return id, ok, nil
-}
-
-func (s *testSessionRepo) GetSessionConfig(_ context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[sessionUUID]
+	sess, ok := s.sessions[broadcasterID]
 	if !ok {
 		return nil, nil
 	}
@@ -71,10 +62,11 @@ func (s *testSessionRepo) GetSessionConfig(_ context.Context, sessionUUID uuid.U
 	return &cfg, nil
 }
 
-func (s *testSessionRepo) ApplyVote(_ context.Context, sessionUUID uuid.UUID, delta, _ float64, _ int64) (float64, error) {
+// ApplyVote implements domain.SentimentStore.
+func (s *testStore) ApplyVote(_ context.Context, broadcasterID string, delta, _ float64, _ int64) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sess, ok := s.sessions[sessionUUID]
+	sess, ok := s.sessions[broadcasterID]
 	if !ok {
 		return 0, nil
 	}
@@ -82,43 +74,24 @@ func (s *testSessionRepo) ApplyVote(_ context.Context, sessionUUID uuid.UUID, de
 	return sess.Value, nil
 }
 
-func (s *testSessionRepo) getValue(sessionUUID uuid.UUID) float64 {
+func (s *testStore) getValue(broadcasterID string) float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sess, ok := s.sessions[sessionUUID]
+	sess, ok := s.sessions[broadcasterID]
 	if !ok {
 		return 0
 	}
 	return sess.Value
 }
 
-// Stub methods to satisfy domain.SessionRepository.
-func (s *testSessionRepo) ActivateSession(context.Context, uuid.UUID, string, domain.ConfigSnapshot) error {
-	return nil
-}
-func (s *testSessionRepo) ResumeSession(context.Context, uuid.UUID) error         { return nil }
-func (s *testSessionRepo) SessionExists(context.Context, uuid.UUID) (bool, error) { return false, nil }
-func (s *testSessionRepo) DeleteSession(context.Context, uuid.UUID) error         { return nil }
-func (s *testSessionRepo) MarkDisconnected(context.Context, uuid.UUID) error      { return nil }
-func (s *testSessionRepo) UpdateConfig(context.Context, uuid.UUID, domain.ConfigSnapshot) error {
-	return nil
-}
-func (s *testSessionRepo) IncrRefCount(context.Context, uuid.UUID) (int64, error) { return 0, nil }
-func (s *testSessionRepo) DecrRefCount(context.Context, uuid.UUID) (int64, error) { return 0, nil }
-func (s *testSessionRepo) DisconnectedCount(context.Context) (int64, error)       { return 0, nil }
-func (s *testSessionRepo) ListOrphans(_ context.Context, _ time.Duration) ([]uuid.UUID, error) {
-	return nil, nil
-}
-
-func (s *testSessionRepo) ListActiveSessions(context.Context) ([]domain.ActiveSession, error) {
-	return nil, nil
-}
-
 // Stub methods to satisfy domain.SentimentStore.
-func (s *testSessionRepo) GetSentiment(context.Context, uuid.UUID, float64, int64) (float64, error) {
+func (s *testStore) GetSentiment(_ context.Context, _ string, _ float64, _ int64) (float64, error) {
 	return 0, nil
 }
-func (s *testSessionRepo) ResetSentiment(context.Context, uuid.UUID) error { return nil }
+func (s *testStore) GetRawSentiment(_ context.Context, _ string) (float64, int64, error) {
+	return 0, 0, nil
+}
+func (s *testStore) ResetSentiment(_ context.Context, _ string) error { return nil }
 
 // testDebouncer is a simple in-memory debouncer for webhook tests.
 type testDebouncer struct {
@@ -130,10 +103,10 @@ func newTestDebouncer() *testDebouncer {
 	return &testDebouncer{debounced: make(map[string]bool)}
 }
 
-func (d *testDebouncer) CheckDebounce(_ context.Context, sessionUUID uuid.UUID, twitchUserID string) (bool, error) {
+func (d *testDebouncer) CheckDebounce(_ context.Context, broadcasterID string, twitchUserID string) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	key := sessionUUID.String() + ":" + twitchUserID
+	key := broadcasterID + ":" + twitchUserID
 	if d.debounced[key] {
 		return false, nil
 	}
@@ -144,7 +117,7 @@ func (d *testDebouncer) CheckDebounce(_ context.Context, sessionUUID uuid.UUID, 
 // alwaysAllowRateLimiter always allows votes (for webhook tests).
 type alwaysAllowRateLimiter struct{}
 
-func (a *alwaysAllowRateLimiter) CheckVoteRateLimit(_ context.Context, _ uuid.UUID) (bool, error) {
+func (a *alwaysAllowRateLimiter) CheckVoteRateLimit(_ context.Context, _ string) (bool, error) {
 	return true, nil
 }
 
@@ -223,13 +196,43 @@ func makeSignedNotification(secret, body string) *http.Request {
 	return req
 }
 
-// deterministic UUID for tests
-var testSessionUUID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+// contextCapturingEngine captures the context passed to ProcessVote for verification.
+type contextCapturingEngine struct {
+	capturedCtx context.Context
+	mu          sync.Mutex
+	called      chan struct{}
+}
 
-func setupWebhookTest(t *testing.T) (*WebhookHandler, *testSessionRepo, string) {
+func newContextCapturingEngine() *contextCapturingEngine {
+	return &contextCapturingEngine{called: make(chan struct{}, 1)}
+}
+
+func (e *contextCapturingEngine) ProcessVote(ctx context.Context, _, _, _ string) (float64, domain.VoteResult, error) {
+	e.mu.Lock()
+	e.capturedCtx = ctx
+	e.mu.Unlock()
+	e.called <- struct{}{}
+	return 0, domain.VoteNoMatch, nil
+}
+
+func (e *contextCapturingEngine) GetBroadcastData(_ context.Context, _ string) (*domain.BroadcastData, error) {
+	return nil, nil
+}
+
+func (e *contextCapturingEngine) ResetSentiment(_ context.Context, _ string) error {
+	return nil
+}
+
+func (e *contextCapturingEngine) getContext() context.Context {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.capturedCtx
+}
+
+func setupWebhookTest(t *testing.T) (*WebhookHandler, *testStore, string) {
 	t.Helper()
 
-	store := newTestSessionStore()
+	store := newTestStore()
 
 	broadcasterID := "broadcaster-123"
 	config := domain.ConfigSnapshot{
@@ -240,14 +243,14 @@ func setupWebhookTest(t *testing.T) (*WebhookHandler, *testSessionRepo, string) 
 		DecaySpeed:     1.0,
 	}
 
-	store.addSession(testSessionUUID, broadcasterID, config)
+	store.addSession(broadcasterID, config)
 
 	debouncer := newTestDebouncer()
 	rateLimiter := &alwaysAllowRateLimiter{}
 	clock := clockwork.NewRealClock()
 	cache := sentiment.NewConfigCache(10*time.Second, clock)
 	engine := sentiment.NewEngine(store, store, debouncer, rateLimiter, clock, cache)
-	handler := NewWebhookHandler(testWebhookSecret, engine)
+	handler := NewWebhookHandler(testWebhookSecret, engine, nil)
 	return handler, store, broadcasterID
 }
 
@@ -261,7 +264,7 @@ func TestWebhook_MatchingTrigger(t *testing.T) {
 	handler.HTTPHandler().ServeHTTP(rec, req)
 
 	assert.Equal(t, 204, rec.Code)
-	assert.Equal(t, 10.0, store.getValue(testSessionUUID))
+	assert.Equal(t, 10.0, store.getValue(broadcasterID))
 }
 
 func TestWebhook_NoTriggerMatch(t *testing.T) {
@@ -274,7 +277,7 @@ func TestWebhook_NoTriggerMatch(t *testing.T) {
 	handler.HTTPHandler().ServeHTTP(rec, req)
 
 	assert.Equal(t, 204, rec.Code)
-	assert.Equal(t, 0.0, store.getValue(testSessionUUID))
+	assert.Equal(t, 0.0, store.getValue(broadcasterID))
 }
 
 func TestWebhook_DebouncedVote(t *testing.T) {
@@ -294,7 +297,7 @@ func TestWebhook_DebouncedVote(t *testing.T) {
 	handler.HTTPHandler().ServeHTTP(rec2, req2)
 	assert.Equal(t, 204, rec2.Code)
 
-	assert.Equal(t, 10.0, store.getValue(testSessionUUID), "debounced vote should not apply twice")
+	assert.Equal(t, 10.0, store.getValue(broadcasterID), "debounced vote should not apply twice")
 }
 
 func TestWebhook_InvalidSignature(t *testing.T) {
@@ -310,7 +313,7 @@ func TestWebhook_InvalidSignature(t *testing.T) {
 }
 
 func TestWebhook_NonChatSubscriptionType(t *testing.T) {
-	handler, store, _ := setupWebhookTest(t)
+	handler, store, broadcasterID := setupWebhookTest(t)
 
 	// Build a non-chat event payload
 	payload := map[string]any{
@@ -355,7 +358,7 @@ func TestWebhook_NonChatSubscriptionType(t *testing.T) {
 	assert.Equal(t, 204, rec.Code)
 
 	// Store value should remain 0
-	assert.Equal(t, 0.0, store.getValue(testSessionUUID))
+	assert.Equal(t, 0.0, store.getValue(broadcasterID))
 }
 
 // --- HMAC Security Edge Case Tests ---
@@ -512,7 +515,7 @@ func TestWebhook_ReplayAttack(t *testing.T) {
 	rec1 := httptest.NewRecorder()
 	handler.HTTPHandler().ServeHTTP(rec1, req)
 	assert.Equal(t, 204, rec1.Code)
-	assert.Equal(t, 10.0, store.getValue(testSessionUUID))
+	assert.Equal(t, 10.0, store.getValue(broadcasterID))
 
 	// Replay same request with identical message ID
 	// Kappopher should reject this as a replay attack
@@ -521,7 +524,7 @@ func TestWebhook_ReplayAttack(t *testing.T) {
 	assert.Equal(t, 403, rec2.Code, "Kappopher implements replay protection - duplicate message IDs are rejected")
 
 	// Value should remain 10.0 (replay was blocked)
-	assert.Equal(t, 10.0, store.getValue(testSessionUUID))
+	assert.Equal(t, 10.0, store.getValue(broadcasterID))
 }
 
 // --- Timestamp Freshness Tests ---
@@ -581,7 +584,7 @@ func TestWebhook_StaleTimestamp(t *testing.T) {
 
 	// Kappopher rejects stale timestamps (>10 minutes old) with 400 status
 	assert.Equal(t, 400, rec.Code, "Kappopher rejects stale timestamps")
-	assert.Equal(t, 0.0, store.getValue(testSessionUUID), "Stale timestamp prevents vote application")
+	assert.Equal(t, 0.0, store.getValue(broadcasterID), "Stale timestamp prevents vote application")
 }
 
 // TestWebhook_FutureTimestamp verifies future timestamps within clock skew window are accepted
@@ -610,7 +613,7 @@ func TestWebhook_FutureTimestamp(t *testing.T) {
 
 	// Kappopher rejects future timestamps (even within 10-minute window)
 	assert.Equal(t, 400, rec.Code, "Kappopher rejects future timestamps")
-	assert.Equal(t, 0.0, store.getValue(testSessionUUID), "Future timestamp prevents vote application")
+	assert.Equal(t, 0.0, store.getValue(broadcasterID), "Future timestamp prevents vote application")
 }
 
 // --- Timestamp Freshness Validation Tests ---
@@ -689,7 +692,7 @@ func TestWebhook_StaleTimestampRejected(t *testing.T) {
 	assert.Equal(t, 400, rec.Code, "Kappopher rejects stale timestamp")
 
 	// Vote should NOT be applied due to Kappopher's rejection
-	assert.Equal(t, 0.0, store.getValue(testSessionUUID), "Stale timestamp prevents vote processing")
+	assert.Equal(t, 0.0, store.getValue(broadcasterID), "Stale timestamp prevents vote processing")
 }
 
 func TestWebhook_FreshTimestampAccepted(t *testing.T) {
@@ -717,5 +720,73 @@ func TestWebhook_FreshTimestampAccepted(t *testing.T) {
 	assert.Equal(t, 204, rec.Code)
 
 	// Vote should be applied since timestamp is fresh
-	assert.Equal(t, 10.0, store.getValue(testSessionUUID), "Fresh timestamp should allow vote processing")
+	assert.Equal(t, 10.0, store.getValue(broadcasterID), "Fresh timestamp should allow vote processing")
+}
+
+// TestWebhook_ProcessVoteContextHasTimeout verifies that ProcessVote receives a context with a deadline set.
+func TestWebhook_ProcessVoteContextHasTimeout(t *testing.T) {
+	engine := newContextCapturingEngine()
+	handler := NewWebhookHandler(testWebhookSecret, engine, nil)
+
+	body := makeChatMessageBody("broadcaster-123", "yes")
+	req := makeSignedNotification(testWebhookSecret, body)
+	rec := httptest.NewRecorder()
+
+	handler.HTTPHandler().ServeHTTP(rec, req)
+
+	assert.Equal(t, 204, rec.Code)
+
+	// Wait for the notification handler to be called
+	select {
+	case <-engine.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ProcessVote was not called within timeout")
+	}
+
+	ctx := engine.getContext()
+	assert.NotNil(t, ctx, "ProcessVote should receive a non-nil context")
+
+	deadline, hasDeadline := ctx.Deadline()
+	assert.True(t, hasDeadline, "Context passed to ProcessVote should have a deadline")
+	assert.WithinDuration(t, time.Now().Add(webhookProcessingTimeout), deadline, 2*time.Second,
+		"Context deadline should be approximately webhookProcessingTimeout from now")
+}
+
+// TestWebhook_NoViewersSkipsProcessVote verifies that votes are skipped when no viewers are watching.
+func TestWebhook_NoViewersSkipsProcessVote(t *testing.T) {
+	_, store, broadcasterID := setupWebhookTest(t)
+
+	// Create engine with the same store
+	clock := clockwork.NewRealClock()
+	cache := sentiment.NewConfigCache(10*time.Second, clock)
+	engine := sentiment.NewEngine(store, store, newTestDebouncer(), &alwaysAllowRateLimiter{}, clock, cache)
+
+	// hasViewers always returns false — no viewers connected
+	hasViewers := func(_ string) bool { return false }
+	handler := NewWebhookHandler(testWebhookSecret, engine, hasViewers)
+
+	body := makeChatMessageBody(broadcasterID, "yes")
+	req := makeSignedNotification(testWebhookSecret, body)
+	rec := httptest.NewRecorder()
+
+	handler.HTTPHandler().ServeHTTP(rec, req)
+
+	assert.Equal(t, 204, rec.Code)
+	assert.Equal(t, 0.0, store.getValue(broadcasterID), "Vote should be skipped when no viewers")
+}
+
+// TestWebhook_WithViewersProcessesVote verifies that votes are processed when viewers are watching.
+func TestWebhook_WithViewersProcessesVote(t *testing.T) {
+	handler, store, broadcasterID := setupWebhookTest(t)
+
+	// Default setupWebhookTest passes nil hasViewers (no skip check).
+	// Verify votes still work normally.
+	body := makeChatMessageBody(broadcasterID, "yes")
+	req := makeSignedNotification(testWebhookSecret, body)
+	rec := httptest.NewRecorder()
+
+	handler.HTTPHandler().ServeHTTP(rec, req)
+
+	assert.Equal(t, 204, rec.Code)
+	assert.Equal(t, 10.0, store.getValue(broadcasterID), "Vote should be applied when hasViewers is nil")
 }

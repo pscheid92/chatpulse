@@ -9,7 +9,7 @@
 -- - Tokens refill at 'rate_per_minute' tokens/minute
 -- - If tokens < 1, vote is rejected (rate limited)
 --
--- KEYS[1] = rate_limit:votes:{session_uuid} (hash with 'tokens' and 'last_update')
+-- KEYS[1] = rate_limit:votes:{broadcaster_id} (hash with 'tokens' and 'last_update')
 -- ARGS: [1]=now_ms, [2]=capacity, [3]=rate_per_minute
 -- Returns: 1 if allowed (token consumed), 0 if rejected (rate limited)
 local function check_vote_rate_limit(keys, args)

@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
@@ -85,15 +84,16 @@ func TestClientWriter_ActivityResetsIdleTimer(t *testing.T) {
 
 func TestClientWriter_GracefulStop(t *testing.T) {
 	engine := &mockEngine{value: 42.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 
-	sessionUUID := uuid.New()
+	broadcasterID := testBroadcasterID
 	server, client := newTestConnPair(t)
 
-	err := broadcaster.Register(sessionUUID, server)
+	err := broadcaster.Subscribe(broadcasterID, server)
 	require.NoError(t, err)
 
-	// Read initial broadcast to confirm connection
+	// Send a sentiment update to confirm connection is working
+	sendSentimentUpdate(broadcaster, broadcasterID, 42.0, time.Now().UnixMilli())
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, _, err = client.ReadMessage()
 	require.NoError(t, err)
@@ -118,18 +118,18 @@ func TestClientWriter_GracefulStop(t *testing.T) {
 
 func TestClientWriter_StopIdempotent(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 	t.Cleanup(func() { broadcaster.Stop() })
 
-	sessionUUID := uuid.New()
+	broadcasterID := testBroadcasterID
 	server, client := newTestConnPair(t)
 	t.Cleanup(func() { client.Close() })
 
-	err := broadcaster.Register(sessionUUID, server)
+	err := broadcaster.Subscribe(broadcasterID, server)
 	require.NoError(t, err)
 
 	// Get the clientWriter
-	clients := broadcaster.activeClients[sessionUUID]
+	clients := broadcaster.activeClients[broadcasterID]
 	require.Len(t, clients, 1)
 	var cw *clientWriter
 	for _, writer := range clients {
@@ -146,18 +146,18 @@ func TestClientWriter_StopIdempotent(t *testing.T) {
 
 func TestClientWriter_ConcurrentStop(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 	t.Cleanup(func() { broadcaster.Stop() })
 
-	sessionUUID := uuid.New()
+	broadcasterID := testBroadcasterID
 	server, client := newTestConnPair(t)
 	t.Cleanup(func() { client.Close() })
 
-	err := broadcaster.Register(sessionUUID, server)
+	err := broadcaster.Subscribe(broadcasterID, server)
 	require.NoError(t, err)
 
 	// Get the clientWriter
-	clients := broadcaster.activeClients[sessionUUID]
+	clients := broadcaster.activeClients[broadcasterID]
 	require.Len(t, clients, 1)
 	var cw *clientWriter
 	for _, writer := range clients {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -19,8 +18,8 @@ func NewDebouncer(rdb *goredis.Client) *Debouncer {
 	return &Debouncer{rdb: rdb}
 }
 
-func (d *Debouncer) CheckDebounce(ctx context.Context, sid uuid.UUID, twitchUserID string) (bool, error) {
-	dk := debounceKey(sid, twitchUserID)
+func (d *Debouncer) CheckDebounce(ctx context.Context, broadcasterID string, twitchUserID string) (bool, error) {
+	dk := debounceKey(broadcasterID, twitchUserID)
 	set, err := d.rdb.SetNX(ctx, dk, "1", debounceInterval).Result()
 	if err != nil {
 		return false, fmt.Errorf("failed to check debounce: %w", err)
@@ -28,6 +27,6 @@ func (d *Debouncer) CheckDebounce(ctx context.Context, sid uuid.UUID, twitchUser
 	return set, nil
 }
 
-func debounceKey(sid uuid.UUID, twitchUserID string) string {
-	return "debounce:" + sid.String() + ":" + twitchUserID
+func debounceKey(broadcasterID string, twitchUserID string) string {
+	return "debounce:" + broadcasterID + ":" + twitchUserID
 }

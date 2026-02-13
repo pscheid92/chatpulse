@@ -120,6 +120,17 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 			WithField("twitch_user_id", result.UserID)
 	}
 
+	// Create EventSub subscription for this broadcaster.
+	// Failure must not block the OAuth flow — the subscription can be retried on next login.
+	if s.twitchService != nil {
+		if subErr := s.twitchService.Subscribe(ctx, user.ID, result.UserID); subErr != nil {
+			slog.Error("Failed to create EventSub subscription during OAuth callback",
+				"user_id", user.ID,
+				"twitch_user_id", result.UserID,
+				"error", subErr)
+		}
+	}
+
 	// Regenerate session ID after successful authentication to prevent session fixation attacks.
 	// This creates a new session with a fresh ID, invalidating any pre-auth session ID.
 	// Defense-in-depth: Even though we use HTTPS, HttpOnly, and SameSite=Lax, session

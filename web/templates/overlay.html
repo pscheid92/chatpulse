@@ -35,6 +35,7 @@
             backdrop-filter: blur(10px);
             border-radius: 40px;
             border: 2px solid rgba(255, 255, 255, 0.2);
+            transition: border-color 0.5s ease;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
             position: relative;
             overflow: hidden;
@@ -60,7 +61,8 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             border-radius: 50%;
             transform: translate(-50%, -50%);
-            transition: left 0.2s ease-out;
+            /* No CSS transition on left — position driven by requestAnimationFrame decay loop */
+            transition: opacity 0.5s ease;
             box-shadow: 0 4px 16px rgba(100, 65, 165, 0.6);
             border: 3px solid white;
         }
@@ -70,9 +72,22 @@
             animation: pulse 1.5s infinite;
         }
 
+        .bar.degraded {
+            opacity: 0.6;
+        }
+
+        .glassmorphism.degraded {
+            animation: border-pulse 2s ease-in-out infinite;
+        }
+
         @keyframes pulse {
             0%, 100% { opacity: 0.3; }
             50% { opacity: 0.7; }
+        }
+
+        @keyframes border-pulse {
+            0%, 100% { border-color: rgba(255, 255, 255, 0.2); }
+            50% { border-color: rgba(255, 200, 100, 0.5); }
         }
 
         .label {
@@ -133,10 +148,17 @@
 
     <script>
         const bar = document.getElementById('bar');
+        const glassContainer = document.querySelector('.glassmorphism');
         const statusIndicator = document.getElementById('status-indicator');
         let ws;
         let reconnectAttempts = 0;
         const maxReconnectDelay = 30000;
+
+        // Client-side decay state
+        let rawValue = 0;
+        let decaySpeed = 0;
+        let lastTimestamp = 0;
+        let animFrameId = null;
 
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -148,13 +170,32 @@
                 console.log('WebSocket connected');
                 reconnectAttempts = 0;
                 bar.classList.remove('disconnected');
+                bar.classList.remove('degraded');
+                glassContainer.classList.remove('degraded');
+                startDecayLoop();
             };
 
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    updateBar(data.value);
                     updateStatus(data.status);
+
+                    // Status-only messages (degraded/active transitions) have no value data
+                    if (data.value === undefined) return;
+
+                    // Update decay state from server
+                    if (data.decaySpeed > 0 && data.timestamp > 0) {
+                        rawValue = data.value;
+                        decaySpeed = data.decaySpeed;
+                        lastTimestamp = data.timestamp;
+                        startDecayLoop(); // Restart if stopped due to near-zero idle
+                    } else {
+                        // Backward-compatible: no decay metadata, use value directly
+                        rawValue = data.value;
+                        decaySpeed = 0;
+                        lastTimestamp = 0;
+                        updateBar(data.value);
+                    }
                 } catch (error) {
                     console.error('Failed to parse message:', error);
                 }
@@ -163,6 +204,9 @@
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
                 bar.classList.add('disconnected');
+                bar.classList.remove('degraded');
+                glassContainer.classList.remove('degraded');
+                stopDecayLoop();
                 reconnect();
             };
 
@@ -178,6 +222,37 @@
             setTimeout(connect, delay);
         }
 
+        function computeDecayedValue() {
+            if (decaySpeed <= 0 || lastTimestamp <= 0) return rawValue;
+            const nowMs = Date.now();
+            const dtSeconds = Math.max(0, (nowMs - lastTimestamp) / 1000);
+            if (dtSeconds > 3600) return 0;
+            return rawValue * Math.exp(-decaySpeed * dtSeconds);
+        }
+
+        function startDecayLoop() {
+            if (animFrameId !== null) return;
+            function tick() {
+                const decayed = computeDecayedValue();
+                updateBar(decayed);
+                // Stop animating when value is near neutral to save CPU
+                if (Math.abs(decayed) < 0.1) {
+                    updateBar(0);
+                    animFrameId = null;
+                    return;
+                }
+                animFrameId = requestAnimationFrame(tick);
+            }
+            animFrameId = requestAnimationFrame(tick);
+        }
+
+        function stopDecayLoop() {
+            if (animFrameId !== null) {
+                cancelAnimationFrame(animFrameId);
+                animFrameId = null;
+            }
+        }
+
         function updateBar(value) {
             // Map value from [-100, 100] to [0%, 100%] of the track width
             // -100 = 0% (left), 0 = 50% (center), 100 = 100% (right)
@@ -186,12 +261,24 @@
         }
 
         function updateStatus(status) {
-            if (status !== 'active') {
-                statusIndicator.classList.add('visible');
-                bar.classList.add('disconnected');
-            } else {
-                statusIndicator.classList.remove('visible');
+            if (status === 'degraded') {
+                // Degraded: dim bar, pulsing border on container, no text
                 bar.classList.remove('disconnected');
+                bar.classList.add('degraded');
+                glassContainer.classList.add('degraded');
+                statusIndicator.classList.remove('visible');
+            } else if (status === 'active') {
+                // Active: restore full opacity, remove all degraded/disconnected effects
+                bar.classList.remove('disconnected');
+                bar.classList.remove('degraded');
+                glassContainer.classList.remove('degraded');
+                statusIndicator.classList.remove('visible');
+            } else {
+                // Disconnected or unknown: show reconnecting indicator
+                bar.classList.add('disconnected');
+                bar.classList.remove('degraded');
+                glassContainer.classList.remove('degraded');
+                statusIndicator.classList.add('visible');
             }
         }
 

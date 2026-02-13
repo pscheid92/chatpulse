@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/metrics"
@@ -15,56 +14,47 @@ import (
 const voteDelta = 10.0
 
 type Engine struct {
-	sessions    domain.SessionRepository
-	sentiment   domain.SentimentStore
-	debounce    domain.Debouncer
-	rateLimiter domain.VoteRateLimiter
-	clock       clockwork.Clock
-	configCache *ConfigCache
+	configSource domain.ConfigSource
+	sentiment    domain.SentimentStore
+	debounce     domain.Debouncer
+	rateLimiter  domain.VoteRateLimiter
+	clock        clockwork.Clock
+	configCache  *ConfigCache
 }
 
-func NewEngine(sessions domain.SessionRepository, sentiment domain.SentimentStore, debounce domain.Debouncer, rateLimiter domain.VoteRateLimiter, clock clockwork.Clock, configCache *ConfigCache) *Engine {
+func NewEngine(configSource domain.ConfigSource, sentiment domain.SentimentStore, debounce domain.Debouncer, rateLimiter domain.VoteRateLimiter, clock clockwork.Clock, configCache *ConfigCache) *Engine {
 	return &Engine{
-		sessions:    sessions,
-		sentiment:   sentiment,
-		debounce:    debounce,
-		rateLimiter: rateLimiter,
-		clock:       clock,
-		configCache: configCache,
+		configSource: configSource,
+		sentiment:    sentiment,
+		debounce:     debounce,
+		rateLimiter:  rateLimiter,
+		clock:        clock,
+		configCache:  configCache,
 	}
 }
 
-func (e *Engine) GetCurrentValue(ctx context.Context, sessionUUID uuid.UUID) (float64, error) {
-	// Try cache first
-	config, hit := e.configCache.Get(sessionUUID)
-	if !hit {
-		// Cache miss - fetch from Redis
-		metrics.ConfigCacheMisses.Inc()
-
-		fetchedConfig, err := e.sessions.GetSessionConfig(ctx, sessionUUID)
-		if err != nil {
-			return 0, fmt.Errorf("failed to get session config: %w", err)
-		}
-		if fetchedConfig == nil {
-			return 0, nil
-		}
-
-		// Cache the fetched config
-		e.configCache.Set(sessionUUID, *fetchedConfig)
-		config = fetchedConfig
-	} else {
-		metrics.ConfigCacheHits.Inc()
-	}
-
-	nowMs := e.clock.Now().UnixMilli()
-	value, err := e.sentiment.GetSentiment(ctx, sessionUUID, config.DecaySpeed, nowMs)
+func (e *Engine) GetBroadcastData(ctx context.Context, broadcasterID string) (*domain.BroadcastData, error) {
+	config, err := e.getConfig(ctx, broadcasterID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get sentiment: %w", err)
+		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
-	return value, nil
+	if config == nil {
+		return nil, nil
+	}
+
+	value, lastUpdateMs, err := e.sentiment.GetRawSentiment(ctx, broadcasterID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get raw sentiment: %w", err)
+	}
+
+	return &domain.BroadcastData{
+		Value:      value,
+		DecaySpeed: config.DecaySpeed,
+		Timestamp:  lastUpdateMs,
+	}, nil
 }
 
-func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (float64, bool) {
+func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (float64, domain.VoteResult, error) {
 	// Track vote processing duration
 	start := e.clock.Now()
 	defer func() {
@@ -72,22 +62,21 @@ func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUser
 		metrics.VoteProcessingDuration.Observe(duration)
 	}()
 
-	sessionUUID, found, err := e.sessions.GetSessionByBroadcaster(ctx, broadcasterUserID)
-	if err != nil || !found {
-		metrics.VoteProcessingTotal.WithLabelValues("no_session").Inc()
-		return 0, false
+	// Get config by broadcaster_id (cache + fallback to session hash)
+	config, err := e.getConfig(ctx, broadcasterUserID)
+	if err != nil {
+		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteNoSession.String()).Inc()
+		return 0, domain.VoteNoSession, fmt.Errorf("config lookup failed: %w", err)
 	}
-
-	config, err := e.sessions.GetSessionConfig(ctx, sessionUUID)
-	if err != nil || config == nil {
-		metrics.VoteProcessingTotal.WithLabelValues("no_session").Inc()
-		return 0, false
+	if config == nil {
+		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteNoSession.String()).Inc()
+		return 0, domain.VoteNoSession, nil
 	}
 
 	delta := matchTrigger(messageText, config)
 	if delta == 0 {
-		metrics.VoteProcessingTotal.WithLabelValues("invalid").Inc()
-		return 0, false
+		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteNoMatch.String()).Inc()
+		return 0, domain.VoteNoMatch, nil
 	}
 
 	// Track trigger matches by type
@@ -98,49 +87,67 @@ func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUser
 	}
 
 	// Check per-user debounce (prevents individual user spam)
-	allowed, err := e.debounce.CheckDebounce(ctx, sessionUUID, chatterUserID)
+	allowed, err := e.debounce.CheckDebounce(ctx, broadcasterUserID, chatterUserID)
 	if err != nil || !allowed {
-		metrics.VoteProcessingTotal.WithLabelValues("debounced").Inc()
-		return 0, false
+		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteDebounced.String()).Inc()
+		return 0, domain.VoteDebounced, nil
 	}
 
-	// Check per-session rate limit (prevents coordinated bot attacks)
-	rateLimitAllowed, err := e.rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+	// Check per-broadcaster rate limit (prevents coordinated bot attacks)
+	rateLimitAllowed, err := e.rateLimiter.CheckVoteRateLimit(ctx, broadcasterUserID)
 	if err != nil {
 		// Fail open: allow vote if rate limiter fails (availability over strict enforcement)
 		slog.Error("Rate limit check failed, allowing vote", "error", err)
 		rateLimitAllowed = true
 	}
 	if !rateLimitAllowed {
-		slog.Debug("Vote rate limited", "session_uuid", sessionUUID.String())
-		metrics.VoteProcessingTotal.WithLabelValues("rate_limited").Inc()
-		return 0, false
+		slog.Debug("Vote rate limited", "broadcaster_id", broadcasterUserID)
+		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteRateLimited.String()).Inc()
+		return 0, domain.VoteRateLimited, nil
 	}
 
 	nowMs := e.clock.Now().UnixMilli()
-	newValue, err := e.sentiment.ApplyVote(ctx, sessionUUID, delta, config.DecaySpeed, nowMs)
+	newValue, err := e.sentiment.ApplyVote(ctx, broadcasterUserID, delta, config.DecaySpeed, nowMs)
 	if err != nil {
 		slog.Error("ApplyVote error", "error", err)
-		metrics.VoteProcessingTotal.WithLabelValues("error").Inc()
-		return 0, false
+		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteError.String()).Inc()
+		return 0, domain.VoteError, fmt.Errorf("apply vote failed: %w", err)
 	}
 
-	metrics.VoteProcessingTotal.WithLabelValues("applied").Inc()
-	return newValue, true
+	metrics.VoteProcessingTotal.WithLabelValues(domain.VoteApplied.String()).Inc()
+	return newValue, domain.VoteApplied, nil
 }
 
-func (e *Engine) ResetSentiment(ctx context.Context, sessionUUID uuid.UUID) error {
-	if err := e.sentiment.ResetSentiment(ctx, sessionUUID); err != nil {
+func (e *Engine) ResetSentiment(ctx context.Context, broadcasterID string) error {
+	if err := e.sentiment.ResetSentiment(ctx, broadcasterID); err != nil {
 		return fmt.Errorf("failed to reset sentiment: %w", err)
 	}
 	return nil
 }
 
-// InvalidateConfigCache explicitly removes a config from the cache.
-// This should be called when a config is updated to ensure the next
-// GetCurrentValue() call fetches the fresh config from Redis.
-func (e *Engine) InvalidateConfigCache(sessionUUID uuid.UUID) {
-	e.configCache.Invalidate(sessionUUID)
+// getConfig retrieves config for a broadcaster: local cache → ConfigSource (Redis → PostgreSQL).
+func (e *Engine) getConfig(ctx context.Context, broadcasterID string) (*domain.ConfigSnapshot, error) {
+	// Layer 1: local in-memory cache (10s TTL)
+	config, hit := e.configCache.Get(broadcasterID)
+	if hit {
+		metrics.ConfigCacheHits.Inc()
+		return config, nil
+	}
+
+	// Layer 2+3: ConfigSource handles Redis cache → PostgreSQL fallback
+	metrics.ConfigCacheMisses.Inc()
+
+	fetchedConfig, err := e.configSource.GetConfigByBroadcaster(ctx, broadcasterID)
+	if err != nil {
+		return nil, fmt.Errorf("config lookup failed: %w", err)
+	}
+	if fetchedConfig == nil {
+		return nil, nil
+	}
+
+	// Populate local cache
+	e.configCache.Set(broadcasterID, *fetchedConfig)
+	return fetchedConfig, nil
 }
 
 func matchTrigger(messageText string, config *domain.ConfigSnapshot) float64 {

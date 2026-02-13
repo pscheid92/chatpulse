@@ -21,16 +21,13 @@ import (
 // --- Mock implementations ---
 
 type mockAppService struct {
-	getUserByIDFn         func(ctx context.Context, userID uuid.UUID) (*domain.User, error)
-	getUserByOverlayFn    func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error)
-	getConfigFn           func(ctx context.Context, userID uuid.UUID) (*domain.Config, error)
-	upsertUserFn          func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error)
-	ensureSessionActiveFn func(ctx context.Context, overlayUUID uuid.UUID) error
-	incrRefCountFn        func(ctx context.Context, sessionUUID uuid.UUID) error
-	onSessionEmptyFn      func(ctx context.Context, sessionUUID uuid.UUID)
-	resetSentimentFn      func(ctx context.Context, overlayUUID uuid.UUID) error
-	saveConfigFn          func(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, overlayUUID uuid.UUID) error
-	rotateOverlayUUIDFn   func(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
+	getUserByIDFn       func(ctx context.Context, userID uuid.UUID) (*domain.User, error)
+	getUserByOverlayFn  func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error)
+	getConfigFn         func(ctx context.Context, userID uuid.UUID) (*domain.Config, error)
+	upsertUserFn        func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error)
+	resetSentimentFn    func(ctx context.Context, overlayUUID uuid.UUID) error
+	saveConfigFn        func(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, broadcasterID string) error
+	rotateOverlayUUIDFn func(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
 }
 
 func (m *mockAppService) GetUserByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
@@ -64,26 +61,6 @@ func (m *mockAppService) UpsertUser(ctx context.Context, twitchUserID, twitchUse
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAppService) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID) error {
-	if m.ensureSessionActiveFn != nil {
-		return m.ensureSessionActiveFn(ctx, overlayUUID)
-	}
-	return nil
-}
-
-func (m *mockAppService) IncrRefCount(ctx context.Context, sessionUUID uuid.UUID) error {
-	if m.incrRefCountFn != nil {
-		return m.incrRefCountFn(ctx, sessionUUID)
-	}
-	return nil
-}
-
-func (m *mockAppService) OnSessionEmpty(ctx context.Context, sessionUUID uuid.UUID) {
-	if m.onSessionEmptyFn != nil {
-		m.onSessionEmptyFn(ctx, sessionUUID)
-	}
-}
-
 func (m *mockAppService) ResetSentiment(ctx context.Context, overlayUUID uuid.UUID) error {
 	if m.resetSentimentFn != nil {
 		return m.resetSentimentFn(ctx, overlayUUID)
@@ -91,9 +68,9 @@ func (m *mockAppService) ResetSentiment(ctx context.Context, overlayUUID uuid.UU
 	return nil
 }
 
-func (m *mockAppService) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, overlayUUID uuid.UUID) error {
+func (m *mockAppService) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, broadcasterID string) error {
 	if m.saveConfigFn != nil {
-		return m.saveConfigFn(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, overlayUUID)
+		return m.saveConfigFn(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, broadcasterID)
 	}
 	return nil
 }
@@ -103,6 +80,25 @@ func (m *mockAppService) RotateOverlayUUID(ctx context.Context, userID uuid.UUID
 		return m.rotateOverlayUUIDFn(ctx, userID)
 	}
 	return uuid.New(), nil
+}
+
+type mockTwitchService struct {
+	subscribeFn   func(ctx context.Context, userID uuid.UUID, broadcasterUserID string) error
+	unsubscribeFn func(ctx context.Context, userID uuid.UUID) error
+}
+
+func (m *mockTwitchService) Subscribe(ctx context.Context, userID uuid.UUID, broadcasterUserID string) error {
+	if m.subscribeFn != nil {
+		return m.subscribeFn(ctx, userID, broadcasterUserID)
+	}
+	return nil
+}
+
+func (m *mockTwitchService) Unsubscribe(ctx context.Context, userID uuid.UUID) error {
+	if m.unsubscribeFn != nil {
+		return m.unsubscribeFn(ctx, userID)
+	}
+	return nil
 }
 
 type mockOAuthClient struct {
@@ -156,6 +152,12 @@ func newTestServer(t *testing.T, app domain.AppService, opts ...func(*Server)) *
 func withOAuthClient(oauth twitchOAuthClient) func(*Server) {
 	return func(s *Server) {
 		s.oauthClient = oauth
+	}
+}
+
+func withTwitchService(ts domain.TwitchService) func(*Server) {
+	return func(s *Server) {
+		s.twitchService = ts
 	}
 }
 

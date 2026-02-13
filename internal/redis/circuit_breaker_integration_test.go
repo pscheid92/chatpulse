@@ -234,7 +234,7 @@ func TestCircuitBreakerIntegration_GracefulDegradation(t *testing.T) {
 	time.Sleep(2 * time.Second)
 }
 
-func TestCircuitBreakerIntegration_SentimentFallback(t *testing.T) {
+func TestCircuitBreakerIntegration_SentimentFailsWhenOpen(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -252,7 +252,7 @@ func TestCircuitBreakerIntegration_SentimentFallback(t *testing.T) {
 	// Flush Redis
 	require.NoError(t, client.FlushAll(ctx).Err())
 
-	// Phase 1: Create a test session
+	// Phase 1: Create a test session and verify read works
 	sessionKey := "session:test-uuid"
 	err = client.HSet(ctx, sessionKey, map[string]any{
 		"value":       "50.0",
@@ -260,13 +260,12 @@ func TestCircuitBreakerIntegration_SentimentFallback(t *testing.T) {
 	}).Err()
 	require.NoError(t, err)
 
-	// Read sentiment successfully (should be cached)
 	result, err := client.FCallRO(ctx, fnGetSentiment, []string{sessionKey}, "1.0", "123456").Text()
 	require.NoError(t, err)
 	t.Logf("Initial sentiment read: %s", result)
 
 	// Phase 2: Stop Redis
-	t.Log("Stopping Redis for sentiment fallback test...")
+	t.Log("Stopping Redis...")
 	err = dedicatedContainer.Stop(ctx, nil)
 	require.NoError(t, err)
 	time.Sleep(500 * time.Millisecond)
@@ -277,17 +276,11 @@ func TestCircuitBreakerIntegration_SentimentFallback(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Phase 4: Try to read sentiment with circuit open
-	// Should return neutral sentiment (0.0) as fallback
+	// Phase 4: Sentiment read should fail with circuit open (no fake 0.0 fallback)
 	t.Log("Testing sentiment read with circuit open...")
-	result, err = client.FCallRO(ctx, fnGetSentiment, []string{sessionKey}, "1.0", "123456").Text()
-	if err == nil {
-		// Should get neutral sentiment fallback
-		t.Logf("Sentiment fallback returned: %s", result)
-		// Note: Fallback might be "0.0" (neutral) or empty depending on cache state
-	} else {
-		t.Logf("Sentiment read failed (expected): %v", err)
-	}
+	_, err = client.FCallRO(ctx, fnGetSentiment, []string{sessionKey}, "1.0", "123456").Text()
+	assert.Error(t, err, "Sentiment read should fail when circuit is open")
+	t.Logf("Sentiment read correctly failed: %v", err)
 
 	// Phase 5: Restart Redis for cleanup
 	t.Log("Restarting Redis...")

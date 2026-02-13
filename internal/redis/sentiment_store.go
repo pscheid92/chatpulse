@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -23,8 +22,8 @@ func NewSentimentStore(rdb *goredis.Client) *SentimentStore {
 	return &SentimentStore{rdb: rdb}
 }
 
-func (s *SentimentStore) ApplyVote(ctx context.Context, sid uuid.UUID, delta, decayRate float64, nowMs int64) (float64, error) {
-	sk := sessionKey(sid)
+func (s *SentimentStore) ApplyVote(ctx context.Context, broadcasterID string, delta, decayRate float64, nowMs int64) (float64, error) {
+	sk := sentimentKey(broadcasterID)
 	keys := []string{sk}
 
 	deltaArg := strconv.FormatFloat(delta, 'f', -1, 64)
@@ -43,8 +42,8 @@ func (s *SentimentStore) ApplyVote(ctx context.Context, sid uuid.UUID, delta, de
 	return value, nil
 }
 
-func (s *SentimentStore) GetSentiment(ctx context.Context, sid uuid.UUID, decayRate float64, nowMs int64) (float64, error) {
-	sk := sessionKey(sid)
+func (s *SentimentStore) GetSentiment(ctx context.Context, broadcasterID string, decayRate float64, nowMs int64) (float64, error) {
+	sk := sentimentKey(broadcasterID)
 	keys := []string{sk}
 
 	decayRateArg := strconv.FormatFloat(decayRate, 'f', -1, 64)
@@ -62,10 +61,40 @@ func (s *SentimentStore) GetSentiment(ctx context.Context, sid uuid.UUID, decayR
 	return value, nil
 }
 
-func (s *SentimentStore) ResetSentiment(ctx context.Context, sid uuid.UUID) error {
-	sk := sessionKey(sid)
-	if err := s.rdb.HSet(ctx, sk, fieldValue, "0").Err(); err != nil {
+func (s *SentimentStore) GetRawSentiment(ctx context.Context, broadcasterID string) (float64, int64, error) {
+	sk := sentimentKey(broadcasterID)
+	vals, err := s.rdb.HMGet(ctx, sk, "value", "last_update").Result()
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get raw sentiment: %w", err)
+	}
+
+	var value float64
+	var lastUpdate int64
+
+	if vals[0] != nil {
+		value, err = strconv.ParseFloat(vals[0].(string), 64)
+		if err != nil {
+			value = 0 // graceful degradation for corrupt data
+		}
+	}
+	if vals[1] != nil {
+		lastUpdate, err = strconv.ParseInt(vals[1].(string), 10, 64)
+		if err != nil {
+			lastUpdate = 0
+		}
+	}
+
+	return value, lastUpdate, nil
+}
+
+func (s *SentimentStore) ResetSentiment(ctx context.Context, broadcasterID string) error {
+	sk := sentimentKey(broadcasterID)
+	if err := s.rdb.Del(ctx, sk).Err(); err != nil {
 		return fmt.Errorf("failed to reset sentiment: %w", err)
 	}
 	return nil
+}
+
+func sentimentKey(broadcasterID string) string {
+	return "sentiment:" + broadcasterID
 }

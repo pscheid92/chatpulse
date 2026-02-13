@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,25 +53,13 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// mockEngine is a simple mock for domain.Engine that tracks invalidations.
-type mockEngine struct {
-	invalidations []uuid.UUID
+// mockInvalidator tracks config cache invalidation calls.
+type mockInvalidator struct {
+	invalidations []string
 }
 
-func (m *mockEngine) GetCurrentValue(ctx context.Context, sessionUUID uuid.UUID) (float64, error) {
-	return 0.0, nil
-}
-
-func (m *mockEngine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (float64, bool) {
-	return 0.0, true
-}
-
-func (m *mockEngine) ResetSentiment(ctx context.Context, sessionUUID uuid.UUID) error {
-	return nil
-}
-
-func (m *mockEngine) InvalidateConfigCache(overlayUUID uuid.UUID) {
-	m.invalidations = append(m.invalidations, overlayUUID)
+func (m *mockInvalidator) invalidate(broadcasterID string) {
+	m.invalidations = append(m.invalidations, broadcasterID)
 }
 
 func TestInstanceRegistry_RegisterAndGetActive(t *testing.T) {
@@ -181,30 +168,30 @@ func TestInstanceRegistry_Unregister(t *testing.T) {
 }
 
 func TestConfigInvalidator_HandleInvalidation(t *testing.T) {
-	engine := &mockEngine{invalidations: []uuid.UUID{}}
+	mock := &mockInvalidator{invalidations: []string{}}
 	redisClient := redis.NewClient(&redis.Options{})
-	invalidator := NewConfigInvalidator(redisClient, engine)
+	invalidator := NewConfigInvalidator(redisClient, mock.invalidate)
 
-	overlayUUID := uuid.New()
+	broadcasterID := "broadcaster-123"
 
-	// Process valid UUID
-	invalidator.handleInvalidation(overlayUUID.String())
+	// Process valid broadcaster ID
+	invalidator.handleInvalidation(broadcasterID)
 
-	// Verify engine was called
-	assert.Len(t, engine.invalidations, 1)
-	assert.Equal(t, overlayUUID, engine.invalidations[0])
+	// Verify invalidation was called
+	assert.Len(t, mock.invalidations, 1)
+	assert.Equal(t, broadcasterID, mock.invalidations[0])
 }
 
-func TestConfigInvalidator_InvalidPayload(t *testing.T) {
-	engine := &mockEngine{invalidations: []uuid.UUID{}}
+func TestConfigInvalidator_EmptyPayload(t *testing.T) {
+	mock := &mockInvalidator{invalidations: []string{}}
 	redisClient := redis.NewClient(&redis.Options{})
-	invalidator := NewConfigInvalidator(redisClient, engine)
+	invalidator := NewConfigInvalidator(redisClient, mock.invalidate)
 
-	// Process invalid UUID
-	invalidator.handleInvalidation("not-a-uuid")
+	// Process empty payload
+	invalidator.handleInvalidation("")
 
-	// Engine should not be called
-	assert.Len(t, engine.invalidations, 0)
+	// Invalidation should not be called for empty payload
+	assert.Len(t, mock.invalidations, 0)
 }
 
 func TestPublishConfigInvalidation(t *testing.T) {
@@ -215,10 +202,8 @@ func TestPublishConfigInvalidation(t *testing.T) {
 	ctx := context.Background()
 	redisClient := setupTestRedis(t)
 
-	overlayUUID := uuid.New()
-
 	// Publish should succeed
-	err := PublishConfigInvalidation(ctx, redisClient, overlayUUID)
+	err := PublishConfigInvalidation(ctx, redisClient, "broadcaster-123")
 	assert.NoError(t, err)
 }
 

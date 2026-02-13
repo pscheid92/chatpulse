@@ -256,12 +256,12 @@ Database connection returns bare `*pgxpool.Pool`. Repositories accept pool direc
 - Active session state cached for performance
 - Config snapshot stored with version field
 
-**Eventual Consistency via Reconciler**
-- Background reconciler detects drift every 5 minutes
-- Auto-fixes stale Redis config by comparing versions
-- Alert fires on drift detection (`config_drift_detected_total` metric)
+**Eventual Consistency via Read-Through Cache + Pub/Sub**
+- Read-through cache (Redis → PostgreSQL) with TTL handles staleness automatically
+- Config saves publish invalidation via Redis pub/sub to all instances
+- Each instance evicts local in-memory cache + Redis cache on invalidation
 
-**Failure modes:** PostgreSQL update succeeds but Redis update fails → reconciler fixes within 5 minutes. Manual DB updates → reconciler detects and propagates within 5 minutes.
+**Failure modes:** PostgreSQL update succeeds but Redis invalidation fails → TTL expiry fixes within 1 hour. Pub/sub message lost → each instance's local cache expires within 10 seconds.
 
 See `docs/architecture/config-consistency.md` for detailed consistency guarantees.
 

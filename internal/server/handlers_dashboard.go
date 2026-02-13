@@ -136,10 +136,10 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 		return apperrors.InternalError("failed to get user", err).WithField("user_id", userID.String())
 	}
 
-	if err := s.app.SaveConfig(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, user.OverlayUUID); err != nil {
+	if err := s.app.SaveConfig(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, user.TwitchUserID); err != nil {
 		return apperrors.InternalError("failed to save config", err).
 			WithField("user_id", userID.String()).
-			WithField("overlay_uuid", user.OverlayUUID.String())
+			WithField("broadcaster_id", user.TwitchUserID)
 	}
 
 	if err := c.Redirect(302, "/dashboard"); err != nil {

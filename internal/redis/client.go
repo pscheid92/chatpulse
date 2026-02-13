@@ -19,7 +19,7 @@ var voteRateLimitLibrary string
 // LibraryVersion is the current version of the chatpulse Lua library.
 // Must match LIBRARY_VERSION in chatpulse.lua.
 // Increment on breaking changes to function signatures or behavior.
-const LibraryVersion = "2"
+const LibraryVersion = "3"
 
 // NewClient creates a Redis client and loads the chatpulse Lua function library.
 // The client is wrapped with a circuit breaker hook for graceful degradation

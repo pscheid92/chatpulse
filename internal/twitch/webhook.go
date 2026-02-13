@@ -9,6 +9,7 @@ import (
 	"github.com/Its-donkey/kappopher/helix"
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/metrics"
 )
 
 const (
@@ -16,6 +17,10 @@ const (
 	// Messages older than this are rejected to prevent replay attacks with expired messages.
 	// Reference: https://dev.twitch.tv/docs/eventsub/handling-webhook-events/
 	timestampFreshnessWindow = 10 * time.Minute
+
+	// webhookProcessingTimeout is the maximum time allowed for ProcessVote.
+	// Twitch has a 10-second webhook delivery timeout; 5 seconds gives comfortable margin.
+	webhookProcessingTimeout = 5 * time.Second
 )
 
 // WebhookHandler handles Twitch EventSub webhook notifications.
@@ -42,7 +47,7 @@ type WebhookHandler struct {
 //
 // See webhook_test.go for comprehensive security test coverage including:
 // invalid signatures, missing headers, malformed signatures, tampering attacks, and replay attempts.
-func NewWebhookHandler(secret string, engine domain.Engine) *WebhookHandler {
+func NewWebhookHandler(secret string, engine domain.Engine, hasViewers func(string) bool) *WebhookHandler {
 	handler := helix.NewEventSubWebhookHandler(
 		helix.WithWebhookSecret(secret),
 		helix.WithNotificationHandler(func(msg *helix.EventSubWebhookMessage) {
@@ -66,9 +71,32 @@ func NewWebhookHandler(secret string, engine domain.Engine) *WebhookHandler {
 				return
 			}
 
-			ctx := context.Background()
-			newValue, applied := engine.ProcessVote(ctx, event.BroadcasterUserID, event.ChatterUserID, event.Message.Text)
-			if applied {
+			// Skip vote processing if no viewers are watching this broadcaster.
+			// No point applying a vote that nobody will see.
+			if hasViewers != nil && !hasViewers(event.BroadcasterUserID) {
+				slog.Debug("Skipping vote: no viewers", "broadcaster", event.BroadcasterUserID)
+				metrics.VoteProcessingTotal.WithLabelValues("no_viewers").Inc()
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), webhookProcessingTimeout)
+			defer cancel()
+			newValue, result, err := engine.ProcessVote(ctx, event.BroadcasterUserID, event.ChatterUserID, event.Message.Text)
+			if ctx.Err() == context.DeadlineExceeded {
+				slog.Warn("ProcessVote timed out",
+					"broadcaster", event.BroadcasterUserID,
+					"timeout", webhookProcessingTimeout)
+				metrics.VoteProcessingTotal.WithLabelValues("timeout").Inc()
+				return
+			}
+			if err != nil {
+				slog.Error("ProcessVote failed",
+					"broadcaster", event.BroadcasterUserID,
+					"result", result.String(),
+					"error", err)
+				return
+			}
+			if result == domain.VoteApplied {
 				slog.Info("Vote processed via webhook", "user", event.ChatterUserID, "value", newValue)
 			}
 		}),

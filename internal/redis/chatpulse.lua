@@ -1,6 +1,6 @@
 #!lua name=chatpulse
 
-local LIBRARY_VERSION = "2"
+local LIBRARY_VERSION = "3"
 
 -- Helper: Validate and clamp numeric value with bounds checking
 local function validate_number(value, default, min, max, name)
@@ -21,8 +21,9 @@ local function validate_number(value, default, min, max, name)
 end
 
 -- apply_vote_v2: Atomically apply time-decayed vote with full input validation
--- KEYS[1] = session hash key, ARGS: [1]=delta, [2]=decay_rate, [3]=now_ms
+-- KEYS[1] = sentiment:{broadcaster_id} hash key, ARGS: [1]=delta, [2]=decay_rate, [3]=now_ms
 -- Returns: {value_str, version, status}
+-- Side effects: refreshes 10-min TTL, publishes change to sentiment:changes channel
 local function apply_vote_v2(keys, args)
     local delta = validate_number(args[1], 0, -100, 100, "delta")
     local decay_rate = validate_number(args[2], 1.0, 0.1, 10.0, "decay_rate")
@@ -35,12 +36,18 @@ local function apply_vote_v2(keys, args)
     value = value + delta
     if value < -100 then value = -100 elseif value > 100 then value = 100 end
     redis.call('HSET', keys[1], 'value', tostring(value), 'last_update', tostring(now_ms))
-    -- Refresh TTL on every vote (active session)
-    redis.call('EXPIRE', keys[1], 86400)  -- 24 hours in seconds
+    -- Refresh TTL on every vote (10 minutes for TTL-based sentiment keys)
+    redis.call('EXPIRE', keys[1], 600)
+    -- Extract broadcaster_id from key format "sentiment:{broadcaster_id}"
+    local broadcaster_id = string.match(keys[1], "^sentiment:(.+)$") or keys[1]
+    -- Publish change notification with JSON payload
+    local payload = string.format('{"broadcaster_id":"%s","value":%s,"timestamp":%s}', broadcaster_id, tostring(value), tostring(now_ms))
+    redis.call('PUBLISH', 'sentiment:changes', payload)
     return {tostring(value), LIBRARY_VERSION, "ok"}
 end
 
 -- get_decayed_value_v2: Read time-decayed value with full input validation
+-- KEYS[1] = sentiment:{broadcaster_id} hash key, ARGS: [1]=decay_rate, [2]=now_ms
 -- Returns: {value_str, version, status}
 local function get_decayed_value_v2(keys, args)
     local decay_rate = validate_number(args[1], 1.0, 0.1, 10.0, "decay_rate")

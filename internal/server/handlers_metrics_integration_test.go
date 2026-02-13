@@ -203,7 +203,7 @@ func TestMetricTypes(t *testing.T) {
 	// Generate metrics of different types
 	metrics.RedisOpsTotal.WithLabelValues("test", "success").Inc() // Counter
 	metrics.BroadcasterActiveSessions.Set(10)                      // Gauge
-	metrics.BroadcasterTickDuration.Observe(0.05)                  // Histogram
+	metrics.PubSubMessageLatency.Observe(0.001)                    // Histogram
 
 	// Create test server
 	srv := newTestServer(t, &mockAppService{})
@@ -220,7 +220,7 @@ func TestMetricTypes(t *testing.T) {
 		"counter metrics should be declared as counter")
 	assert.Contains(t, body, "# TYPE broadcaster_active_sessions gauge",
 		"gauge metrics should be declared as gauge")
-	assert.Contains(t, body, "# TYPE broadcaster_tick_duration_seconds histogram",
+	assert.Contains(t, body, "# TYPE pubsub_message_latency_seconds histogram",
 		"histogram metrics should be declared as histogram")
 }
 

@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/app"
 	"github.com/pscheid92/chatpulse/internal/broadcast"
@@ -37,7 +36,7 @@ type webhookResult struct {
 	webhookHandler  *twitch.WebhookHandler
 }
 
-func initWebhooks(cfg *config.Config, engine domain.Engine, eventSubRepo domain.EventSubRepository) (webhookResult, error) {
+func initWebhooks(cfg *config.Config, engine domain.Engine, eventSubRepo domain.EventSubRepository, hasViewers func(string) bool) (webhookResult, error) {
 	eventsubManager, err := twitch.NewEventSubManager(cfg.TwitchClientID, cfg.TwitchClientSecret, eventSubRepo, cfg.WebhookCallbackURL, cfg.WebhookSecret, cfg.BotUserID)
 	if err != nil {
 		return webhookResult{}, fmt.Errorf("failed to create EventSub manager: %w", err)
@@ -49,7 +48,7 @@ func initWebhooks(cfg *config.Config, engine domain.Engine, eventSubRepo domain.
 		return webhookResult{}, fmt.Errorf("failed to setup webhook conduit: %w", err)
 	}
 
-	webhookHandler := twitch.NewWebhookHandler(cfg.WebhookSecret, engine)
+	webhookHandler := twitch.NewWebhookHandler(cfg.WebhookSecret, engine, hasViewers)
 
 	return webhookResult{
 		eventsubManager: eventsubManager,
@@ -57,7 +56,7 @@ func initWebhooks(cfg *config.Config, engine domain.Engine, eventSubRepo domain.
 	}, nil
 }
 
-func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *broadcast.Broadcaster, conduitMgr *twitch.EventSubManager, reconciler *app.ConfigReconciler) <-chan struct{} {
+func runGracefulShutdown(srv *server.Server, broadcaster *broadcast.Broadcaster, conduitMgr *twitch.EventSubManager) <-chan struct{} {
 	done := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -72,9 +71,7 @@ func runGracefulShutdown(srv *server.Server, appSvc *app.Service, broadcaster *b
 			slog.Error("Server shutdown error", "error", err)
 		}
 
-		appSvc.Stop()
 		broadcaster.Stop()
-		reconciler.Stop()
 
 		if conduitMgr != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -205,8 +202,6 @@ func main() {
 	stopEviction := configCache.StartEvictionTimer(1 * time.Minute)
 	defer stopEviction()
 
-	engine := sentiment.NewEngine(store, sentimentStore, debouncer, voteRateLimiter, clock, configCache)
-
 	// Start instance registry (heartbeat every 30s)
 	instanceID := fmt.Sprintf("%s-%d", func() string {
 		hostname, err := os.Hostname()
@@ -222,15 +217,6 @@ func main() {
 		registry.Start(registryCtx)
 	}()
 	slog.Info("Instance registry started", "instance_id", instanceID)
-
-	// Start config invalidation subscriber
-	configInvalidator := coordination.NewConfigInvalidator(redisClient, engine)
-	pubsubCtx, cancelPubsub := context.WithCancel(context.Background())
-	defer cancelPubsub()
-	go func() {
-		configInvalidator.Start(pubsubCtx)
-	}()
-	slog.Info("Config invalidation subscriber started")
 
 	// Update registry size metric periodically
 	go func() {
@@ -264,12 +250,41 @@ func main() {
 	configRepo := database.NewConfigRepo(pool)
 	eventSubRepo := database.NewEventSubRepo(pool)
 
+	configCacheRepo := redis.NewConfigCacheRepo(redisClient, configRepo)
+	engine := sentiment.NewEngine(configCacheRepo, sentimentStore, debouncer, voteRateLimiter, clock, configCache)
+
+	// Start config invalidation subscriber
+	// On pub/sub message: evict local in-memory cache + DEL Redis config cache key
+	configInvalidator := coordination.NewConfigInvalidator(redisClient, func(broadcasterID string) {
+		configCache.Invalidate(broadcasterID)
+		if err := configCacheRepo.InvalidateCache(context.Background(), broadcasterID); err != nil {
+			slog.Warn("Failed to invalidate Redis config cache via pub/sub",
+				"broadcaster_id", broadcasterID, "error", err)
+		}
+	})
+	pubsubCtx, cancelPubsub := context.WithCancel(context.Background())
+	defer cancelPubsub()
+	go func() {
+		configInvalidator.Start(pubsubCtx)
+	}()
+	slog.Info("Config invalidation subscriber started")
+
 	// Set up webhooks if configured (all three env vars required together)
+	// Lazy reference: broadcaster is created after webhooks, but the closure
+	// won't be called until the server starts receiving EventSub notifications.
+	var broadcasterRef *broadcast.Broadcaster
+	hasViewers := func(broadcasterID string) bool {
+		if broadcasterRef == nil {
+			return true // fail-open during startup
+		}
+		return broadcasterRef.HasClients(broadcasterID)
+	}
+
 	var twitchSvc domain.TwitchService
 	var eventsubMgr *twitch.EventSubManager
 	var webhookHdlr *twitch.WebhookHandler
 	if cfg.WebhookCallbackURL != "" {
-		wh, err := initWebhooks(cfg, engine, eventSubRepo)
+		wh, err := initWebhooks(cfg, engine, eventSubRepo, hasViewers)
 		if err != nil {
 			// EventSub setup failed - continue without webhooks (graceful degradation)
 			slog.Warn("EventSub setup failed, continuing without webhooks",
@@ -286,19 +301,10 @@ func main() {
 		slog.Info("EventSub disabled (WEBHOOK_CALLBACK_URL not set)")
 	}
 
-	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, clock, redisClient, 30*time.Second, 30*time.Second)
+	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, configCacheRepo, clock, redisClient)
 
-	// Start config reconciler (checks for drift every 5 minutes)
-	reconciler := app.NewConfigReconciler(configRepo, store, userRepo, clock)
-	go reconciler.Start(context.Background())
-
-	onFirstClient := func(ctx context.Context, sessionUUID uuid.UUID) {
-		if err := appSvc.IncrRefCount(ctx, sessionUUID); err != nil {
-			slog.Error("Failed to increment ref count", "session_uuid", sessionUUID.String(), "error", err)
-		}
-	}
-	onSessionEmpty := func(ctx context.Context, sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(ctx, sessionUUID) }
-	broadcaster := broadcast.NewBroadcaster(engine, onFirstClient, onSessionEmpty, clock, 50, 50*time.Millisecond)
+	broadcaster := broadcast.NewBroadcaster(engine, redisClient, clock, 50, 5*time.Second)
+	broadcasterRef = broadcaster // resolve lazy reference for webhook hasViewers check
 
 	// Create and start the HTTP server (pass nil explicitly to avoid typed-nil interface)
 	var (
@@ -306,16 +312,16 @@ func main() {
 		srvErr error
 	)
 	if webhookHdlr != nil {
-		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, webhookHdlr, pool, redisClient)
+		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, webhookHdlr, twitchSvc, pool, redisClient)
 	} else {
-		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, nil, pool, redisClient)
+		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, nil, nil, pool, redisClient)
 	}
 	if srvErr != nil {
 		slog.Error("Failed to create server", "error", srvErr)
 		os.Exit(1)
 	}
 
-	done := runGracefulShutdown(srv, appSvc, broadcaster, eventsubMgr, reconciler)
+	done := runGracefulShutdown(srv, broadcaster, eventsubMgr)
 
 	slog.Info("Server starting", "port", cfg.Port)
 	if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {

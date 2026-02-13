@@ -24,9 +24,10 @@ func TestMetricsRegistration(t *testing.T) {
 		// Broadcaster metrics
 		BroadcasterActiveSessions,
 		BroadcasterConnectedClients,
-		BroadcasterTickDuration,
 		BroadcasterSlowClientsEvicted,
-		BroadcasterBroadcastDuration,
+		PubSubMessageLatency,
+		PubSubReconnectionsTotal,
+		PubSubSubscriptionActive,
 
 		// WebSocket metrics
 		WebSocketConnectionsCurrent,
@@ -211,9 +212,9 @@ func TestHistogramBuckets(t *testing.T) {
 			expectedBounds: []float64{0.001, 0.005, 0.01, 0.025, 0.05},
 		},
 		{
-			name:           "broadcaster tick duration buckets",
-			histogram:      nil, // BroadcasterTickDuration is Histogram not HistogramVec
-			expectedBounds: []float64{0.001, 0.005, 0.01, 0.025, 0.05},
+			name:           "pubsub message latency buckets",
+			histogram:      nil, // PubSubMessageLatency is Histogram not HistogramVec
+			expectedBounds: []float64{0.0001, 0.0005, 0.001, 0.005, 0.01},
 		},
 		{
 			name:           "websocket message send duration buckets",
@@ -259,13 +260,14 @@ func TestLabelCardinality(t *testing.T) {
 			metric: VoteProcessingTotal,
 			labels: []prometheus.Labels{
 				{"result": "applied"},
-				{"result": "debounced"},
-				{"result": "invalid"},
 				{"result": "no_session"},
+				{"result": "no_match"},
+				{"result": "debounced"},
+				{"result": "rate_limited"},
 				{"result": "error"},
 			},
-			maxCardinality: 10, // Only 5 possible values
-			expectUnique:   5,
+			maxCardinality: 10, // Only 6 possible values
+			expectUnique:   6,
 		},
 	}
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -29,10 +28,10 @@ func NewVoteRateLimiter(rdb *goredis.Client, clock clockwork.Clock, capacity, ra
 	}
 }
 
-// CheckVoteRateLimit checks if a vote is allowed for the session.
+// CheckVoteRateLimit checks if a vote is allowed for the broadcaster.
 // Returns true if allowed (token consumed), false if rate limited.
-func (v *VoteRateLimiter) CheckVoteRateLimit(ctx context.Context, sessionUUID uuid.UUID) (bool, error) {
-	key := fmt.Sprintf("rate_limit:votes:%s", sessionUUID)
+func (v *VoteRateLimiter) CheckVoteRateLimit(ctx context.Context, broadcasterID string) (bool, error) {
+	key := fmt.Sprintf("rate_limit:votes:%s", broadcasterID)
 
 	result := v.rdb.FCall(ctx, "check_vote_rate_limit",
 		[]string{key},

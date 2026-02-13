@@ -2,10 +2,8 @@ package domain
 
 import (
 	"context"
-
-	"github.com/google/uuid"
 )
 
 type Debouncer interface {
-	CheckDebounce(ctx context.Context, sessionUUID uuid.UUID, twitchUserID string) (bool, error)
+	CheckDebounce(ctx context.Context, broadcasterID string, twitchUserID string) (bool, error)
 }

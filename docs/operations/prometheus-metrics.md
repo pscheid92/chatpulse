@@ -68,18 +68,27 @@ scrape_configs:
 |--------|------|--------|-------------|
 | `broadcaster_active_sessions` | Gauge | - | Number of active broadcast sessions |
 | `broadcaster_connected_clients_total` | Gauge | - | Total number of connected WebSocket clients |
-| `broadcaster_tick_duration_seconds` | Histogram | - | Broadcaster tick loop duration |
-| `broadcaster_broadcast_duration_seconds` | Histogram | - | Time to broadcast update to all clients in a session |
 | `broadcaster_slow_clients_evicted_total` | Counter | - | Slow WebSocket clients evicted due to buffer full |
+| `pubsub_messages_received_total` | Counter | `channel` | Total pub/sub messages received by channel |
+| `pubsub_message_latency_seconds` | Histogram | - | Latency from pub/sub message receive to WebSocket client send |
+| `pubsub_reconnections_total` | Counter | - | Total pub/sub reconnection attempts after disconnect |
+| `pubsub_subscription_active` | Gauge | - | 1 if pub/sub subscription is active, 0 if disconnected |
 
 **Alert Examples**:
 ```yaml
-# Slow broadcast tick
-- alert: SlowBroadcasterTick
-  expr: histogram_quantile(0.99, rate(broadcaster_tick_duration_seconds_bucket[5m])) > 0.1
+# High pub/sub latency
+- alert: HighPubSubLatency
+  expr: histogram_quantile(0.99, rate(pubsub_message_latency_seconds_bucket[5m])) > 0.05
   for: 5m
   annotations:
-    summary: "Broadcaster tick latency > 100ms (target: 50ms)"
+    summary: "99th percentile pub/sub to WebSocket latency > 50ms"
+
+# Pub/sub subscription down
+- alert: PubSubSubscriptionDown
+  expr: pubsub_subscription_active == 0
+  for: 30s
+  annotations:
+    summary: "Redis pub/sub subscription is disconnected"
 
 # Client evictions
 - alert: ClientEvictions
@@ -196,7 +205,6 @@ scrape_configs:
 | `config_cache_misses_total` | Counter | - | Config cache misses |
 | `config_cache_entries` | Gauge | - | Current number of config cache entries |
 | `config_cache_evictions_total` | Counter | - | Config cache evictions due to TTL expiry |
-| `cleanup_unsubscribe_errors_total` | Counter | - | Background Twitch unsubscribe failures during cleanup |
 
 **Alert Examples**:
 ```yaml
@@ -228,11 +236,11 @@ rate(redis_operations_total[5m])
 # 95th percentile Redis latency by operation
 histogram_quantile(0.95, rate(redis_operation_duration_seconds_bucket[5m]))
 
-# Broadcaster tick rate (should be ~20/sec for 50ms interval)
-rate(broadcaster_tick_duration_seconds_count[1m])
+# Pub/sub message throughput
+rate(pubsub_messages_received_total[5m])
 
-# Average broadcast fanout time
-rate(broadcaster_broadcast_duration_seconds_sum[5m]) / rate(broadcaster_broadcast_duration_seconds_count[5m])
+# Pub/sub message latency (p99)
+histogram_quantile(0.99, rate(pubsub_message_latency_seconds_bucket[5m]))
 
 # WebSocket message throughput
 rate(websocket_message_send_duration_seconds_count[5m])

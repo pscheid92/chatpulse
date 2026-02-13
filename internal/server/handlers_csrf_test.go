@@ -31,7 +31,7 @@ func TestCSRFProtection_ConfigSave(t *testing.T) {
 				OverlayUUID: overlayUUID,
 			}, nil
 		},
-		saveConfigFn: func(ctx context.Context, id uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, overlayUUID uuid.UUID) error {
+		saveConfigFn: func(_ context.Context, _ uuid.UUID, _, _, _, _ string, _ float64, _ string) error {
 			return nil
 		},
 	}

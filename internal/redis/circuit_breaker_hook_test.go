@@ -286,7 +286,7 @@ func TestCircuitBreakerHook_CacheExpiry(t *testing.T) {
 	assert.Contains(t, err.Error(), "circuit breaker open")
 }
 
-func TestCircuitBreakerHook_FallbackForReadOnlyFunction(t *testing.T) {
+func TestCircuitBreakerHook_ReadOnlyFunctionFailsWhenOpen(t *testing.T) {
 	hook := NewCircuitBreakerHook()
 	ctx := context.Background()
 
@@ -309,10 +309,9 @@ func TestCircuitBreakerHook_FallbackForReadOnlyFunction(t *testing.T) {
 	cmd := goredis.NewCmd(ctx, "fcall_ro", "get_decayed_value", "1", "session:uuid", "1.0", "123456")
 	err := processHook(ctx, cmd)
 
-	// Should succeed with neutral sentiment fallback
-	assert.NoError(t, err)
-	result, _ := cmd.Text()
-	assert.Equal(t, "0.0", result)
+	// Should return error — no fake 0.0 fallback
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "circuit breaker open")
 }
 
 func TestCircuitBreakerHook_WriteOperationsFailWhenOpen(t *testing.T) {

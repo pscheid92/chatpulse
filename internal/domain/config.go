@@ -36,5 +36,17 @@ type ConfigSnapshot struct {
 
 type ConfigRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*Config, error)
+	GetByBroadcasterID(ctx context.Context, broadcasterID string) (*Config, error)
 	Update(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64) error
+}
+
+// ConfigSource provides config lookup by broadcaster ID with caching.
+// Implementations should provide read-through caching (e.g., Redis → PostgreSQL).
+type ConfigSource interface {
+	GetConfigByBroadcaster(ctx context.Context, broadcasterID string) (*ConfigSnapshot, error)
+}
+
+// ConfigCacheInvalidator removes a broadcaster's config from the Redis cache.
+type ConfigCacheInvalidator interface {
+	InvalidateCache(ctx context.Context, broadcasterID string) error
 }

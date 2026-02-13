@@ -129,7 +129,7 @@ func TestHandleLogout_Success(t *testing.T) {
 
 // --- handleOAuthCallback tests ---
 
-func setupOAuthCallbackRequest(t *testing.T, srv *Server, code, state string) (echo.Context, *httptest.ResponseRecorder) {
+func setupOAuthCallbackRequest(t *testing.T, srv *Server, code, state string) (echo.Context, *httptest.ResponseRecorder) { //nolint:unparam // code is always "valid-code" in tests but kept as parameter for clarity
 	t.Helper()
 
 	// First, create a session with a stored OAuth state
@@ -224,6 +224,122 @@ func TestHandleOAuthCallback_ExchangeError(t *testing.T) {
 
 	_ = callHandler(srv.handleOAuthCallback, c)
 	assert.Equal(t, 502, rec.Code) // External errors return 502
+}
+
+func TestHandleOAuthCallback_SubscribeCalledOnSuccess(t *testing.T) {
+	userID := uuid.New()
+	twitchUserID := "12345"
+	var subscribeCalled bool
+	var subscribedBroadcasterID string
+
+	app := &mockAppService{
+		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
+			return &domain.User{ID: userID, TwitchUsername: "testuser"}, nil
+		},
+	}
+	oauth := &mockOAuthClient{
+		result: &twitchTokenResult{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			ExpiresIn:    3600,
+			UserID:       twitchUserID,
+			Username:     "testuser",
+		},
+	}
+	ts := &mockTwitchService{
+		subscribeFn: func(_ context.Context, _ uuid.UUID, broadcasterUserID string) error {
+			subscribeCalled = true
+			subscribedBroadcasterID = broadcasterUserID
+			return nil
+		},
+	}
+
+	srv := newTestServer(t, app, withOAuthClient(oauth), withTwitchService(ts))
+
+	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
+
+	err := srv.handleOAuthCallback(c)
+	assert.NoError(t, err)
+	assert.Equal(t, 302, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "/dashboard")
+	assert.True(t, subscribeCalled, "Subscribe should be called after UpsertUser")
+	assert.Equal(t, twitchUserID, subscribedBroadcasterID)
+}
+
+func TestHandleOAuthCallback_SubscribeFailureDoesNotBlockOAuth(t *testing.T) {
+	userID := uuid.New()
+
+	app := &mockAppService{
+		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
+			return &domain.User{ID: userID, TwitchUsername: "testuser"}, nil
+		},
+	}
+	oauth := &mockOAuthClient{
+		result: &twitchTokenResult{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			ExpiresIn:    3600,
+			UserID:       "12345",
+			Username:     "testuser",
+		},
+	}
+	ts := &mockTwitchService{
+		subscribeFn: func(_ context.Context, _ uuid.UUID, _ string) error {
+			return fmt.Errorf("subscribe failed: network error")
+		},
+	}
+
+	srv := newTestServer(t, app, withOAuthClient(oauth), withTwitchService(ts))
+
+	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
+
+	err := srv.handleOAuthCallback(c)
+	assert.NoError(t, err)
+	assert.Equal(t, 302, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "/dashboard")
+}
+
+func TestHandleOAuthCallback_ReloginIdempotent(t *testing.T) {
+	userID := uuid.New()
+	subscribeCallCount := 0
+
+	app := &mockAppService{
+		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
+			return &domain.User{ID: userID, TwitchUsername: "testuser"}, nil
+		},
+	}
+	oauth := &mockOAuthClient{
+		result: &twitchTokenResult{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			ExpiresIn:    3600,
+			UserID:       "12345",
+			Username:     "testuser",
+		},
+	}
+	ts := &mockTwitchService{
+		subscribeFn: func(_ context.Context, _ uuid.UUID, _ string) error {
+			subscribeCallCount++
+			// Simulate 409 Conflict handled as success (returns nil)
+			return nil
+		},
+	}
+
+	srv := newTestServer(t, app, withOAuthClient(oauth), withTwitchService(ts))
+
+	// First login
+	c1, rec1 := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
+	err := srv.handleOAuthCallback(c1)
+	assert.NoError(t, err)
+	assert.Equal(t, 302, rec1.Code)
+
+	// Second login (re-login)
+	c2, rec2 := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state-2")
+	err = srv.handleOAuthCallback(c2)
+	assert.NoError(t, err)
+	assert.Equal(t, 302, rec2.Code)
+
+	assert.Equal(t, 2, subscribeCallCount, "Subscribe should be called on each login (idempotent)")
 }
 
 func TestHandleOAuthCallback_DBError(t *testing.T) {

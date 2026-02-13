@@ -60,15 +60,6 @@ var (
 		},
 		[]string{"component"},
 	)
-
-	// RefCountAnomaliesTotal tracks ref count anomalies (negative, high, underflow)
-	RefCountAnomaliesTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "ref_count_anomalies_total",
-			Help: "Total ref count anomalies detected by type",
-		},
-		[]string{"type"},
-	)
 )
 
 // Broadcaster Metrics
@@ -89,29 +80,11 @@ var (
 		},
 	)
 
-	// BroadcasterTickDuration tracks broadcaster tick loop duration
-	BroadcasterTickDuration = promauto.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "broadcaster_tick_duration_seconds",
-			Help:    "Broadcaster tick loop duration in seconds",
-			Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1},
-		},
-	)
-
 	// BroadcasterSlowClientsEvicted tracks number of slow clients evicted
 	BroadcasterSlowClientsEvicted = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "broadcaster_slow_clients_evicted_total",
 			Help: "Total number of slow WebSocket clients evicted due to buffer full",
-		},
-	)
-
-	// BroadcasterBroadcastDuration tracks per-session broadcast duration
-	BroadcasterBroadcastDuration = promauto.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "broadcaster_broadcast_duration_seconds",
-			Help:    "Duration to broadcast update to all clients in a session",
-			Buckets: []float64{.0001, .0005, .001, .005, .01, .025, .05, .1},
 		},
 	)
 
@@ -147,37 +120,29 @@ var (
 		},
 	)
 
-	// BroadcasterSessionCircuitOpensTotal tracks sessions with circuit opened due to failures
-	BroadcasterSessionCircuitOpensTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "broadcaster_session_circuit_opens_total",
-			Help: "Sessions with circuit opened due to failures",
+	// PubSubMessageLatency tracks time from pub/sub receive to WebSocket fan-out
+	PubSubMessageLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "pubsub_message_latency_seconds",
+			Help:    "Latency from pub/sub message receive to WebSocket client send",
+			Buckets: []float64{.0001, .0005, .001, .005, .01, .025, .05, .1, .25},
 		},
 	)
 
-	// BroadcasterSlowTicksTotal tracks ticks exceeding duration budget
-	BroadcasterSlowTicksTotal = promauto.NewCounter(
+	// PubSubReconnectionsTotal tracks pub/sub reconnection attempts
+	PubSubReconnectionsTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
-			Name: "broadcaster_slow_ticks_total",
-			Help: "Ticks exceeding duration budget",
+			Name: "pubsub_reconnections_total",
+			Help: "Total pub/sub reconnection attempts after disconnect",
 		},
 	)
 
-	// BroadcasterAbortedTicksTotal tracks ticks aborted early due to budget
-	BroadcasterAbortedTicksTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "broadcaster_aborted_ticks_total",
-			Help: "Ticks aborted early due to budget",
-		},
-	)
-
-	// BroadcasterSessionCircuitState tracks per-session circuit breaker state (0=closed, 1=open)
-	BroadcasterSessionCircuitState = promauto.NewGaugeVec(
+	// PubSubSubscriptionActive tracks whether the pub/sub subscription is active (1) or disconnected (0)
+	PubSubSubscriptionActive = promauto.NewGauge(
 		prometheus.GaugeOpts{
-			Name: "broadcaster_session_circuit_state",
-			Help: "Per-session circuit breaker state (0=closed, 1=open)",
+			Name: "pubsub_subscription_active",
+			Help: "1 if pub/sub subscription is active, 0 if disconnected",
 		},
-		[]string{"session_uuid"},
 	)
 )
 
@@ -266,7 +231,7 @@ var (
 	VoteProcessingTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "vote_processing_total",
-			Help: "Total votes processed by result (applied/debounced/invalid/no_session)",
+			Help: "Total votes processed by result (applied/no_session/no_match/debounced/rate_limited/error)",
 		},
 		[]string{"result"},
 	)
@@ -349,11 +314,27 @@ var (
 		},
 	)
 
-	// ConfigCacheMisses tracks config cache misses (fetch from Redis required)
+	// ConfigCacheMisses tracks local in-memory config cache misses
 	ConfigCacheMisses = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "config_cache_misses_total",
-			Help: "Total number of config cache misses",
+			Help: "Total number of local config cache misses",
+		},
+	)
+
+	// ConfigCacheRedisHits tracks config fetches served from Redis cache
+	ConfigCacheRedisHits = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "config_cache_redis_hits_total",
+			Help: "Total number of config lookups served from Redis cache",
+		},
+	)
+
+	// ConfigCachePostgresHits tracks config fetches that fell through to PostgreSQL
+	ConfigCachePostgresHits = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "config_cache_postgres_hits_total",
+			Help: "Total number of config lookups that fell through to PostgreSQL",
 		},
 	)
 
@@ -371,24 +352,6 @@ var (
 			Name: "config_cache_evictions_total",
 			Help: "Total number of expired config cache entries evicted",
 		},
-	)
-
-	// ConfigDriftDetected tracks config version mismatches between Redis and ConfigSnapshot
-	ConfigDriftDetected = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "config_drift_detected_total",
-			Help: "Total config drift events detected (Redis version != config JSON version)",
-		},
-		[]string{"session_uuid"},
-	)
-
-	// ConfigDriftFixed tracks successful drift reconciliation attempts
-	ConfigDriftFixed = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "config_drift_fixed_total",
-			Help: "Total config drift events auto-fixed by reconciler",
-		},
-		[]string{"session_uuid"},
 	)
 
 	// RedisUpdateFailures tracks Redis config update failures
@@ -429,122 +392,6 @@ var (
 			Help: "Total database errors by query",
 		},
 		[]string{"query"},
-	)
-)
-
-// Orphan Cleanup Metrics
-var (
-	// OrphanCleanupScansTotal tracks total number of orphan cleanup scans
-	OrphanCleanupScansTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "orphan_cleanup_scans_total",
-			Help: "Total number of orphan cleanup scans",
-		},
-	)
-
-	// OrphanSessionsDeletedTotal tracks total number of orphan sessions deleted
-	OrphanSessionsDeletedTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "orphan_sessions_deleted_total",
-			Help: "Total number of orphan sessions deleted",
-		},
-	)
-
-	// OrphanSessionsSkippedTotal tracks sessions skipped during cleanup by reason
-	OrphanSessionsSkippedTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "orphan_sessions_skipped_total",
-			Help: "Total number of sessions skipped during cleanup by reason (active/error)",
-		},
-		[]string{"reason"},
-	)
-
-	// OrphanCleanupDurationSeconds tracks duration of orphan cleanup scans
-	OrphanCleanupDurationSeconds = promauto.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "orphan_cleanup_duration_seconds",
-			Help:    "Duration of orphan cleanup scans",
-			Buckets: []float64{.1, .5, 1, 5, 10, 30},
-		},
-	)
-
-	// SessionActivationTimeoutsTotal tracks session activation timeouts by reason
-	SessionActivationTimeoutsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "session_activation_timeouts_total",
-			Help: "Total session activation timeouts by reason (context_deadline/activation_failed)",
-		},
-		[]string{"reason"},
-	)
-
-	// CleanupUnsubscribeErrorsTotal tracks background unsubscribe failures
-	CleanupUnsubscribeErrorsTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "cleanup_unsubscribe_errors_total",
-			Help: "Total number of background Twitch unsubscribe failures during cleanup",
-		},
-	)
-
-	// OrphanCleanupFailuresTotal tracks total number of cleanup failures (triggers backoff)
-	OrphanCleanupFailuresTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "orphan_cleanup_failures_total",
-			Help: "Total number of cleanup failures (triggers backoff)",
-		},
-	)
-
-	// OrphanCleanupKeysScannedTotal tracks total number of Redis keys scanned during cleanup
-	OrphanCleanupKeysScannedTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "orphan_cleanup_keys_scanned_total",
-			Help: "Total number of Redis keys scanned during cleanup",
-		},
-	)
-
-	// OrphanCleanupKeyLimitReachedTotal tracks times cleanup hit key limit
-	OrphanCleanupKeyLimitReachedTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "orphan_cleanup_key_limit_reached_total",
-			Help: "Total number of times cleanup hit key limit (1000 keys/run)",
-		},
-	)
-
-	// DisconnectedSessionsCount tracks number of sessions in disconnected state
-	DisconnectedSessionsCount = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "disconnected_sessions_count",
-			Help: "Number of sessions in disconnected state (sorted set size)",
-		},
-	)
-)
-
-// Leader Election Metrics
-var (
-	// CleanupLeaderGauge tracks which instance is the cleanup leader
-	CleanupLeaderGauge = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "cleanup_leader",
-			Help: "1 if this instance is cleanup leader, 0 otherwise",
-		},
-		[]string{"instance_id"},
-	)
-
-	// CleanupSkippedTotal tracks cleanup cycles skipped (not leader)
-	CleanupSkippedTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "cleanup_skipped_total",
-			Help: "Total cleanup cycles skipped (not leader)",
-		},
-		[]string{"reason"}, // "not_leader" vs "leader_lock_failed"
-	)
-
-	// LeaderElectionFailuresTotal tracks leader election failures
-	LeaderElectionFailuresTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "leader_election_failures_total",
-			Help: "Total leader election failures",
-		},
-		[]string{"reason"}, // "acquire_failed", "renew_failed", "lock_stolen"
 	)
 )
 

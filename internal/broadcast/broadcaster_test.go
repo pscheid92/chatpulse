@@ -12,60 +12,52 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	ws "github.com/gorilla/websocket"
 	"github.com/jonboulle/clockwork"
+	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mockEngine returns a fixed value for all sessions.
+const testBroadcasterID = "test-broadcaster-1"
+
+// mockEngine returns a fixed value for all broadcasters.
 type mockEngine struct {
 	mu      sync.Mutex
 	value   float64
 	delayFn func(context.Context) error // Optional delay/error injection
 }
 
-func (m *mockEngine) GetCurrentValue(ctx context.Context, _ uuid.UUID) (float64, error) {
-	// Apply delay if configured (for timeout testing)
+func (m *mockEngine) GetBroadcastData(ctx context.Context, _ string) (*domain.BroadcastData, error) {
 	if m.delayFn != nil {
 		if err := m.delayFn(ctx); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.value, nil
+	return &domain.BroadcastData{Value: m.value, DecaySpeed: 1.0, Timestamp: time.Now().UnixMilli()}, nil
 }
 
-func (m *mockEngine) ProcessVote(_ context.Context, _, _, _ string) (float64, bool) {
-	return 0, false
+func (m *mockEngine) ProcessVote(_ context.Context, _, _, _ string) (float64, domain.VoteResult, error) {
+	return 0, domain.VoteNoMatch, nil
 }
 
-func (m *mockEngine) ResetSentiment(_ context.Context, _ uuid.UUID) error {
+func (m *mockEngine) ResetSentiment(_ context.Context, _ string) error {
 	return nil
 }
 
-func (m *mockEngine) InvalidateConfigCache(_ uuid.UUID) {
-	// No-op for mock
-}
-
-func (m *mockEngine) setValue(v float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.value = v
-}
-
-// testBroadcaster sets up a Broadcaster with a test HTTP server.
-func testBroadcaster(t *testing.T, engine *mockEngine, onSessionEmpty func(context.Context, uuid.UUID)) (*Broadcaster, func(sessionUUID uuid.UUID) *ws.Conn) {
+// testBroadcaster sets up a Broadcaster with a test HTTP server (no real Redis).
+func testBroadcaster(t *testing.T, engine *mockEngine) (*Broadcaster, func(broadcasterID string) *ws.Conn) {
 	t.Helper()
 
 	if engine == nil {
 		engine = &mockEngine{}
 	}
 
-	broadcaster := NewBroadcaster(engine, nil, onSessionEmpty, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	// nil redisClient — pub/sub subscriber won't start (unit test)
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 	t.Cleanup(func() { broadcaster.Stop() })
 
 	upgrader := ws.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -75,11 +67,14 @@ func testBroadcaster(t *testing.T, engine *mockEngine, onSessionEmpty func(conte
 		if err != nil {
 			t.Fatalf("upgrade failed: %v", err)
 		}
-		sessionUUID := uuid.MustParse(r.URL.Query().Get("session"))
-		_ = broadcaster.Register(sessionUUID, conn)
+		broadcasterID := r.URL.Query().Get("broadcaster")
+		if broadcasterID == "" {
+			broadcasterID = "test-broadcaster"
+		}
+		_ = broadcaster.Subscribe(broadcasterID, conn)
 
 		go func() {
-			defer broadcaster.Unregister(sessionUUID, conn)
+			defer broadcaster.Unsubscribe(broadcasterID, conn)
 			for {
 				if _, _, err := conn.ReadMessage(); err != nil {
 					break
@@ -89,9 +84,9 @@ func testBroadcaster(t *testing.T, engine *mockEngine, onSessionEmpty func(conte
 	}))
 	t.Cleanup(func() { server.Close() })
 
-	dial := func(sessionUUID uuid.UUID) *ws.Conn {
+	dial := func(broadcasterID string) *ws.Conn {
 		t.Helper()
-		url := "ws" + strings.TrimPrefix(server.URL, "http") + "?session=" + sessionUUID.String()
+		url := "ws" + strings.TrimPrefix(server.URL, "http") + "?broadcaster=" + broadcasterID
 		conn, _, err := ws.DefaultDialer.Dial(url, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { conn.Close() })
@@ -101,9 +96,9 @@ func testBroadcaster(t *testing.T, engine *mockEngine, onSessionEmpty func(conte
 	return broadcaster, dial
 }
 
-func waitForClientCount(b *Broadcaster, sessionUUID uuid.UUID, expected int) bool {
+func waitForClientCount(b *Broadcaster, broadcasterID string, expected int) bool { //nolint:unparam // broadcasterID varies across test functions
 	for range 100 {
-		if b.GetClientCount(sessionUUID) == expected {
+		if b.GetClientCount(broadcasterID) == expected {
 			return true
 		}
 		time.Sleep(time.Millisecond)
@@ -111,15 +106,30 @@ func waitForClientCount(b *Broadcaster, sessionUUID uuid.UUID, expected int) boo
 	return false
 }
 
-func TestBroadcaster_RegisterAndReceiveTick(t *testing.T) {
+// sendSentimentUpdate injects a sentiment update command into the broadcaster's command channel.
+// This simulates a pub/sub message arriving without needing a real Redis connection.
+func sendSentimentUpdate(b *Broadcaster, broadcasterID string, value float64, timestamp int64) {
+	b.cmdCh <- sentimentUpdateCmd{
+		broadcasterID: broadcasterID,
+		value:         value,
+		timestamp:     timestamp,
+		receivedAt:    time.Now(),
+	}
+}
+
+func TestBroadcaster_RegisterAndReceiveUpdate(t *testing.T) {
 	engine := &mockEngine{value: 42.5}
-	broadcaster, dial := testBroadcaster(t, engine, nil)
-	sessionUUID := uuid.New()
+	broadcaster, dial := testBroadcaster(t, engine)
+	broadcasterID := testBroadcasterID
 
-	conn := dial(sessionUUID)
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
+	conn := dial(broadcasterID)
+	require.True(t, waitForClientCount(broadcaster, broadcasterID, 1))
 
-	// Wait for a tick to deliver the value
+	// Simulate a pub/sub sentiment update
+	now := time.Now().UnixMilli()
+	sendSentimentUpdate(broadcaster, broadcasterID, 42.5, now)
+
+	// Client should receive the update
 	conn.SetReadDeadline(time.Now().Add(time.Second))
 	_, msg, err := conn.ReadMessage()
 	require.NoError(t, err)
@@ -132,14 +142,18 @@ func TestBroadcaster_RegisterAndReceiveTick(t *testing.T) {
 
 func TestBroadcaster_MultipleClients(t *testing.T) {
 	engine := &mockEngine{value: 77.0}
-	broadcaster, dial := testBroadcaster(t, engine, nil)
-	sessionUUID := uuid.New()
+	broadcaster, dial := testBroadcaster(t, engine)
+	broadcasterID := testBroadcasterID
 
-	conn1 := dial(sessionUUID)
-	conn2 := dial(sessionUUID)
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 2))
+	conn1 := dial(broadcasterID)
+	conn2 := dial(broadcasterID)
+	require.True(t, waitForClientCount(broadcaster, broadcasterID, 2))
 
-	// Both clients should receive values via tick
+	// Simulate a pub/sub sentiment update
+	now := time.Now().UnixMilli()
+	sendSentimentUpdate(broadcaster, broadcasterID, 77.0, now)
+
+	// Both clients should receive the update
 	for _, conn := range []*ws.Conn{conn1, conn2} {
 		conn.SetReadDeadline(time.Now().Add(time.Second))
 		_, msg, err := conn.ReadMessage()
@@ -152,79 +166,44 @@ func TestBroadcaster_MultipleClients(t *testing.T) {
 	}
 }
 
-func TestBroadcaster_OnSessionEmpty(t *testing.T) {
-	var mu sync.Mutex
-	var disconnectedSessions []uuid.UUID
-	onEmpty := func(_ context.Context, id uuid.UUID) {
-		mu.Lock()
-		defer mu.Unlock()
-		disconnectedSessions = append(disconnectedSessions, id)
-	}
-
-	broadcaster, dial := testBroadcaster(t, nil, onEmpty)
-	sessionUUID := uuid.New()
-
-	conn1 := dial(sessionUUID)
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
-
-	conn2 := dial(sessionUUID)
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 2))
-
-	// Close first — still one client left, no callback
-	conn1.Close()
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
-	mu.Lock()
-	assert.Empty(t, disconnectedSessions)
-	mu.Unlock()
-
-	// Close second — last client, callback fires
-	conn2.Close()
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 0))
-	time.Sleep(50 * time.Millisecond)
-	mu.Lock()
-	require.Len(t, disconnectedSessions, 1)
-	assert.Equal(t, sessionUUID, disconnectedSessions[0])
-	mu.Unlock()
-}
-
 func TestBroadcaster_GetClientCount(t *testing.T) {
-	broadcaster, dial := testBroadcaster(t, nil, nil)
-	sessionUUID := uuid.New()
+	broadcaster, dial := testBroadcaster(t, nil)
+	broadcasterID := testBroadcasterID
 
-	assert.Equal(t, 0, broadcaster.GetClientCount(sessionUUID))
+	assert.Equal(t, 0, broadcaster.GetClientCount(broadcasterID))
 
-	conn1 := dial(sessionUUID)
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
+	conn1 := dial(broadcasterID)
+	require.True(t, waitForClientCount(broadcaster, broadcasterID, 1))
 
-	dial(sessionUUID)
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 2))
+	dial(broadcasterID)
+	require.True(t, waitForClientCount(broadcaster, broadcasterID, 2))
 
 	conn1.Close()
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
+	require.True(t, waitForClientCount(broadcaster, broadcasterID, 1))
 }
 
 func TestBroadcaster_MaxClientsPerSession(t *testing.T) {
 	engine := &mockEngine{}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 	t.Cleanup(func() { broadcaster.Stop() })
 
-	sessionUUID := uuid.New()
+	broadcasterID := testBroadcasterID
 
 	conns := make([]*ws.Conn, 0, 50)
 	for i := range 50 {
 		server, client := newTestConnPair(t)
-		err := broadcaster.Register(sessionUUID, server)
+		err := broadcaster.Subscribe(broadcasterID, server)
 		require.NoError(t, err, "client %d should register successfully", i)
 		conns = append(conns, client)
 	}
 
-	assert.Equal(t, 50, broadcaster.GetClientCount(sessionUUID))
+	assert.Equal(t, 50, broadcaster.GetClientCount(broadcasterID))
 
 	// The next client should be rejected
 	server, client := newTestConnPair(t)
-	err := broadcaster.Register(sessionUUID, server)
+	err := broadcaster.Subscribe(broadcasterID, server)
 	assert.Error(t, err, "client beyond max should be rejected")
-	assert.Contains(t, err.Error(), "max clients per session")
+	assert.Contains(t, err.Error(), "max clients per broadcaster")
 
 	_ = client
 	for _, c := range conns {
@@ -259,20 +238,24 @@ func newTestConnPair(t *testing.T) (server *ws.Conn, client *ws.Conn) {
 
 func TestBroadcaster_NoClientsNoPanic(t *testing.T) {
 	engine := &mockEngine{value: 50.0}
-	_ = NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	b := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 	// Just verify no panic with ticks running and no clients
 	time.Sleep(100 * time.Millisecond)
+	b.Stop()
 }
 
 func TestBroadcaster_ValueUpdates(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster, dial := testBroadcaster(t, engine, nil)
-	sessionUUID := uuid.New()
+	broadcaster, dial := testBroadcaster(t, engine)
+	broadcasterID := testBroadcasterID
 
-	conn := dial(sessionUUID)
-	require.True(t, waitForClientCount(broadcaster, sessionUUID, 1))
+	conn := dial(broadcasterID)
+	require.True(t, waitForClientCount(broadcaster, broadcasterID, 1))
 
-	// Read first tick
+	// Send first sentiment update
+	now := time.Now().UnixMilli()
+	sendSentimentUpdate(broadcaster, broadcasterID, 10.0, now)
+
 	conn.SetReadDeadline(time.Now().Add(time.Second))
 	_, msg, err := conn.ReadMessage()
 	require.NoError(t, err)
@@ -280,15 +263,27 @@ func TestBroadcaster_ValueUpdates(t *testing.T) {
 	require.NoError(t, json.Unmarshal(msg, &result))
 	assert.Equal(t, 10.0, result["value"])
 
-	// Update value
-	engine.setValue(55.0)
+	// Send second sentiment update with different value
+	sendSentimentUpdate(broadcaster, broadcasterID, 55.0, now+50)
 
-	// Read next tick
 	conn.SetReadDeadline(time.Now().Add(time.Second))
 	_, msg, err = conn.ReadMessage()
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(msg, &result))
 	assert.Equal(t, 55.0, result["value"])
+}
+
+func TestBroadcaster_SentimentUpdateForUnknownBroadcaster(t *testing.T) {
+	// Sentiment updates for unknown broadcasters should be silently dropped
+	engine := &mockEngine{}
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
+	t.Cleanup(func() { broadcaster.Stop() })
+
+	// Send update for a broadcaster with no clients -- should not panic
+	sendSentimentUpdate(broadcaster, "nonexistent-broadcaster", 42.0, time.Now().UnixMilli())
+
+	// Give actor time to process
+	time.Sleep(50 * time.Millisecond)
 }
 
 func TestBroadcasterStopCleansUpGoroutines(t *testing.T) {
@@ -303,32 +298,32 @@ func TestBroadcasterStopCleansUpGoroutines(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	baseline := runtime.NumGoroutine()
 
-	// Create broadcaster with multiple sessions and clients
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	// Create broadcaster with multiple broadcasters and clients
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 	afterCreate := runtime.NumGoroutine()
 
-	session1 := uuid.New()
-	session2 := uuid.New()
+	broadcasterID1 := "test-broadcaster-1"
+	broadcasterID2 := testBroadcasterID + "-alt"
 
-	// Register multiple clients across different sessions
+	// Register multiple clients across different broadcasters
 	clients := make([]*ws.Conn, 0, 5)
 	for range 3 {
 		server, client := newTestConnPair(t)
-		err := broadcaster.Register(session1, server)
+		err := broadcaster.Subscribe(broadcasterID1, server)
 		require.NoError(t, err)
 		clients = append(clients, client)
 	}
 
 	for range 2 {
 		server, client := newTestConnPair(t)
-		err := broadcaster.Register(session2, server)
+		err := broadcaster.Subscribe(broadcasterID2, server)
 		require.NoError(t, err)
 		clients = append(clients, client)
 	}
 
 	// Verify clients are registered
-	assert.Equal(t, 3, broadcaster.GetClientCount(session1))
-	assert.Equal(t, 2, broadcaster.GetClientCount(session2))
+	assert.Equal(t, 3, broadcaster.GetClientCount(broadcasterID1))
+	assert.Equal(t, 2, broadcaster.GetClientCount(broadcasterID2))
 
 	afterRegister := runtime.NumGoroutine()
 	t.Logf("Goroutines: baseline=%d, after_create=%d, after_register=%d", baseline, afterCreate, afterRegister)
@@ -362,45 +357,27 @@ func TestBroadcasterStopCleansUpGoroutines(t *testing.T) {
 }
 
 func TestBroadcasterStopWithActiveClients(t *testing.T) {
-	var mu sync.Mutex
-	var emptyCalled []uuid.UUID
-	onEmpty := func(_ context.Context, id uuid.UUID) {
-		mu.Lock()
-		defer mu.Unlock()
-		emptyCalled = append(emptyCalled, id)
-	}
-
 	engine := &mockEngine{value: 42.0}
-	broadcaster := NewBroadcaster(engine, nil, onEmpty, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 
-	session1 := uuid.New()
-	session2 := uuid.New()
+	broadcasterID1 := testBroadcasterID
+	broadcasterID2 := testBroadcasterID + "-alt"
 
 	// Register clients
 	server1, client1 := newTestConnPair(t)
-	err := broadcaster.Register(session1, server1)
+	err := broadcaster.Subscribe(broadcasterID1, server1)
 	require.NoError(t, err)
 
 	server2, client2 := newTestConnPair(t)
-	err = broadcaster.Register(session2, server2)
+	err = broadcaster.Subscribe(broadcasterID2, server2)
 	require.NoError(t, err)
 
-	// Verify both sessions have clients
-	assert.Equal(t, 1, broadcaster.GetClientCount(session1))
-	assert.Equal(t, 1, broadcaster.GetClientCount(session2))
+	// Verify both broadcasters have clients
+	assert.Equal(t, 1, broadcaster.GetClientCount(broadcasterID1))
+	assert.Equal(t, 1, broadcaster.GetClientCount(broadcasterID2))
 
-	// Stop broadcaster
+	// Stop broadcaster — should not panic with active clients
 	broadcaster.Stop()
-
-	// Give time for callbacks to fire
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify onSessionEmpty was called for both sessions
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Len(t, emptyCalled, 2)
-	assert.Contains(t, emptyCalled, session1)
-	assert.Contains(t, emptyCalled, session2)
 
 	// Cleanup
 	client1.Close()
@@ -409,11 +386,11 @@ func TestBroadcasterStopWithActiveClients(t *testing.T) {
 
 func TestBroadcasterStopIdempotent(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 
-	session := uuid.New()
+	broadcasterID := testBroadcasterID
 	server, client := newTestConnPair(t)
-	err := broadcaster.Register(session, server)
+	err := broadcaster.Subscribe(broadcasterID, server)
 	require.NoError(t, err)
 	t.Cleanup(func() { client.Close() })
 
@@ -428,24 +405,24 @@ func TestBroadcasterStopIdempotent(t *testing.T) {
 
 func TestBroadcasterStopBlocksCommandProcessing(t *testing.T) {
 	engine := &mockEngine{value: 10.0}
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
+	broadcaster := NewBroadcaster(engine, nil, clockwork.NewRealClock(), 50, 5*time.Second)
 
-	session := uuid.New()
+	broadcasterID := testBroadcasterID
 	server, client := newTestConnPair(t)
-	err := broadcaster.Register(session, server)
+	err := broadcaster.Subscribe(broadcasterID, server)
 	require.NoError(t, err)
 	t.Cleanup(func() { client.Close() })
 
 	// Stop broadcaster
 	broadcaster.Stop()
 
-	// Try to register after stop - should timeout/fail gracefully
+	// Try to subscribe after stop - should timeout/fail gracefully
 	// Note: This tests that the actor loop has exited
 	done := make(chan error, 1)
 	go func() {
 		server2, client2 := newTestConnPair(t)
 		t.Cleanup(func() { client2.Close() })
-		done <- broadcaster.Register(session, server2)
+		done <- broadcaster.Subscribe(broadcasterID, server2)
 	}()
 
 	select {
@@ -457,111 +434,60 @@ func TestBroadcasterStopBlocksCommandProcessing(t *testing.T) {
 	}
 }
 
-func TestBroadcaster_RedisTimeoutHandling(t *testing.T) {
-	// Test that slow Redis operations don't block the broadcaster indefinitely
-	session := uuid.New()
-	timeoutCount := 0
-	var timeoutMu sync.Mutex
+func TestBroadcaster_DegradedStatusNotifiesClients(t *testing.T) {
+	// Test that sending a statusChangeCmd with "degraded" delivers the status
+	// to all connected clients as a status-only JSON message.
+	broadcasterID := testBroadcasterID
 
-	engine := &mockEngine{
-		value: 50.0,
-		delayFn: func(ctx context.Context) error {
-			// Simulate slow Redis by sleeping until context is cancelled
-			select {
-			case <-time.After(5 * time.Second):
-				return nil
-			case <-ctx.Done():
-				timeoutMu.Lock()
-				timeoutCount++
-				timeoutMu.Unlock()
-				return ctx.Err()
-			}
-		},
-	}
+	broadcaster, dial := testBroadcaster(t, nil)
+	conn := dial(broadcasterID)
+	require.True(t, waitForClientCount(broadcaster, broadcasterID, 1))
 
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
-	t.Cleanup(func() { broadcaster.Stop() })
+	// Inject degraded status via the actor command channel
+	broadcaster.cmdCh <- statusChangeCmd{status: "degraded"}
 
-	server, client := newTestConnPair(t)
-	err := broadcaster.Register(session, server)
+	// Read the degraded message
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, msg, err := conn.ReadMessage()
 	require.NoError(t, err)
-	t.Cleanup(func() { client.Close() })
 
-	// Wait for at least one timeout to occur (redisTimeout=2s)
-	// First tick happens after tickInterval (50ms), then timeout takes 2s
-	time.Sleep(2500 * time.Millisecond)
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(msg, &result))
 
-	// Verify that timeouts occurred (broadcaster didn't hang)
-	timeoutMu.Lock()
-	actualTimeouts := timeoutCount
-	timeoutMu.Unlock()
-
-	assert.Greater(t, actualTimeouts, 0, "expected at least one timeout to occur")
-	t.Logf("Redis timeout occurred %d times (broadcaster remained responsive)", actualTimeouts)
+	assert.Equal(t, "degraded", result["status"], "should receive degraded status")
+	_, hasValue := result["value"]
+	assert.False(t, hasValue, "degraded status message should not contain value field")
 }
 
-func TestBroadcaster_CommandTimeoutHandling(t *testing.T) {
-	// Test that commands timeout gracefully when broadcaster is overwhelmed
-	// We use a real clock and very slow operations to trigger timeouts
+func TestBroadcaster_RecoveryStatusNotifiesClients(t *testing.T) {
+	// Test the degraded -> active recovery cycle via statusChangeCmd.
+	broadcasterID := testBroadcasterID
 
-	session := uuid.New()
-	blockForever := make(chan struct{})
+	broadcaster, dial := testBroadcaster(t, nil)
+	conn := dial(broadcasterID)
+	require.True(t, waitForClientCount(broadcaster, broadcasterID, 1))
 
-	// Create broadcaster with an engine that blocks forever after first call
-	callCount := 0
-	engine := &mockEngine{
-		value: 10.0,
-		delayFn: func(ctx context.Context) error {
-			callCount++
-			if callCount > 1 {
-				// Block the broadcaster's tick loop
-				<-blockForever
-			}
-			return nil
-		},
-	}
+	// Send degraded, then active
+	broadcaster.cmdCh <- statusChangeCmd{status: "degraded"}
+	broadcaster.cmdCh <- statusChangeCmd{status: "active"}
 
-	broadcaster := NewBroadcaster(engine, nil, nil, clockwork.NewRealClock(), 50, 50*time.Millisecond)
-	t.Cleanup(func() {
-		close(blockForever)
-		broadcaster.Stop()
-	})
+	conn.SetReadDeadline(time.Now().Add(time.Second))
 
-	// First register succeeds (broadcaster not stuck yet)
-	server1, client1 := newTestConnPair(t)
-	err := broadcaster.Register(session, server1)
+	// Read degraded message
+	_, msg1, err := conn.ReadMessage()
 	require.NoError(t, err)
-	t.Cleanup(func() { client1.Close() })
+	var result1 map[string]any
+	require.NoError(t, json.Unmarshal(msg1, &result1))
+	assert.Equal(t, "degraded", result1["status"])
 
-	// Wait for first tick to complete and second tick to start blocking
-	time.Sleep(150 * time.Millisecond)
-
-	// Now broadcaster is stuck in handleTick - commands should timeout
-	t.Run("Register timeout", func(t *testing.T) {
-		server2, client2 := newTestConnPair(t)
-		t.Cleanup(func() { client2.Close() })
-
-		start := time.Now()
-		err := broadcaster.Register(session, server2)
-		elapsed := time.Since(start)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "timed out")
-		assert.Greater(t, elapsed, 4*time.Second, "should wait for timeout")
-		assert.Less(t, elapsed, 6*time.Second, "should timeout promptly")
-		t.Logf("Register correctly timed out after %v: %v", elapsed, err)
-	})
-
-	t.Run("GetClientCount timeout", func(t *testing.T) {
-		start := time.Now()
-		count := broadcaster.GetClientCount(session)
-		elapsed := time.Since(start)
-
-		assert.Equal(t, -1, count, "GetClientCount should return -1 on timeout")
-		assert.Greater(t, elapsed, 4*time.Second, "should wait for timeout")
-		assert.Less(t, elapsed, 6*time.Second, "should timeout promptly")
-		t.Logf("GetClientCount correctly returned -1 after %v", elapsed)
-	})
+	// Read active recovery message
+	_, msg2, err := conn.ReadMessage()
+	require.NoError(t, err)
+	var result2 map[string]any
+	require.NoError(t, json.Unmarshal(msg2, &result2))
+	assert.Equal(t, "active", result2["status"])
+	_, hasValue := result2["value"]
+	assert.False(t, hasValue, "active status message should not contain value field")
 }
 
 // Suppress unused import warning for fmt

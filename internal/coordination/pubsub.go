@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/google/uuid"
-	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/metrics"
 	"github.com/redis/go-redis/v9"
 )
@@ -14,15 +12,16 @@ import (
 // ConfigInvalidator subscribes to config invalidation messages and
 // invalidates the local config cache when changes are broadcast.
 type ConfigInvalidator struct {
-	redis  *redis.Client
-	engine domain.Engine
+	redis      *redis.Client
+	invalidate func(broadcasterID string)
 }
 
 // NewConfigInvalidator creates a new config invalidator.
-func NewConfigInvalidator(redis *redis.Client, engine domain.Engine) *ConfigInvalidator {
+// The invalidate function is called with the broadcaster_id from each invalidation message.
+func NewConfigInvalidator(redis *redis.Client, invalidate func(broadcasterID string)) *ConfigInvalidator {
 	return &ConfigInvalidator{
-		redis:  redis,
-		engine: engine,
+		redis:      redis,
+		invalidate: invalidate,
 	}
 }
 
@@ -49,26 +48,24 @@ func (c *ConfigInvalidator) Start(ctx context.Context) {
 }
 
 // handleInvalidation processes a single invalidation message.
+// The payload is the broadcaster_id (string) to invalidate.
 func (c *ConfigInvalidator) handleInvalidation(payload string) {
 	metrics.PubSubMessagesReceived.WithLabelValues("config:invalidate").Inc()
 
-	overlayUUID, err := uuid.Parse(payload)
-	if err != nil {
-		slog.Warn("Invalid overlay UUID in config invalidation message",
-			"payload", payload,
-			"error", err)
+	if payload == "" {
+		slog.Warn("Empty config invalidation message")
 		return
 	}
 
-	c.engine.InvalidateConfigCache(overlayUUID)
+	c.invalidate(payload)
 	slog.Debug("Config cache invalidated via pub/sub",
-		"overlay_uuid", overlayUUID)
+		"broadcaster_id", payload)
 }
 
 // PublishConfigInvalidation broadcasts a config invalidation message to all instances.
-// This should be called after updating a user's config in the database.
-func PublishConfigInvalidation(ctx context.Context, redis *redis.Client, overlayUUID uuid.UUID) error {
-	if err := redis.Publish(ctx, "config:invalidate", overlayUUID.String()).Err(); err != nil {
+// The payload is the broadcaster_id (string) to invalidate.
+func PublishConfigInvalidation(ctx context.Context, redis *redis.Client, broadcasterID string) error {
+	if err := redis.Publish(ctx, "config:invalidate", broadcasterID).Err(); err != nil {
 		return fmt.Errorf("failed to publish config invalidation: %w", err)
 	}
 	return nil

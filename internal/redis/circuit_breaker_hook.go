@@ -166,25 +166,9 @@ func (h *CircuitBreakerHook) handleFallback(cmd goredis.Cmder) error {
 		// No cache available
 		return fmt.Errorf("redis circuit breaker open and no cached value: %w", circuitbreaker.ErrOpen)
 
-	case "fcall_ro":
-		// Read-only functions can potentially use cached values
-		// For sentiment reads (get_decayed_value), return neutral value as safe fallback
-		if len(cmd.Args()) > 1 && cmd.Args()[1] == fnGetSentiment {
-			slog.Warn("Circuit breaker open for sentiment read, returning neutral value",
-				"args", cmd.Args(),
-			)
-			// Return "0.0" as neutral sentiment
-			if c, ok := cmd.(*goredis.Cmd); ok {
-				c.SetVal("0.0")
-				return nil
-			}
-		}
-		return fmt.Errorf("redis circuit breaker open: %w", circuitbreaker.ErrOpen)
-
-	case "hset", "set", "fcall":
-		// Write operations cannot be served from cache
-		// These will fail, but that's expected behavior
-		slog.Warn("Circuit breaker open for write operation",
+	case "hset", "set", "fcall", "fcall_ro":
+		// These operations cannot be served from cache — fail fast
+		slog.Warn("Circuit breaker open, operation rejected",
 			"command", cmdName,
 			"args", cmd.Args(),
 		)
@@ -229,25 +213,6 @@ func (h *CircuitBreakerHook) cacheResult(cmd goredis.Cmder) {
 			h.cache.mu.Unlock()
 		}
 
-	case "fcall_ro":
-		// Cache read-only function results
-		if len(cmd.Args()) > 1 && cmd.Args()[1] == fnGetSentiment {
-			// Cache sentiment values
-			if c, ok := cmd.(*goredis.Cmd); ok {
-				if val, err := c.Text(); err == nil && val != "" {
-					// Use session key as cache key
-					if len(cmd.Args()) > 3 {
-						key := fmt.Sprintf("sentiment:%v", cmd.Args()[3])
-						h.cache.mu.Lock()
-						h.cache.values[key] = cachedValue{
-							data:      val,
-							timestamp: time.Now(),
-						}
-						h.cache.mu.Unlock()
-					}
-				}
-			}
-		}
 	}
 }
 

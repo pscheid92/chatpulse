@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,8 +65,8 @@ func TestThreeInstanceCoordination(t *testing.T) {
 	require.NotNil(t, leaderInstance)
 
 	// Test config invalidation propagation
-	overlayUUID := uuid.New()
-	err = PublishConfigInvalidation(ctx, redisClient, overlayUUID)
+	broadcasterID := "broadcaster-test-123"
+	err = PublishConfigInvalidation(ctx, redisClient, broadcasterID)
 	require.NoError(t, err)
 
 	// Wait for pub/sub delivery
@@ -75,7 +74,7 @@ func TestThreeInstanceCoordination(t *testing.T) {
 
 	// All instances should have received the invalidation
 	for i, inst := range instances {
-		assert.Contains(t, inst.engine.invalidations, overlayUUID,
+		assert.Contains(t, inst.invalidator.invalidations, broadcasterID,
 			"Instance %d should have received config invalidation", i+1)
 	}
 
@@ -205,25 +204,25 @@ func TestConcurrentLeaderElection(t *testing.T) {
 
 // testInstance wraps coordination components for integration testing.
 type testInstance struct {
-	id       string
-	registry *InstanceRegistry
-	leader   *LeaderElection
-	engine   *mockEngine
-	pubsub   *ConfigInvalidator
+	id          string
+	registry    *InstanceRegistry
+	leader      *LeaderElection
+	invalidator *mockInvalidator
+	pubsub      *ConfigInvalidator
 }
 
 func newTestInstance(t *testing.T, redisClient *redis.Client, id int) *testInstance {
 	t.Helper()
 
 	instanceID := string(rune('A' + id - 1))
-	engine := &mockEngine{invalidations: []uuid.UUID{}}
+	inv := &mockInvalidator{invalidations: []string{}}
 
 	return &testInstance{
-		id:       instanceID,
-		registry: NewInstanceRegistry(redisClient, instanceID, 100*time.Millisecond, "v1.0.0"),
-		leader:   NewLeaderElection(redisClient, instanceID, "leader:test", 5*time.Second),
-		engine:   engine,
-		pubsub:   NewConfigInvalidator(redisClient, engine),
+		id:          instanceID,
+		registry:    NewInstanceRegistry(redisClient, instanceID, 100*time.Millisecond, "v1.0.0"),
+		leader:      NewLeaderElection(redisClient, instanceID, "leader:test", 5*time.Second),
+		invalidator: inv,
+		pubsub:      NewConfigInvalidator(redisClient, inv.invalidate),
 	}
 }
 

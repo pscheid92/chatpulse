@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,17 +22,17 @@ func TestVoteRateLimit_Integration_InitialBurst(t *testing.T) {
 	rateLimiter := NewVoteRateLimiter(client, clock, 100, 100)
 
 	ctx := context.Background()
-	sessionUUID := uuid.New()
+	broadcasterID := "broadcaster-burst-test"
 
 	// Should allow 100 votes immediately (burst capacity)
 	for i := 0; i < 100; i++ {
-		allowed, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+		allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 		require.NoError(t, err)
 		assert.True(t, allowed, "Vote %d should be allowed (burst)", i+1)
 	}
 
 	// 101st vote should be rejected (bucket empty)
-	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 	require.NoError(t, err)
 	assert.False(t, allowed, "Vote 101 should be rejected (bucket exhausted)")
 }
@@ -49,16 +48,16 @@ func TestVoteRateLimit_Integration_Refill(t *testing.T) {
 	rateLimiter := NewVoteRateLimiter(client, clock, 100, 100)
 
 	ctx := context.Background()
-	sessionUUID := uuid.New()
+	broadcasterID := "broadcaster-refill-test"
 
 	// Exhaust bucket (100 votes)
 	for i := 0; i < 100; i++ {
-		_, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+		_, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 		require.NoError(t, err)
 	}
 
 	// Verify bucket is empty
-	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 	require.NoError(t, err)
 	assert.False(t, allowed, "Bucket should be exhausted")
 
@@ -67,13 +66,13 @@ func TestVoteRateLimit_Integration_Refill(t *testing.T) {
 
 	// Should allow 100 votes again (bucket refilled)
 	for i := 0; i < 100; i++ {
-		allowed, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+		allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 		require.NoError(t, err)
 		assert.True(t, allowed, "Vote %d should be allowed after refill", i+1)
 	}
 
 	// 101st vote rejected again
-	allowed, err = rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+	allowed, err = rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 	require.NoError(t, err)
 	assert.False(t, allowed, "Vote 101 should be rejected after refill")
 }
@@ -89,11 +88,11 @@ func TestVoteRateLimit_Integration_PartialRefill(t *testing.T) {
 	rateLimiter := NewVoteRateLimiter(client, clock, 100, 100)
 
 	ctx := context.Background()
-	sessionUUID := uuid.New()
+	broadcasterID := "broadcaster-partial-test"
 
 	// Use 50 tokens
 	for i := 0; i < 50; i++ {
-		_, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+		_, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 		require.NoError(t, err)
 	}
 
@@ -102,13 +101,13 @@ func TestVoteRateLimit_Integration_PartialRefill(t *testing.T) {
 
 	// Should have 100 tokens again (50 remaining + 50 refilled, capped at 100)
 	for i := 0; i < 100; i++ {
-		allowed, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+		allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 		require.NoError(t, err)
 		assert.True(t, allowed, "Vote %d should be allowed", i+1)
 	}
 
 	// 101st vote rejected
-	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 	require.NoError(t, err)
 	assert.False(t, allowed, "Vote 101 should be rejected")
 }
@@ -124,11 +123,11 @@ func TestVoteRateLimit_Integration_SustainedRate(t *testing.T) {
 	rateLimiter := NewVoteRateLimiter(client, clock, 100, 100)
 
 	ctx := context.Background()
-	sessionUUID := uuid.New()
+	broadcasterID := "broadcaster-sustained-test"
 
 	// Exhaust initial burst
 	for i := 0; i < 100; i++ {
-		_, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+		_, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 		require.NoError(t, err)
 	}
 
@@ -140,7 +139,7 @@ func TestVoteRateLimit_Integration_SustainedRate(t *testing.T) {
 
 		// Try 150 votes (only 100 should succeed per minute)
 		for i := 0; i < 150; i++ {
-			allowed, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+			allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 			require.NoError(t, err)
 			if allowed {
 				totalAllowed++
@@ -163,11 +162,11 @@ func TestVoteRateLimit_Integration_TTL(t *testing.T) {
 	rateLimiter := NewVoteRateLimiter(client, clock, 100, 100)
 
 	ctx := context.Background()
-	sessionUUID := uuid.New()
-	key := fmt.Sprintf("rate_limit:votes:%s", sessionUUID)
+	broadcasterID := "broadcaster-ttl-test"
+	key := fmt.Sprintf("rate_limit:votes:%s", broadcasterID)
 
 	// Make one vote to create the key
-	_, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+	_, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 	require.NoError(t, err)
 
 	// Check TTL is set (should be 300 seconds = 5 minutes)
@@ -176,8 +175,8 @@ func TestVoteRateLimit_Integration_TTL(t *testing.T) {
 	assert.LessOrEqual(t, ttl.Seconds(), float64(300), "TTL should not exceed 300 seconds")
 }
 
-// TestVoteRateLimit_Integration_PerSession verifies rate limits are per-session.
-func TestVoteRateLimit_Integration_PerSession(t *testing.T) {
+// TestVoteRateLimit_Integration_PerBroadcaster verifies rate limits are per-broadcaster.
+func TestVoteRateLimit_Integration_PerBroadcaster(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -187,24 +186,24 @@ func TestVoteRateLimit_Integration_PerSession(t *testing.T) {
 	rateLimiter := NewVoteRateLimiter(client, clock, 100, 100)
 
 	ctx := context.Background()
-	session1 := uuid.New()
-	session2 := uuid.New()
+	broadcaster1 := "broadcaster-1"
+	broadcaster2 := "broadcaster-2"
 
-	// Exhaust bucket for session1
+	// Exhaust bucket for broadcaster1
 	for i := 0; i < 100; i++ {
-		_, err := rateLimiter.CheckVoteRateLimit(ctx, session1)
+		_, err := rateLimiter.CheckVoteRateLimit(ctx, broadcaster1)
 		require.NoError(t, err)
 	}
 
-	// session1 should be rate limited
-	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, session1)
+	// broadcaster1 should be rate limited
+	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcaster1)
 	require.NoError(t, err)
-	assert.False(t, allowed, "Session1 should be rate limited")
+	assert.False(t, allowed, "Broadcaster1 should be rate limited")
 
-	// session2 should still have full capacity (separate bucket)
-	allowed, err = rateLimiter.CheckVoteRateLimit(ctx, session2)
+	// broadcaster2 should still have full capacity (separate bucket)
+	allowed, err = rateLimiter.CheckVoteRateLimit(ctx, broadcaster2)
 	require.NoError(t, err)
-	assert.True(t, allowed, "Session2 should have independent rate limit")
+	assert.True(t, allowed, "Broadcaster2 should have independent rate limit")
 }
 
 // TestVoteRateLimit_Integration_ZeroTimeDelta verifies no tokens added when no time passes.
@@ -218,16 +217,16 @@ func TestVoteRateLimit_Integration_ZeroTimeDelta(t *testing.T) {
 	rateLimiter := NewVoteRateLimiter(client, clock, 100, 100)
 
 	ctx := context.Background()
-	sessionUUID := uuid.New()
+	broadcasterID := "broadcaster-zero-delta-test"
 
 	// Exhaust bucket
 	for i := 0; i < 100; i++ {
-		_, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+		_, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 		require.NoError(t, err)
 	}
 
 	// No time passes - still rate limited
-	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, sessionUUID)
+	allowed, err := rateLimiter.CheckVoteRateLimit(ctx, broadcasterID)
 	require.NoError(t, err)
 	assert.False(t, allowed, "Should remain rate limited when no time passes")
 }

@@ -5,22 +5,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/metrics"
 )
 
-// ConfigCache provides in-memory caching of session configs with TTL-based expiration.
-// This dramatically reduces Redis load by caching frequently-accessed configs that rarely change.
+// ConfigCache provides in-memory caching of configs keyed by broadcaster_id with TTL-based expiration.
+// This dramatically reduces database/Redis load by caching frequently-accessed configs that rarely change.
 //
 // Performance impact:
-// - Without cache: 20 reads/sec per session (50ms tick rate)
-// - With cache (10s TTL): ~0.1 reads/sec per session (when TTL expires)
-// - 1,000 sessions: 20,000 → 100 reads/sec (99.5% reduction)
+// - Without cache: 20 reads/sec per broadcaster (50ms tick rate)
+// - With cache (10s TTL): ~0.1 reads/sec per broadcaster (when TTL expires)
+// - 1,000 broadcasters: 20,000 → 100 reads/sec (99.5% reduction)
 type ConfigCache struct {
 	mu      sync.RWMutex
-	entries map[uuid.UUID]*cacheEntry
+	entries map[string]*cacheEntry
 	ttl     time.Duration
 	clock   clockwork.Clock
 }
@@ -34,7 +33,7 @@ type cacheEntry struct {
 // Recommended TTL: 10 seconds (balances freshness vs. cache efficiency)
 func NewConfigCache(ttl time.Duration, clock clockwork.Clock) *ConfigCache {
 	return &ConfigCache{
-		entries: make(map[uuid.UUID]*cacheEntry),
+		entries: make(map[string]*cacheEntry),
 		ttl:     ttl,
 		clock:   clock,
 	}
@@ -42,11 +41,11 @@ func NewConfigCache(ttl time.Duration, clock clockwork.Clock) *ConfigCache {
 
 // Get retrieves a cached config if present and not expired.
 // Returns (config, true) on cache hit, (nil, false) on cache miss or expiry.
-func (c *ConfigCache) Get(sessionUUID uuid.UUID) (*domain.ConfigSnapshot, bool) {
+func (c *ConfigCache) Get(broadcasterID string) (*domain.ConfigSnapshot, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	entry, ok := c.entries[sessionUUID]
+	entry, ok := c.entries[broadcasterID]
 	if !ok {
 		return nil, false
 	}
@@ -62,11 +61,11 @@ func (c *ConfigCache) Get(sessionUUID uuid.UUID) (*domain.ConfigSnapshot, bool) 
 }
 
 // Set stores a config in the cache with current timestamp + TTL.
-func (c *ConfigCache) Set(sessionUUID uuid.UUID, config domain.ConfigSnapshot) {
+func (c *ConfigCache) Set(broadcasterID string, config domain.ConfigSnapshot) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.entries[sessionUUID] = &cacheEntry{
+	c.entries[broadcasterID] = &cacheEntry{
 		config:    config,
 		expiresAt: c.clock.Now().Add(c.ttl),
 	}
@@ -74,10 +73,10 @@ func (c *ConfigCache) Set(sessionUUID uuid.UUID, config domain.ConfigSnapshot) {
 
 // Invalidate explicitly removes a config from the cache.
 // Used when config is updated in the database to force immediate refresh.
-func (c *ConfigCache) Invalidate(sessionUUID uuid.UUID) {
+func (c *ConfigCache) Invalidate(broadcasterID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, sessionUUID)
+	delete(c.entries, broadcasterID)
 }
 
 // Clear removes all entries from the cache.
@@ -85,7 +84,7 @@ func (c *ConfigCache) Invalidate(sessionUUID uuid.UUID) {
 func (c *ConfigCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries = make(map[uuid.UUID]*cacheEntry)
+	c.entries = make(map[string]*cacheEntry)
 }
 
 // Size returns the current number of entries in the cache (including expired).
@@ -104,9 +103,9 @@ func (c *ConfigCache) EvictExpired() int {
 	now := c.clock.Now()
 	evicted := 0
 
-	for uuid, entry := range c.entries {
+	for key, entry := range c.entries {
 		if now.After(entry.expiresAt) {
-			delete(c.entries, uuid)
+			delete(c.entries, key)
 			evicted++
 		}
 	}

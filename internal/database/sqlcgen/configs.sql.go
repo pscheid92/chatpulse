@@ -13,6 +13,43 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+const getConfigByBroadcasterID = `-- name: GetConfigByBroadcasterID :one
+SELECT c.user_id, c.for_trigger, c.against_trigger, c.left_label, c.right_label,
+       c.decay_speed, c.version, c.created_at, c.updated_at
+FROM configs c
+JOIN users u ON c.user_id = u.id
+WHERE u.twitch_user_id = $1
+`
+
+type GetConfigByBroadcasterIDRow struct {
+	UserID         uuid.UUID
+	ForTrigger     string
+	AgainstTrigger string
+	LeftLabel      string
+	RightLabel     string
+	DecaySpeed     float64
+	Version        int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+func (q *Queries) GetConfigByBroadcasterID(ctx context.Context, twitchUserID string) (GetConfigByBroadcasterIDRow, error) {
+	row := q.db.QueryRow(ctx, getConfigByBroadcasterID, twitchUserID)
+	var i GetConfigByBroadcasterIDRow
+	err := row.Scan(
+		&i.UserID,
+		&i.ForTrigger,
+		&i.AgainstTrigger,
+		&i.LeftLabel,
+		&i.RightLabel,
+		&i.DecaySpeed,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getConfigByUserID = `-- name: GetConfigByUserID :one
 SELECT user_id, for_trigger, against_trigger, left_label, right_label,
        decay_speed, version, created_at, updated_at

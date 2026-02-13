@@ -78,6 +78,7 @@ type Server struct {
 	overlayTemplate   *template.Template
 	db                *pgxpool.Pool
 	redisClient       *goredis.Client
+	twitchService     domain.TwitchService
 	connLimits        *ConnectionLimits
 	startTime         time.Time
 	// For testing only - allows injecting mock health checkers
@@ -85,7 +86,7 @@ type Server struct {
 	postgresHealthCheck postgresHealthChecker
 }
 
-func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster, webhook webhookHandler, db *pgxpool.Pool, redisClient *goredis.Client) (*Server, error) {
+func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster, webhook webhookHandler, twitchService domain.TwitchService, db *pgxpool.Pool, redisClient *goredis.Client) (*Server, error) {
 	// Parse templates once at startup
 	loginPath, err := getTemplatePath("web/templates/login.html")
 	if err != nil {
@@ -183,6 +184,7 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 		app:               app,
 		broadcaster:       broadcaster,
 		webhook:           webhook,
+		twitchService:     twitchService,
 		oauthClient:       newTwitchOAuthClient(cfg.TwitchClientID, cfg.TwitchClientSecret, cfg.TwitchRedirectURI),
 		sessionStore:      sessionStore,
 		loginTemplate:     loginTmpl,

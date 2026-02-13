@@ -1,14 +1,49 @@
 package domain
 
-import (
-	"context"
+import "context"
 
-	"github.com/google/uuid"
+// BroadcastData contains everything needed for a WebSocket broadcast message.
+// Value is the raw (undecayed) sentiment value as stored in Redis.
+// DecaySpeed and Timestamp allow the client to compute decay locally.
+type BroadcastData struct {
+	Value      float64
+	DecaySpeed float64
+	Timestamp  int64 // Unix milliseconds of last update
+}
+
+// VoteResult describes why a vote was or wasn't applied.
+type VoteResult int
+
+const (
+	VoteApplied     VoteResult = iota // Vote was successfully applied
+	VoteNoSession                     // No active session for broadcaster
+	VoteNoMatch                       // Message didn't match any trigger
+	VoteDebounced                     // Per-user debounce rejected the vote
+	VoteRateLimited                   // Per-broadcaster rate limit rejected
+	VoteError                         // Infrastructure error (Redis, etc.)
 )
 
+func (r VoteResult) String() string {
+	switch r {
+	case VoteApplied:
+		return "applied"
+	case VoteNoSession:
+		return "no_session"
+	case VoteNoMatch:
+		return "no_match"
+	case VoteDebounced:
+		return "debounced"
+	case VoteRateLimited:
+		return "rate_limited"
+	case VoteError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
 type Engine interface {
-	GetCurrentValue(ctx context.Context, sessionUUID uuid.UUID) (float64, error)
-	ProcessVote(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (float64, bool)
-	ResetSentiment(ctx context.Context, sessionUUID uuid.UUID) error
-	InvalidateConfigCache(sessionUUID uuid.UUID)
+	GetBroadcastData(ctx context.Context, broadcasterID string) (*BroadcastData, error)
+	ProcessVote(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (float64, VoteResult, error)
+	ResetSentiment(ctx context.Context, broadcasterID string) error
 }
