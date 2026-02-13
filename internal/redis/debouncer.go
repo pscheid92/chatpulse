@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,7 +23,7 @@ func (d *Debouncer) CheckDebounce(ctx context.Context, sid uuid.UUID, twitchUser
 	dk := debounceKey(sid, twitchUserID)
 	set, err := d.rdb.SetNX(ctx, dk, "1", debounceInterval).Result()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to check debounce: %w", err)
 	}
 	return set, nil
 }

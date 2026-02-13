@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -40,7 +41,7 @@ func NewClient(ctx context.Context, redisURL string) (*redis.Client, error) {
 	// Check existing library version before loading
 	versionKey := "chatpulse:function:version"
 	existingVersion, err := rdb.Get(ctx, versionKey).Result()
-	if err != nil && err != redis.Nil {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		_ = rdb.Close()
 		return nil, fmt.Errorf("failed to check function version: %w", err)
 	}

@@ -45,7 +45,7 @@ test-short:
 
 # Run only integration tests
 test-integration:
-	go test -v -run='.*' ./internal/database/...integration_test.go ./internal/redis/...integration_test.go ./internal/sentiment/...integration_test.go
+	go test -v -run='Integration' ./...
 
 # Alias for test-short
 test-unit: test-short

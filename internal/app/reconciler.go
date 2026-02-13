@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -46,13 +47,13 @@ func (r *ConfigReconciler) Start(ctx context.Context) {
 		select {
 		case <-ticker.Chan():
 			if err := r.reconcile(ctx); err != nil {
-				slog.Error("config reconciliation failed", "error", err)
+				slog.Error("Config reconciliation failed", "error", err)
 			}
 		case <-r.stopCh:
-			slog.Info("config reconciler stopped")
+			slog.Info("Config reconciler stopped")
 			return
 		case <-ctx.Done():
-			slog.Info("config reconciler context cancelled")
+			slog.Info("Config reconciler context cancelled")
 			return
 		}
 	}
@@ -67,14 +68,14 @@ func (r *ConfigReconciler) Stop() {
 func (r *ConfigReconciler) reconcile(ctx context.Context) error {
 	sessions, err := r.sessionRepo.ListActiveSessions(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to list active sessions: %w", err)
 	}
 
 	for _, session := range sessions {
 		// Get Redis config
 		redisConfig, err := r.sessionRepo.GetSessionConfig(ctx, session.OverlayUUID)
 		if err != nil {
-			slog.Warn("failed to get Redis config during reconciliation",
+			slog.Warn("Failed to get Redis config during reconciliation",
 				"session_uuid", session.OverlayUUID,
 				"error", err)
 			continue
@@ -86,7 +87,7 @@ func (r *ConfigReconciler) reconcile(ctx context.Context) error {
 		// Lookup user_id via overlay_uuid (Redis doesn't store user_id)
 		user, err := r.userRepo.GetByOverlayUUID(ctx, session.OverlayUUID)
 		if err != nil {
-			slog.Warn("failed to get user during reconciliation",
+			slog.Warn("Failed to get user during reconciliation",
 				"overlay_uuid", session.OverlayUUID,
 				"error", err)
 			continue
@@ -95,7 +96,7 @@ func (r *ConfigReconciler) reconcile(ctx context.Context) error {
 		// Get PostgreSQL config (source of truth)
 		dbConfig, err := r.configRepo.GetByUserID(ctx, user.ID)
 		if err != nil {
-			slog.Warn("failed to get DB config during reconciliation",
+			slog.Warn("Failed to get DB config during reconciliation",
 				"user_id", user.ID,
 				"error", err)
 			continue
@@ -103,7 +104,7 @@ func (r *ConfigReconciler) reconcile(ctx context.Context) error {
 
 		// Check for version mismatch
 		if redisConfig.Version != dbConfig.Version {
-			slog.Warn("config drift detected during reconciliation",
+			slog.Warn("Config drift detected during reconciliation",
 				"user_id", user.ID,
 				"session_uuid", session.OverlayUUID,
 				"redis_version", redisConfig.Version,
@@ -122,11 +123,11 @@ func (r *ConfigReconciler) reconcile(ctx context.Context) error {
 			}
 
 			if err := r.sessionRepo.UpdateConfig(ctx, session.OverlayUUID, configSnapshot); err != nil {
-				slog.Error("failed to fix config drift",
+				slog.Error("Failed to fix config drift",
 					"session_uuid", session.OverlayUUID,
 					"error", err)
 			} else {
-				slog.Info("config drift auto-fixed",
+				slog.Info("Config drift auto-fixed",
 					"session_uuid", session.OverlayUUID,
 					"old_version", redisConfig.Version,
 					"new_version", dbConfig.Version)

@@ -20,7 +20,7 @@ type Config struct {
 	LeftLabel  string
 	RightLabel string
 	DecaySpeed float64
-	Version    int       // Incremented on each update for drift detection
+	Version    int // Incremented on each update for drift detection
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }

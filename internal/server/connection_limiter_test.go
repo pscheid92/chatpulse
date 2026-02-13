@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -379,7 +380,7 @@ func TestConnectionLimits_Concurrent(t *testing.T) {
 	for ip := 1; ip <= 10; ip++ {
 		for conn := 0; conn < 10; conn++ {
 			wg.Add(1)
-			ipAddr := "192.168.1." + string(rune('0'+ip))
+			ipAddr := fmt.Sprintf("192.168.1.%d", ip)
 			go func(ip string) {
 				defer wg.Done()
 				if ok, _ := limits.Acquire(ip); ok {

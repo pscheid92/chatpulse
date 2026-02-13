@@ -3,6 +3,9 @@ package coordination
 import (
 	"context"
 	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -10,7 +13,46 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
 )
+
+var (
+	testRedisURL string
+	redContainer testcontainers.Container
+)
+
+func TestMain(m *testing.M) {
+	// Parse flags to check for -short
+	flag.Parse()
+
+	// Skip container setup if running in short mode
+	if testing.Short() {
+		os.Exit(m.Run())
+	}
+
+	ctx := context.Background()
+	var err error
+	redContainer, err = rediscontainer.Run(ctx, "redis:7-alpine")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start redis container: %v\n", err)
+		os.Exit(1)
+	}
+
+	endpoint, err := redContainer.Endpoint(ctx, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to get redis endpoint: %v\n", err)
+		os.Exit(1)
+	}
+	testRedisURL = "redis://" + endpoint
+
+	defer func() {
+		if err := redContainer.Terminate(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to terminate redis container: %v\n", err)
+		}
+	}()
+	os.Exit(m.Run())
+}
 
 // mockEngine is a simple mock for domain.Engine that tracks invalidations.
 type mockEngine struct {
@@ -70,7 +112,7 @@ func TestInstanceRegistry_HeartbeatExpiry(t *testing.T) {
 	registry := NewInstanceRegistry(redisClient, "test-instance-2", 1*time.Second, "v1.0.0")
 
 	// Register with old timestamp (simulating expired heartbeat)
-	key := "instances"
+	key := instancesKey
 	value := InstanceInfo{
 		InstanceID: "test-instance-2",
 		Timestamp:  time.Now().Unix() - 70, // 70 seconds ago
@@ -343,14 +385,23 @@ func TestLeaderElection_TTLExpiry(t *testing.T) {
 func setupTestRedis(t *testing.T) *redis.Client {
 	t.Helper()
 
-	client := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	opts, err := redis.ParseURL(testRedisURL)
+	require.NoError(t, err)
+
+	client := redis.NewClient(opts)
 
 	// Flush all keys before each test
 	ctx := context.Background()
-	err := client.FlushAll(ctx).Err()
+	err = client.FlushAll(ctx).Err()
 	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
 
 	return client
 }

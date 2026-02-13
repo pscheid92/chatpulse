@@ -147,7 +147,7 @@ func TestHandleReadiness_RedisDown(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"status":"unhealthy"`)
 	assert.Contains(t, rec.Body.String(), `"failed_check":"redis"`)
-	assert.Contains(t, rec.Body.String(), `"error":"connection refused"`)
+	assert.Contains(t, rec.Body.String(), `"error":"redis ping failed: connection refused"`)
 }
 
 func TestHandleReadiness_PostgresDown(t *testing.T) {
@@ -171,7 +171,7 @@ func TestHandleReadiness_PostgresDown(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"status":"unhealthy"`)
 	assert.Contains(t, rec.Body.String(), `"failed_check":"postgres"`)
-	assert.Contains(t, rec.Body.String(), `"error":"database unreachable"`)
+	assert.Contains(t, rec.Body.String(), `"error":"postgres ping failed: database unreachable"`)
 }
 
 func TestHandleReadiness_RedisFunctionsNotLoaded(t *testing.T) {
@@ -211,7 +211,7 @@ func TestHandleReadiness_RedisFunctionListError(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"status":"unhealthy"`)
 	assert.Contains(t, rec.Body.String(), `"failed_check":"redis_functions"`)
-	assert.Contains(t, rec.Body.String(), `"error":"FUNCTION LIST failed"`)
+	assert.Contains(t, rec.Body.String(), `"error":"redis function list failed: FUNCTION LIST failed"`)
 }
 
 func TestCheckRedis(t *testing.T) {

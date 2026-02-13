@@ -112,7 +112,8 @@ func TestCleanupOrphans_Integration_RefCountPrevention(t *testing.T) {
 	initialDeleted := testutil.ToFloat64(metrics.OrphanSessionsDeletedTotal)
 
 	// Act: Cleanup should find the orphan but skip it (ref_count > 0)
-	svc.CleanupOrphans(ctx)
+	err = svc.CleanupOrphans(ctx)
+	require.NoError(t, err)
 
 	// Assert: Session NOT deleted
 	exists, err := sessionRepo.SessionExists(ctx, overlayUUID)
@@ -196,7 +197,8 @@ func TestCleanupOrphans_Integration_SuccessfulDeletion(t *testing.T) {
 	initialDeleted := testutil.ToFloat64(metrics.OrphanSessionsDeletedTotal)
 
 	// Act: Cleanup should delete the orphan (ref_count=0)
-	svc.CleanupOrphans(ctx)
+	err = svc.CleanupOrphans(ctx)
+	require.NoError(t, err)
 
 	// Give background goroutine time to complete
 	time.Sleep(100 * time.Millisecond)
@@ -293,7 +295,8 @@ func TestCleanupOrphans_Integration_MultipleOrphans(t *testing.T) {
 	initialSkipped := testutil.ToFloat64(metrics.OrphanSessionsSkippedTotal.WithLabelValues("active"))
 
 	// Act
-	svc.CleanupOrphans(ctx)
+	err = svc.CleanupOrphans(ctx)
+	require.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
 	// Assert: orphan1 and orphan3 deleted, orphan2 skipped
@@ -340,7 +343,8 @@ func TestCleanupOrphans_Integration_NoOrphans(t *testing.T) {
 	initialScans := testutil.ToFloat64(metrics.OrphanCleanupScansTotal)
 
 	// Act: No orphans to clean
-	svc.CleanupOrphans(ctx)
+	err := svc.CleanupOrphans(ctx)
+	require.NoError(t, err)
 
 	// Assert: Scan metric incremented, no deletions
 	assert.Equal(t, initialScans+1, testutil.ToFloat64(metrics.OrphanCleanupScansTotal))

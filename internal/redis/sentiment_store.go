@@ -64,5 +64,8 @@ func (s *SentimentStore) GetSentiment(ctx context.Context, sid uuid.UUID, decayR
 
 func (s *SentimentStore) ResetSentiment(ctx context.Context, sid uuid.UUID) error {
 	sk := sessionKey(sid)
-	return s.rdb.HSet(ctx, sk, fieldValue, "0").Err()
+	if err := s.rdb.HSet(ctx, sk, fieldValue, "0").Err(); err != nil {
+		return fmt.Errorf("failed to reset sentiment: %w", err)
+	}
+	return nil
 }

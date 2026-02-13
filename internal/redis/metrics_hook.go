@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"net"
 	"time"
 
@@ -34,7 +35,7 @@ func (h *MetricsHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 
 		operation := cmd.Name()
 		status := "success"
-		if err != nil && err != redis.Nil {
+		if err != nil && !errors.Is(err, redis.Nil) {
 			status = "error"
 		}
 

@@ -6,6 +6,8 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gorilla/sessions"
@@ -19,6 +21,43 @@ import (
 	apperrors "github.com/pscheid92/chatpulse/internal/errors"
 	goredis "github.com/redis/go-redis/v9"
 )
+
+// findProjectRoot walks up the directory tree to find the project root (where go.mod is located).
+func findProjectRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached filesystem root without finding go.mod
+			return "", fmt.Errorf("could not find project root (go.mod)")
+		}
+		dir = parent
+	}
+}
+
+// getTemplatePath returns the absolute path to a template file.
+func getTemplatePath(relativePath string) (string, error) {
+	// Try relative path first (works when running from project root)
+	if _, err := os.Stat(relativePath); err == nil {
+		return relativePath, nil
+	}
+
+	// Find project root and construct absolute path
+	root, err := findProjectRoot()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(root, relativePath), nil
+}
 
 // webhookHandler handles EventSub webhook requests (nil if webhooks not configured)
 type webhookHandler interface {
@@ -48,15 +87,29 @@ type Server struct {
 
 func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster, webhook webhookHandler, db *pgxpool.Pool, redisClient *goredis.Client) (*Server, error) {
 	// Parse templates once at startup
-	loginTmpl, err := template.ParseFiles("web/templates/login.html")
+	loginPath, err := getTemplatePath("web/templates/login.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to find login template: %w", err)
+	}
+	loginTmpl, err := template.ParseFiles(loginPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse login template: %w", err)
 	}
-	dashboardTmpl, err := template.ParseFiles("web/templates/dashboard.html")
+
+	dashboardPath, err := getTemplatePath("web/templates/dashboard.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to find dashboard template: %w", err)
+	}
+	dashboardTmpl, err := template.ParseFiles(dashboardPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse dashboard template: %w", err)
 	}
-	overlayTmpl, err := template.ParseFiles("web/templates/overlay.html")
+
+	overlayPath, err := getTemplatePath("web/templates/overlay.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to find overlay template: %w", err)
+	}
+	overlayTmpl, err := template.ParseFiles(overlayPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse overlay template: %w", err)
 	}
@@ -66,7 +119,26 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 	e.HidePort = true
 
 	// Middleware
-	e.Use(middleware.Logger())
+	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogStatus:  true,
+		LogURI:     true,
+		LogMethod:  true,
+		LogLatency: true,
+		LogError:   true,
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			attrs := []any{
+				"method", v.Method,
+				"uri", v.URI,
+				"status", v.Status,
+				"latency", v.Latency,
+			}
+			if v.Error != nil {
+				attrs = append(attrs, "error", v.Error)
+			}
+			slog.Info("Request", attrs...)
+			return nil
+		},
+	}))
 	e.Use(middleware.Recover())
 	e.Use(apperrors.Middleware())                    // Structured error handling
 	e.Use(echoprometheus.NewMiddleware("chatpulse")) // Metrics endpoint at /metrics
@@ -131,9 +203,15 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 
 func (s *Server) Start() error {
 	slog.Info("Starting server", "port", s.config.Port)
-	return s.echo.Start(fmt.Sprintf(":%s", s.config.Port))
+	if err := s.echo.Start(fmt.Sprintf(":%s", s.config.Port)); err != nil {
+		return fmt.Errorf("failed to start server: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.echo.Shutdown(ctx)
+	if err := s.echo.Shutdown(ctx); err != nil {
+		return fmt.Errorf("failed to shutdown server: %w", err)
+	}
+	return nil
 }

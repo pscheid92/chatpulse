@@ -554,7 +554,7 @@ func TestCleanupOrphans_DeletesSessions(t *testing.T) {
 	clock := clockwork.NewFakeClock()
 	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, &mockEngine{}, nil, clock)
 
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 	assert.Equal(t, []uuid.UUID{orphan1, orphan2}, deleted)
 }
 
@@ -586,7 +586,7 @@ func TestCleanupOrphans_UnsubscribesTwitch(t *testing.T) {
 	clock := clockwork.NewFakeClock()
 	svc := newTestService(users, &mockConfigRepo{}, store, &mockEngine{}, twitch, clock)
 
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 
 	// Twitch unsubscribe runs in a background goroutine
 	select {
@@ -608,7 +608,7 @@ func TestCleanupOrphans_NoOrphans(t *testing.T) {
 	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, store, &mockEngine{}, nil, clock)
 
 	// Should not panic
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 }
 
 // --- Stop tests ---
@@ -664,11 +664,11 @@ func TestCleanupOrphans_ConcurrentCleanupCalls(t *testing.T) {
 	// This tests that WaitGroup.Go() handles concurrent Add() calls safely
 	done := make(chan struct{}, 2)
 	go func() {
-		svc.CleanupOrphans(context.Background())
+		_ = svc.CleanupOrphans(context.Background())
 		done <- struct{}{}
 	}()
 	go func() {
-		svc.CleanupOrphans(context.Background())
+		_ = svc.CleanupOrphans(context.Background())
 		done <- struct{}{}
 	}()
 

@@ -2,6 +2,7 @@ package sentiment
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -42,7 +43,7 @@ func (e *Engine) GetCurrentValue(ctx context.Context, sessionUUID uuid.UUID) (fl
 
 		fetchedConfig, err := e.sessions.GetSessionConfig(ctx, sessionUUID)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("failed to get session config: %w", err)
 		}
 		if fetchedConfig == nil {
 			return 0, nil
@@ -56,7 +57,11 @@ func (e *Engine) GetCurrentValue(ctx context.Context, sessionUUID uuid.UUID) (fl
 	}
 
 	nowMs := e.clock.Now().UnixMilli()
-	return e.sentiment.GetSentiment(ctx, sessionUUID, config.DecaySpeed, nowMs)
+	value, err := e.sentiment.GetSentiment(ctx, sessionUUID, config.DecaySpeed, nowMs)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get sentiment: %w", err)
+	}
+	return value, nil
 }
 
 func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (float64, bool) {
@@ -125,7 +130,10 @@ func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUser
 }
 
 func (e *Engine) ResetSentiment(ctx context.Context, sessionUUID uuid.UUID) error {
-	return e.sentiment.ResetSentiment(ctx, sessionUUID)
+	if err := e.sentiment.ResetSentiment(ctx, sessionUUID); err != nil {
+		return fmt.Errorf("failed to reset sentiment: %w", err)
+	}
+	return nil
 }
 
 // InvalidateConfigCache explicitly removes a config from the cache.

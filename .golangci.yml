@@ -44,9 +44,6 @@ linters:
     paths:
       - internal/database/sqlcgen
     rules:
-      # Deprecated middleware.Logger — replacing requires larger refactor
-      - linters: [staticcheck]
-        text: "SA1019: middleware.Logger"
       # bodyclose false positive on WebSocket Dial in tests
       - linters: [bodyclose]
         path: _test\.go

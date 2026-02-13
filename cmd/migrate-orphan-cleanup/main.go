@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -45,7 +46,11 @@ func main() {
 		log.Fatalf("Failed to parse Redis URL: %v", err)
 	}
 	rdb := goredis.NewClient(opts)
-	defer rdb.Close()
+	defer func() {
+		if err := rdb.Close(); err != nil {
+			log.Printf("Failed to close Redis client: %v", err)
+		}
+	}()
 
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {
@@ -80,7 +85,7 @@ func migrateExistingSessions(ctx context.Context, rdb *goredis.Client, dryRun bo
 
 			// Get disconnect timestamp
 			lastDisconnect, err := rdb.HGet(ctx, key, "last_disconnect").Result()
-			if err == goredis.Nil {
+			if errors.Is(err, goredis.Nil) {
 				slog.Debug("Session hash missing last_disconnect field", "key", key)
 				skipped++
 				continue

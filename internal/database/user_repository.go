@@ -59,7 +59,7 @@ func (r *UserRepo) GetByID(ctx context.Context, userID uuid.UUID) (*domain.User,
 		return nil, domain.ErrUserNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get user by ID: %w", err)
 	}
 	return r.toDomainUser(row)
 }
@@ -70,7 +70,7 @@ func (r *UserRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) 
 		return nil, domain.ErrUserNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get user by overlay UUID: %w", err)
 	}
 	return r.toDomainUser(row)
 }
@@ -133,7 +133,7 @@ func (r *UserRepo) UpdateTokens(ctx context.Context, userID uuid.UUID, accessTok
 		ID:           userID,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to update tokens: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return domain.ErrUserNotFound

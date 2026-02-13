@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,12 +21,15 @@ func NewEventSubRepo(pool *pgxpool.Pool) *EventSubRepo {
 }
 
 func (r *EventSubRepo) Create(ctx context.Context, userID uuid.UUID, broadcasterUserID, subscriptionID, conduitID string) error {
-	return r.q.CreateEventSubSubscription(ctx, sqlcgen.CreateEventSubSubscriptionParams{
+	if err := r.q.CreateEventSubSubscription(ctx, sqlcgen.CreateEventSubSubscriptionParams{
 		UserID:            userID,
 		BroadcasterUserID: broadcasterUserID,
 		SubscriptionID:    subscriptionID,
 		ConduitID:         conduitID,
-	})
+	}); err != nil {
+		return fmt.Errorf("failed to create EventSub subscription: %w", err)
+	}
+	return nil
 }
 
 func (r *EventSubRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain.EventSubSubscription, error) {
@@ -34,7 +38,7 @@ func (r *EventSubRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*doma
 		return nil, domain.ErrSubscriptionNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get EventSub subscription by user ID: %w", err)
 	}
 	return &domain.EventSubSubscription{
 		UserID:            row.UserID,
@@ -46,13 +50,16 @@ func (r *EventSubRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*doma
 }
 
 func (r *EventSubRepo) Delete(ctx context.Context, userID uuid.UUID) error {
-	return r.q.DeleteEventSubByUserID(ctx, userID)
+	if err := r.q.DeleteEventSubByUserID(ctx, userID); err != nil {
+		return fmt.Errorf("failed to delete EventSub subscription by user ID: %w", err)
+	}
+	return nil
 }
 
 func (r *EventSubRepo) List(ctx context.Context) ([]domain.EventSubSubscription, error) {
 	rows, err := r.q.ListEventSubSubscriptions(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list EventSub subscriptions: %w", err)
 	}
 	subs := make([]domain.EventSubSubscription, len(rows))
 	for i, row := range rows {

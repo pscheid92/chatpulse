@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	defaultShardID     = "0"
-	appTokenTimeout    = 15 * time.Second
-	maxRetries         = 3
-	initialBackoff     = 1 * time.Second
-	rateLimitBackoff   = 30 * time.Second
+	defaultShardID   = "0"
+	appTokenTimeout  = 15 * time.Second
+	maxRetries       = 3
+	initialBackoff   = 1 * time.Second
+	rateLimitBackoff = 30 * time.Second
 )
 
 // subscriptionStore is the subset of database operations needed for subscription management.
@@ -129,7 +129,10 @@ func (m *EventSubManager) configureShard(ctx context.Context, conduitID string) 
 			},
 		},
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to update conduit shards: %w", err)
+	}
+	return nil
 }
 
 // Cleanup deletes the conduit. Call on graceful shutdown.
@@ -259,7 +262,7 @@ func (m *EventSubManager) attemptSubscribe(ctx context.Context, userID uuid.UUID
 			// Return a placeholder subscription (we don't have the ID, but that's okay)
 			return &helix.EventSubSubscription{ID: "existing"}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to create EventSub subscription: %w", err)
 	}
 	if sub == nil {
 		return nil, fmt.Errorf("no subscription returned from Twitch API")

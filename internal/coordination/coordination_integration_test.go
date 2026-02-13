@@ -84,8 +84,15 @@ func TestThreeInstanceCoordination(t *testing.T) {
 	err = leaderInstance.leader.ReleaseLease(ctx)
 	require.NoError(t, err)
 
-	// Wait for another instance to become leader
-	time.Sleep(1 * time.Second)
+	// Wait a bit and trigger other instances to try becoming leader
+	time.Sleep(100 * time.Millisecond)
+
+	// Have all non-leader instances try to become leader
+	for _, inst := range instances {
+		if inst != leaderInstance {
+			_, _ = inst.leader.TryBecomeLeader(ctx)
+		}
+	}
 
 	// A different instance should now be leader
 	leaders = 0
@@ -99,7 +106,7 @@ func TestThreeInstanceCoordination(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, leaders, "Exactly one instance should be new leader")
-	assert.NotNil(t, newLeader)
+	require.NotNil(t, newLeader, "A new leader should have been elected")
 	assert.NotEqual(t, leaderInstance.id, newLeader.id, "New leader should be different")
 
 	// Stop all instances
@@ -222,7 +229,7 @@ func newTestInstance(t *testing.T, redisClient *redis.Client, id int) *testInsta
 
 func (inst *testInstance) start(ctx context.Context) {
 	// Try to become leader once (don't retry)
-	inst.leader.TryBecomeLeader(ctx)
+	_, _ = inst.leader.TryBecomeLeader(ctx)
 
 	// Start registry and pub/sub
 	var wg sync.WaitGroup

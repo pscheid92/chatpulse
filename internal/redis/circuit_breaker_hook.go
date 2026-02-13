@@ -2,15 +2,16 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/pscheid92/chatpulse/internal/metrics"
 	goredis "github.com/redis/go-redis/v9"
-	"github.com/sony/gobreaker"
 )
 
 // CircuitBreakerHook implements redis.Hook to add circuit breaker protection
@@ -22,7 +23,7 @@ import (
 // automatic coverage of all Redis operations, and maintains a cleaner, more
 // maintainable architecture.
 type CircuitBreakerHook struct {
-	cb    *gobreaker.CircuitBreaker
+	cb    circuitbreaker.CircuitBreaker[any]
 	cache *cacheStore
 }
 
@@ -42,52 +43,42 @@ type cachedValue struct {
 const cacheTTL = 5 * time.Minute
 
 // NewCircuitBreakerHook creates a new circuit breaker hook with the following settings:
-// - MaxRequests: 1 (half-open allows 1 conservative test request)
-// - Interval: 10s (rolling window for failure counting - fast detection)
-// - Timeout: 30s (how long circuit stays open before half-open - gives Redis time to recover)
-// - ReadyToTrip: Opens after 5 requests with 60% failure rate
+// - WithFailureRateThreshold: 60% failure rate, min 5 requests, 10s rolling window
+// - WithDelay: 30s before transitioning from open to half-open
+// - WithSuccessThreshold: 1 successful request in half-open to close
 func NewCircuitBreakerHook() *CircuitBreakerHook {
-	settings := gobreaker.Settings{
-		Name:        "redis",
-		MaxRequests: 1, // In half-open, allow 1 test request (conservative)
-		Interval:    10 * time.Second,
-		Timeout:     30 * time.Second,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			// Open circuit if we have at least 5 requests and 60% are failures
-			if counts.Requests < 5 {
-				return false
-			}
-			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return failureRatio >= 0.6
-		},
-		OnStateChange: func(name string, from, to gobreaker.State) {
+	cb := circuitbreaker.NewBuilder[any]().
+		WithFailureRateThreshold(0.6, 5, 10*time.Second).
+		WithDelay(30 * time.Second).
+		WithSuccessThreshold(1).
+		OnStateChanged(func(e circuitbreaker.StateChangedEvent) {
 			slog.Warn("Circuit breaker state changed",
-				"component", name,
-				"from", from.String(),
-				"to", to.String(),
+				"component", "redis",
+				"from", e.OldState.String(),
+				"to", e.NewState.String(),
 			)
 
 			// Update metrics
-			metrics.CircuitBreakerStateChanges.WithLabelValues(name, to.String()).Inc()
-			metrics.CircuitBreakerState.WithLabelValues(name).Set(stateToFloat(to))
-		},
-	}
+			metrics.CircuitBreakerStateChanges.WithLabelValues("redis", e.NewState.String()).Inc()
+			metrics.CircuitBreakerState.WithLabelValues("redis").Set(stateToFloat(e.NewState))
+		}).
+		Build()
 
 	return &CircuitBreakerHook{
-		cb: gobreaker.NewCircuitBreaker(settings),
+		cb: cb,
 		cache: &cacheStore{
 			values: make(map[string]cachedValue),
 		},
 	}
 }
 
-func stateToFloat(state gobreaker.State) float64 {
+func stateToFloat(state circuitbreaker.State) float64 {
 	switch state {
-	case gobreaker.StateClosed:
+	case circuitbreaker.ClosedState:
 		return 0
-	case gobreaker.StateHalfOpen:
+	case circuitbreaker.HalfOpenState:
 		return 1
-	case gobreaker.StateOpen:
+	case circuitbreaker.OpenState:
 		return 2
 	default:
 		return -1
@@ -97,51 +88,59 @@ func stateToFloat(state gobreaker.State) float64 {
 // DialHook wraps connection establishment with circuit breaker
 func (h *CircuitBreakerHook) DialHook(next goredis.DialHook) goredis.DialHook {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		result, err := h.cb.Execute(func() (interface{}, error) {
-			return next(ctx, network, addr)
-		})
-		if err != nil {
-			return nil, err
+		if !h.cb.TryAcquirePermit() {
+			return nil, fmt.Errorf("circuit breaker dial failed: %w", circuitbreaker.ErrOpen)
 		}
-		return result.(net.Conn), nil
+		conn, err := next(ctx, network, addr)
+		if err != nil {
+			h.cb.RecordError(err)
+			return nil, fmt.Errorf("circuit breaker dial failed: %w", err)
+		}
+		h.cb.RecordSuccess()
+		return conn, nil
 	}
 }
 
 // ProcessHook wraps command execution with circuit breaker and caching
 func (h *CircuitBreakerHook) ProcessHook(next goredis.ProcessHook) goredis.ProcessHook {
 	return func(ctx context.Context, cmd goredis.Cmder) error {
-		_, err := h.cb.Execute(func() (interface{}, error) {
-			return nil, next(ctx, cmd)
-		})
-
-		if err == gobreaker.ErrOpenState {
-			// Circuit is open - try fallback behavior
+		if !h.cb.TryAcquirePermit() {
 			return h.handleFallback(cmd)
 		}
 
-		// Success - cache the result for future fallback
-		if err == nil || err == goredis.Nil {
+		err := next(ctx, cmd)
+		if err != nil && !errors.Is(err, goredis.Nil) {
+			h.cb.RecordError(err)
+		} else {
+			h.cb.RecordSuccess()
+		}
+
+		// Cache successful results for future fallback
+		if err == nil || errors.Is(err, goredis.Nil) {
 			h.cacheResult(cmd)
 		}
 
-		return err
+		if err != nil {
+			return fmt.Errorf("circuit breaker process failed: %w", err)
+		}
+		return nil
 	}
 }
 
 // ProcessPipelineHook wraps pipeline execution with circuit breaker
 func (h *CircuitBreakerHook) ProcessPipelineHook(next goredis.ProcessPipelineHook) goredis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []goredis.Cmder) error {
-		_, err := h.cb.Execute(func() (interface{}, error) {
-			return nil, next(ctx, cmds)
-		})
-
-		if err == gobreaker.ErrOpenState {
-			// Circuit is open - pipeline operations have no good fallback
-			// Return error so caller can handle appropriately
-			return fmt.Errorf("redis circuit breaker open: %w", err)
+		if !h.cb.TryAcquirePermit() {
+			return fmt.Errorf("redis circuit breaker open: %w", circuitbreaker.ErrOpen)
 		}
 
-		return err
+		err := next(ctx, cmds)
+		if err != nil {
+			h.cb.RecordError(err)
+			return fmt.Errorf("circuit breaker pipeline failed: %w", err)
+		}
+		h.cb.RecordSuccess()
+		return nil
 	}
 }
 
@@ -159,14 +158,13 @@ func (h *CircuitBreakerHook) handleFallback(cmd goredis.Cmder) error {
 			)
 			// Set the cached value into the command result
 			// This is a bit of a hack but works with redis.Cmder interface
-			switch c := cmd.(type) {
-			case *goredis.StringCmd:
+			if c, ok := cmd.(*goredis.StringCmd); ok {
 				c.SetVal(result)
 				return nil
 			}
 		}
 		// No cache available
-		return fmt.Errorf("redis circuit breaker open and no cached value: %w", gobreaker.ErrOpenState)
+		return fmt.Errorf("redis circuit breaker open and no cached value: %w", circuitbreaker.ErrOpen)
 
 	case "fcall_ro":
 		// Read-only functions can potentially use cached values
@@ -176,13 +174,12 @@ func (h *CircuitBreakerHook) handleFallback(cmd goredis.Cmder) error {
 				"args", cmd.Args(),
 			)
 			// Return "0.0" as neutral sentiment
-			switch c := cmd.(type) {
-			case *goredis.Cmd:
+			if c, ok := cmd.(*goredis.Cmd); ok {
 				c.SetVal("0.0")
 				return nil
 			}
 		}
-		return fmt.Errorf("redis circuit breaker open: %w", gobreaker.ErrOpenState)
+		return fmt.Errorf("redis circuit breaker open: %w", circuitbreaker.ErrOpen)
 
 	case "hset", "set", "fcall":
 		// Write operations cannot be served from cache
@@ -191,11 +188,11 @@ func (h *CircuitBreakerHook) handleFallback(cmd goredis.Cmder) error {
 			"command", cmdName,
 			"args", cmd.Args(),
 		)
-		return fmt.Errorf("redis circuit breaker open: %w", gobreaker.ErrOpenState)
+		return fmt.Errorf("redis circuit breaker open: %w", circuitbreaker.ErrOpen)
 
 	default:
 		// Unknown command - fail fast
-		return fmt.Errorf("redis circuit breaker open: %w", gobreaker.ErrOpenState)
+		return fmt.Errorf("redis circuit breaker open: %w", circuitbreaker.ErrOpen)
 	}
 }
 
@@ -206,7 +203,7 @@ func (h *CircuitBreakerHook) cacheResult(cmd goredis.Cmder) {
 	// Only cache read operations
 	switch cmdName {
 	case "hget", "get":
-		if err := cmd.Err(); err != nil && err != goredis.Nil {
+		if err := cmd.Err(); err != nil && !errors.Is(err, goredis.Nil) {
 			return
 		}
 
@@ -219,8 +216,7 @@ func (h *CircuitBreakerHook) cacheResult(cmd goredis.Cmder) {
 		key := fmt.Sprintf("%v", args[1])
 		value := ""
 
-		switch c := cmd.(type) {
-		case *goredis.StringCmd:
+		if c, ok := cmd.(*goredis.StringCmd); ok {
 			value, _ = c.Result()
 		}
 
@@ -282,11 +278,11 @@ func (h *CircuitBreakerHook) getFromCache(cmd goredis.Cmder) string {
 }
 
 // GetState returns the current state of the circuit breaker (for testing/monitoring)
-func (h *CircuitBreakerHook) GetState() gobreaker.State {
+func (h *CircuitBreakerHook) GetState() circuitbreaker.State {
 	return h.cb.State()
 }
 
-// GetCounts returns the current counts (for testing/monitoring)
-func (h *CircuitBreakerHook) GetCounts() gobreaker.Counts {
-	return h.cb.Counts()
+// GetMetrics returns the current metrics (for testing/monitoring)
+func (h *CircuitBreakerHook) GetMetrics() circuitbreaker.Metrics {
+	return h.cb.Metrics()
 }

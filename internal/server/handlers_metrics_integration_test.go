@@ -136,11 +136,12 @@ func TestMetricsPrometheusFormat(t *testing.T) {
 		}
 
 		// Count comment types
-		if strings.HasPrefix(line, "# HELP") {
+		switch {
+		case strings.HasPrefix(line, "# HELP"):
 			helpComments++
-		} else if strings.HasPrefix(line, "# TYPE") {
+		case strings.HasPrefix(line, "# TYPE"):
 			typeComments++
-		} else if !strings.HasPrefix(line, "#") {
+		case !strings.HasPrefix(line, "#"):
 			// Count metric lines (non-comments)
 			metricLines++
 		}

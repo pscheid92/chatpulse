@@ -63,10 +63,10 @@ func TestOrphanCleanup_Integration(t *testing.T) {
 	assert.Contains(t, orphans, session1)
 	assert.Contains(t, orphans, session2)
 
-	// List orphans with 10s grace period (should return both since they're already old)
+	// List orphans with 10s grace period (should return none since they just disconnected)
 	orphans, err = repo.ListOrphans(ctx, 10*time.Second)
 	require.NoError(t, err)
-	assert.Len(t, orphans, 2)
+	assert.Len(t, orphans, 0, "sessions just disconnected should not be orphans yet with 10s grace period")
 
 	// Resume session1
 	require.NoError(t, repo.ResumeSession(ctx, session1))

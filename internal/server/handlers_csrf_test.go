@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const csrfTokenCookieName = "csrf_token"
 
 // TestCSRFProtection_ConfigSave verifies CSRF protection on config save endpoint
 func TestCSRFProtection_ConfigSave(t *testing.T) {
@@ -36,7 +39,7 @@ func TestCSRFProtection_ConfigSave(t *testing.T) {
 	srv := newTestServer(t, app)
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
-		CookieName:  "csrf_token",
+		CookieName:  csrfTokenCookieName,
 	})
 	srv.registerRoutes()
 
@@ -75,7 +78,7 @@ func TestCSRFProtection_ConfigSave(t *testing.T) {
 		cookies := getRec.Result().Cookies()
 		var csrfCookie *http.Cookie
 		for _, c := range cookies {
-			if c.Name == "csrf_token" {
+			if c.Name == csrfTokenCookieName {
 				csrfCookie = c
 				break
 			}
@@ -89,7 +92,7 @@ func TestCSRFProtection_ConfigSave(t *testing.T) {
 		formData.Set("left_label", "Against")
 		formData.Set("right_label", "For")
 		formData.Set("decay_speed", "1.0")
-		formData.Set("csrf_token", csrfCookie.Value)
+		formData.Set(csrfTokenCookieName, csrfCookie.Value)
 
 		postReq := httptest.NewRequest(http.MethodPost, "/dashboard/config", strings.NewReader(formData.Encode()))
 		postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -130,7 +133,7 @@ func TestCSRFProtection_ResetSentiment(t *testing.T) {
 	srv := newTestServer(t, app)
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
-		CookieName:  "csrf_token",
+		CookieName:  csrfTokenCookieName,
 	})
 	srv.registerRoutes()
 
@@ -158,7 +161,7 @@ func TestCSRFProtection_ResetSentiment(t *testing.T) {
 		cookies := getRec.Result().Cookies()
 		var csrfCookie *http.Cookie
 		for _, c := range cookies {
-			if c.Name == "csrf_token" {
+			if c.Name == csrfTokenCookieName {
 				csrfCookie = c
 				break
 			}
@@ -204,7 +207,7 @@ func TestCSRFProtection_RotateOverlayUUID(t *testing.T) {
 	srv := newTestServer(t, app)
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
-		CookieName:  "csrf_token",
+		CookieName:  csrfTokenCookieName,
 	})
 	srv.registerRoutes()
 
@@ -232,7 +235,7 @@ func TestCSRFProtection_RotateOverlayUUID(t *testing.T) {
 		cookies := getRec.Result().Cookies()
 		var csrfCookie *http.Cookie
 		for _, c := range cookies {
-			if c.Name == "csrf_token" {
+			if c.Name == csrfTokenCookieName {
 				csrfCookie = c
 				break
 			}
@@ -275,7 +278,7 @@ func TestCSRFProtection_Logout(t *testing.T) {
 	srv := newTestServer(t, app)
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
-		CookieName:  "csrf_token",
+		CookieName:  csrfTokenCookieName,
 	})
 	srv.registerRoutes()
 
@@ -303,7 +306,7 @@ func TestCSRFProtection_Logout(t *testing.T) {
 		cookies := getRec.Result().Cookies()
 		var csrfCookie *http.Cookie
 		for _, c := range cookies {
-			if c.Name == "csrf_token" {
+			if c.Name == csrfTokenCookieName {
 				csrfCookie = c
 				break
 			}
@@ -312,7 +315,7 @@ func TestCSRFProtection_Logout(t *testing.T) {
 
 		// Now POST logout with CSRF token
 		formData := url.Values{}
-		formData.Set("csrf_token", csrfCookie.Value)
+		formData.Set(csrfTokenCookieName, csrfCookie.Value)
 
 		postReq := httptest.NewRequest(http.MethodPost, "/auth/logout", strings.NewReader(formData.Encode()))
 		postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -337,7 +340,7 @@ func TestCSRFProtection_WebhookExempt(t *testing.T) {
 	srv.webhook = mockWebhook
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
-		CookieName:  "csrf_token",
+		CookieName:  csrfTokenCookieName,
 	})
 	srv.registerRoutes()
 
@@ -357,5 +360,8 @@ func TestCSRFProtection_WebhookExempt(t *testing.T) {
 type mockWebhookHandler struct{}
 
 func (m *mockWebhookHandler) HandleEventSub(c echo.Context) error {
-	return c.NoContent(http.StatusOK)
+	if err := c.NoContent(http.StatusOK); err != nil {
+		return fmt.Errorf("failed to send no content response: %w", err)
+	}
+	return nil
 }

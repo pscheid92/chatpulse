@@ -3,6 +3,7 @@ package broadcast
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -16,10 +17,10 @@ import (
 
 const (
 	// Performance-critical constants (intentionally not configurable - see CLAUDE.md)
-	redisTimeout                   = 2 * time.Second  // Coordinated with circuit breaker threshold
-	commandTimeout                 = 5 * time.Second  // Actor command timeout
+	redisTimeout                   = 2 * time.Second       // Coordinated with circuit breaker threshold
+	commandTimeout                 = 5 * time.Second       // Actor command timeout
 	maxTickDuration                = 40 * time.Millisecond // Leave 10ms margin from 50ms tick
-	stopTimeout                    = 10 * time.Second // Graceful shutdown timeout
+	stopTimeout                    = 10 * time.Second      // Graceful shutdown timeout
 	circuitBreakerFailureThreshold = 5
 	circuitBreakerOpenDuration     = 30 * time.Second
 )
@@ -71,8 +72,8 @@ type Broadcaster struct {
 	activeClients        map[uuid.UUID]sessionClients
 	sessionHealth        map[uuid.UUID]sessionHealth
 	engine               domain.Engine
-	onFirstClient        func(sessionUUID uuid.UUID)
-	onSessionEmpty       func(sessionUUID uuid.UUID)
+	onFirstClient        func(ctx context.Context, sessionUUID uuid.UUID)
+	onSessionEmpty       func(ctx context.Context, sessionUUID uuid.UUID)
 	done                 chan struct{}
 	stopTimeout          time.Duration
 	maxClientsPerSession int
@@ -87,7 +88,7 @@ type Broadcaster struct {
 // onSessionEmpty is called when the last client disconnects from a session.
 // maxClientsPerSession limits connections per session (prevents resource exhaustion).
 // tickInterval controls broadcast frequency (lower = lower latency, higher Redis load).
-func NewBroadcaster(engine domain.Engine, onFirstClient func(uuid.UUID), onSessionEmpty func(uuid.UUID), clock clockwork.Clock, maxClientsPerSession int, tickInterval time.Duration) *Broadcaster {
+func NewBroadcaster(engine domain.Engine, onFirstClient func(context.Context, uuid.UUID), onSessionEmpty func(context.Context, uuid.UUID), clock clockwork.Clock, maxClientsPerSession int, tickInterval time.Duration) *Broadcaster {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
 	b := &Broadcaster{
@@ -252,9 +253,15 @@ func (b *Broadcaster) handleRegister(c registerCmd) {
 	// Run callback asynchronously to avoid blocking Register
 	if !exists && b.onFirstClient != nil {
 		go func() {
-			b.onFirstClient(c.sessionUUID)
-			// Note: Errors are handled by the callback itself (app.Service.IncrRefCount)
-			// Worst case: ref count not incremented, session cleaned up early, client reconnects
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("onFirstClient callback panicked",
+						"session_uuid", c.sessionUUID.String(),
+						"panic", r,
+					)
+				}
+			}()
+			b.onFirstClient(b.shutdownCtx, c.sessionUUID)
 		}()
 	}
 
@@ -292,7 +299,7 @@ func (b *Broadcaster) handleUnregister(c unregisterCmd) {
 		metrics.BroadcasterActiveSessions.Set(float64(len(b.activeClients)))
 		metrics.BroadcasterSessionCircuitState.DeleteLabelValues(c.sessionUUID.String())
 		if b.onSessionEmpty != nil {
-			b.onSessionEmpty(c.sessionUUID)
+			b.onSessionEmpty(b.shutdownCtx, c.sessionUUID)
 		}
 		slog.Info("Last client disconnected", "session_uuid", c.sessionUUID.String())
 	} else {
@@ -367,7 +374,7 @@ func (b *Broadcaster) handleTick() {
 
 			b.sessionHealth[sessionUUID] = health
 
-			if err == context.DeadlineExceeded {
+			if errors.Is(err, context.DeadlineExceeded) {
 				slog.Warn("Redis timeout", "session_uuid", sessionUUID.String(), "timeout", redisTimeout)
 			} else {
 				slog.Error("GetCurrentValue error", "session_uuid", sessionUUID.String(), "error", err)
@@ -436,7 +443,7 @@ func (b *Broadcaster) closeAllClients(reason string) {
 		delete(b.sessionHealth, sessionUUID)
 		metrics.BroadcasterSessionCircuitState.DeleteLabelValues(sessionUUID.String())
 		if b.onSessionEmpty != nil {
-			b.onSessionEmpty(sessionUUID)
+			b.onSessionEmpty(b.shutdownCtx, sessionUUID)
 		}
 	}
 	metrics.BroadcasterActiveSessions.Set(0)

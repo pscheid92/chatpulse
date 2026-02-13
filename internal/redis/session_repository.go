@@ -61,8 +61,10 @@ func (s *SessionRepo) ActivateSession(ctx context.Context, sid uuid.UUID, broadc
 		pipe := s.rdb.Pipeline()
 		pipe.HSet(ctx, sk, fieldLastDisconnect, "0")
 		pipe.ZRem(ctx, disconnectedSessionsKey, sid.String())
-		_, err = pipe.Exec(ctx)
-		return err
+		if _, err = pipe.Exec(ctx); err != nil {
+			return fmt.Errorf("failed to resume session: %w", err)
+		}
+		return nil
 	}
 
 	// Create a new session
@@ -79,8 +81,10 @@ func (s *SessionRepo) ActivateSession(ctx context.Context, sid uuid.UUID, broadc
 	// Active sessions get TTL refreshed on every vote
 	pipe.Expire(ctx, sk, 24*time.Hour)
 	pipe.Set(ctx, bk, sid.String(), 0)
-	_, err = pipe.Exec(ctx)
-	return err
+	if _, err = pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+	return nil
 }
 
 func (s *SessionRepo) ResumeSession(ctx context.Context, sid uuid.UUID) error {
@@ -88,8 +92,10 @@ func (s *SessionRepo) ResumeSession(ctx context.Context, sid uuid.UUID) error {
 	pipe := s.rdb.Pipeline()
 	pipe.HSet(ctx, sk, fieldLastDisconnect, "0")
 	pipe.ZRem(ctx, disconnectedSessionsKey, sid.String())
-	_, err := pipe.Exec(ctx)
-	return err
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to resume session: %w", err)
+	}
+	return nil
 }
 
 func (s *SessionRepo) SessionExists(ctx context.Context, sid uuid.UUID) (bool, error) {
@@ -118,7 +124,7 @@ func (s *SessionRepo) DeleteSession(ctx context.Context, sid uuid.UUID) error {
 
 	broadcasterID, err := s.rdb.HGet(ctx, sk, fieldBroadcasterID).Result()
 	if err != nil && !errors.Is(err, goredis.Nil) {
-		return err
+		return fmt.Errorf("failed to get broadcaster ID: %w", err)
 	}
 
 	pipe := s.rdb.Pipeline()
@@ -130,8 +136,10 @@ func (s *SessionRepo) DeleteSession(ctx context.Context, sid uuid.UUID) error {
 		bk := broadcasterKey(broadcasterID)
 		pipe.Del(ctx, bk)
 	}
-	_, err = pipe.Exec(ctx)
-	return err
+	if _, err = pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to delete session: %w", err)
+	}
+	return nil
 }
 
 func (s *SessionRepo) MarkDisconnected(ctx context.Context, sid uuid.UUID) error {
@@ -146,8 +154,10 @@ func (s *SessionRepo) MarkDisconnected(ctx context.Context, sid uuid.UUID) error
 		Score:  float64(now.Unix()),
 		Member: sid.String(),
 	})
-	_, err := pipe.Exec(ctx)
-	return err
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to mark session as disconnected: %w", err)
+	}
+	return nil
 }
 
 // --- Session queries ---
@@ -161,12 +171,12 @@ func (s *SessionRepo) GetSessionByBroadcaster(ctx context.Context, broadcasterUs
 		return uuid.Nil, false, nil
 	}
 	if err != nil {
-		return uuid.Nil, false, err
+		return uuid.Nil, false, fmt.Errorf("failed to get session by broadcaster: %w", err)
 	}
 
 	id, err := uuid.Parse(result)
 	if err != nil {
-		return uuid.Nil, false, err
+		return uuid.Nil, false, fmt.Errorf("failed to parse session UUID: %w", err)
 	}
 
 	return id, true, nil
@@ -185,7 +195,7 @@ func (s *SessionRepo) GetSessionConfig(ctx context.Context, sid uuid.UUID) (*dom
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch session config: %w", err)
 	}
 
 	configJSON, err := configCmd.Result()
@@ -193,7 +203,7 @@ func (s *SessionRepo) GetSessionConfig(ctx context.Context, sid uuid.UUID) (*dom
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get config JSON: %w", err)
 	}
 
 	var config domain.ConfigSnapshot
@@ -224,10 +234,13 @@ func (s *SessionRepo) UpdateConfig(ctx context.Context, sid uuid.UUID, config do
 	}
 
 	sk := sessionKey(sid)
-	return s.rdb.HSet(ctx, sk,
+	if err := s.rdb.HSet(ctx, sk,
 		fieldConfigJSON, string(configJSON),
 		fieldConfigVersion, config.Version,
-	).Err()
+	).Err(); err != nil {
+		return fmt.Errorf("failed to update config: %w", err)
+	}
+	return nil
 }
 
 // --- Ref counting ---
@@ -236,7 +249,7 @@ func (s *SessionRepo) IncrRefCount(ctx context.Context, sid uuid.UUID) (int64, e
 	rk := refCountKey(sid)
 	count, err := s.rdb.Incr(ctx, rk).Result()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to increment ref count: %w", err)
 	}
 
 	// Defensive check: suspiciously high ref count (likely leak or race condition)
@@ -254,7 +267,7 @@ func (s *SessionRepo) DecrRefCount(ctx context.Context, sid uuid.UUID) (int64, e
 	rk := refCountKey(sid)
 	count, err := s.rdb.Decr(ctx, rk).Result()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to decrement ref count: %w", err)
 	}
 
 	// Defensive check: ref count went negative (underflow - more decrements than increments)

@@ -13,6 +13,8 @@ type MetricsTracer struct{}
 
 var _ pgx.QueryTracer = (*MetricsTracer)(nil)
 
+type queryContextKey struct{}
+
 type queryContext struct {
 	startTime time.Time
 	queryName string
@@ -25,13 +27,13 @@ func (t *MetricsTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, dat
 		startTime: time.Now(),
 		queryName: queryName,
 	}
-	return context.WithValue(ctx, "query_ctx", qctx)
+	return context.WithValue(ctx, queryContextKey{}, qctx)
 }
 
 // TraceQueryEnd is called at the end of a query
 func (t *MetricsTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
 	// Extract query context
-	qctx, ok := ctx.Value("query_ctx").(queryContext)
+	qctx, ok := ctx.Value(queryContextKey{}).(queryContext)
 	if !ok {
 		return
 	}

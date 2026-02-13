@@ -37,7 +37,7 @@ func TestCleanupOrphans_RaceCondition(t *testing.T) {
 	initialSkipped := testutil.ToFloat64(metrics.OrphanSessionsSkippedTotal.WithLabelValues("active"))
 
 	// Act
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 
 	// Assert: Session NOT deleted (ErrSessionActive handled gracefully)
 	// Verify metric incremented
@@ -87,7 +87,7 @@ func TestCleanupOrphans_DeleteSuccess(t *testing.T) {
 	initialDeleted := testutil.ToFloat64(metrics.OrphanSessionsDeletedTotal)
 
 	// Act
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 
 	// Give background goroutine time to complete
 	time.Sleep(50 * time.Millisecond)
@@ -132,7 +132,7 @@ func TestCleanupOrphans_IdempotentUnsubscribe(t *testing.T) {
 	initialErrors := testutil.ToFloat64(metrics.CleanupUnsubscribeErrorsTotal)
 
 	// Act
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 	time.Sleep(50 * time.Millisecond)
 
 	// Assert: No error metric incremented (idempotent success)
@@ -173,7 +173,7 @@ func TestCleanupOrphans_UnsubscribeError(t *testing.T) {
 	initialErrors := testutil.ToFloat64(metrics.CleanupUnsubscribeErrorsTotal)
 
 	// Act
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 	time.Sleep(50 * time.Millisecond)
 
 	// Assert: Error metric incremented
@@ -223,7 +223,7 @@ func TestCleanupOrphans_MultipleOrphans(t *testing.T) {
 	initialSkipped := testutil.ToFloat64(metrics.OrphanSessionsSkippedTotal.WithLabelValues("active"))
 
 	// Act
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 	time.Sleep(50 * time.Millisecond)
 
 	// Assert
@@ -271,7 +271,7 @@ func TestCleanupOrphans_UserNotFound(t *testing.T) {
 	initialErrors := testutil.ToFloat64(metrics.CleanupUnsubscribeErrorsTotal)
 
 	// Act
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 	time.Sleep(50 * time.Millisecond)
 
 	// Assert: No error metric (user not found is handled gracefully)
@@ -296,7 +296,7 @@ func TestCleanupOrphans_MetricsDuration(t *testing.T) {
 	initialScans := testutil.ToFloat64(metrics.OrphanCleanupScansTotal)
 
 	// Act
-	svc.CleanupOrphans(context.Background())
+	_ = svc.CleanupOrphans(context.Background())
 
 	// Assert: Scan metric incremented
 	assert.Equal(t, initialScans+1, testutil.ToFloat64(metrics.OrphanCleanupScansTotal))

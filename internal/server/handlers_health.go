@@ -36,23 +36,32 @@ func (s *Server) handleStartup(c echo.Context) error {
 
 	for _, check := range checks {
 		if err := check.fn(ctx); err != nil {
-			return c.JSON(503, map[string]any{
+			if err := c.JSON(503, map[string]any{
 				"status":       "unhealthy",
 				"failed_check": check.name,
 				"error":        err.Error(),
-			})
+			}); err != nil {
+				return fmt.Errorf("failed to send JSON response: %w", err)
+			}
+			return nil
 		}
 	}
 
-	return c.JSON(200, map[string]string{"status": "ready"})
+	if err := c.JSON(200, map[string]string{"status": "ready"}); err != nil {
+		return fmt.Errorf("failed to send JSON response: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleLiveness(c echo.Context) error {
 	uptime := time.Since(s.startTime).Seconds()
-	return c.JSON(200, map[string]any{
+	if err := c.JSON(200, map[string]any{
 		"status": "ok",
 		"uptime": uptime,
-	})
+	}); err != nil {
+		return fmt.Errorf("failed to write liveness response: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleReadiness(c echo.Context) error {
@@ -70,25 +79,37 @@ func (s *Server) handleReadiness(c echo.Context) error {
 
 	for _, check := range checks {
 		if err := check.fn(ctx); err != nil {
-			return c.JSON(503, map[string]any{
+			if err := c.JSON(503, map[string]any{
 				"status":       "unhealthy",
 				"failed_check": check.name,
 				"error":        err.Error(),
-			})
+			}); err != nil {
+				return fmt.Errorf("failed to send JSON response: %w", err)
+			}
+			return nil
 		}
 	}
 
-	return c.JSON(200, map[string]string{"status": "ready"})
+	if err := c.JSON(200, map[string]string{"status": "ready"}); err != nil {
+		return fmt.Errorf("failed to send JSON response: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) checkRedis(ctx context.Context) error {
 	client := s.getRedisHealthChecker()
-	return client.Ping(ctx).Err()
+	if err := client.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("redis ping failed: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) checkPostgres(ctx context.Context) error {
 	checker := s.getPostgresHealthChecker()
-	return checker.Ping(ctx)
+	if err := checker.Ping(ctx); err != nil {
+		return fmt.Errorf("postgres ping failed: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) checkRedisFunc(ctx context.Context) error {
@@ -96,8 +117,8 @@ func (s *Server) checkRedisFunc(ctx context.Context) error {
 	result := client.FunctionList(ctx, goredis.FunctionListQuery{
 		LibraryNamePattern: "chatpulse",
 	})
-	if result.Err() != nil {
-		return result.Err()
+	if err := result.Err(); err != nil {
+		return fmt.Errorf("redis function list failed: %w", err)
 	}
 	libs, _ := result.Result()
 	if len(libs) == 0 {
@@ -121,5 +142,8 @@ func (s *Server) getPostgresHealthChecker() postgresHealthChecker {
 }
 
 func (s *Server) handleVersion(c echo.Context) error {
-	return c.JSON(200, version.Get())
+	if err := c.JSON(200, version.Get()); err != nil {
+		return fmt.Errorf("failed to write version response: %w", err)
+	}
+	return nil
 }

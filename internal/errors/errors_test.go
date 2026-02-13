@@ -84,8 +84,8 @@ func TestExternalError(t *testing.T) {
 
 func TestWithContext(t *testing.T) {
 	err := ValidationError("invalid config")
-	err.WithContext("field", "trigger_for")
-	err.WithContext("value", "")
+	err = err.WithContext("field", "trigger_for")
+	err = err.WithContext("value", "")
 
 	assert.Len(t, err.Context, 2)
 	assert.Equal(t, "trigger_for", err.Context["field"])
@@ -120,7 +120,7 @@ func TestWithContextNilMap(t *testing.T) {
 		Context: nil,
 	}
 
-	err.WithContext("key", "value")
+	err = err.WithContext("key", "value")
 
 	assert.NotNil(t, err.Context)
 	assert.Equal(t, "value", err.Context["key"])
@@ -258,8 +258,8 @@ func TestErrorStringWithCause(t *testing.T) {
 
 func TestContextFieldOverwrite(t *testing.T) {
 	err := ValidationError("test")
-	err.WithContext("field", "original")
-	err.WithContext("field", "overwritten")
+	err = err.WithContext("field", "original")
+	err = err.WithContext("field", "overwritten")
 
 	assert.Equal(t, "overwritten", err.Context["field"])
 }

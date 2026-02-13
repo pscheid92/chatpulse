@@ -58,7 +58,7 @@ func (m *mockEngine) setValue(v float64) {
 }
 
 // testBroadcaster sets up a Broadcaster with a test HTTP server.
-func testBroadcaster(t *testing.T, engine *mockEngine, onSessionEmpty func(uuid.UUID)) (*Broadcaster, func(sessionUUID uuid.UUID) *ws.Conn) {
+func testBroadcaster(t *testing.T, engine *mockEngine, onSessionEmpty func(context.Context, uuid.UUID)) (*Broadcaster, func(sessionUUID uuid.UUID) *ws.Conn) {
 	t.Helper()
 
 	if engine == nil {
@@ -155,7 +155,7 @@ func TestBroadcaster_MultipleClients(t *testing.T) {
 func TestBroadcaster_OnSessionEmpty(t *testing.T) {
 	var mu sync.Mutex
 	var disconnectedSessions []uuid.UUID
-	onEmpty := func(id uuid.UUID) {
+	onEmpty := func(_ context.Context, id uuid.UUID) {
 		mu.Lock()
 		defer mu.Unlock()
 		disconnectedSessions = append(disconnectedSessions, id)
@@ -364,7 +364,7 @@ func TestBroadcasterStopCleansUpGoroutines(t *testing.T) {
 func TestBroadcasterStopWithActiveClients(t *testing.T) {
 	var mu sync.Mutex
 	var emptyCalled []uuid.UUID
-	onEmpty := func(id uuid.UUID) {
+	onEmpty := func(_ context.Context, id uuid.UUID) {
 		mu.Lock()
 		defer mu.Unlock()
 		emptyCalled = append(emptyCalled, id)

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	goredis "github.com/redis/go-redis/v9"
-	"github.com/sony/gobreaker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +16,7 @@ func TestCircuitBreakerHook_NormalOperation(t *testing.T) {
 	hook := NewCircuitBreakerHook()
 
 	// Circuit should start in closed state
-	assert.Equal(t, gobreaker.StateClosed, hook.GetState())
+	assert.Equal(t, circuitbreaker.ClosedState, hook.GetState())
 
 	// Simulate successful operations
 	ctx := context.Background()
@@ -29,11 +29,11 @@ func TestCircuitBreakerHook_NormalOperation(t *testing.T) {
 	}
 
 	// Circuit should remain closed
-	assert.Equal(t, gobreaker.StateClosed, hook.GetState())
-	counts := hook.GetCounts()
-	assert.Equal(t, uint32(10), counts.Requests)
-	assert.Equal(t, uint32(10), counts.TotalSuccesses)
-	assert.Equal(t, uint32(0), counts.TotalFailures)
+	assert.Equal(t, circuitbreaker.ClosedState, hook.GetState())
+	m := hook.GetMetrics()
+	assert.Equal(t, uint(10), m.Executions())
+	assert.Equal(t, uint(10), m.Successes())
+	assert.Equal(t, uint(0), m.Failures())
 }
 
 func TestCircuitBreakerHook_TransientFailures(t *testing.T) {
@@ -48,11 +48,11 @@ func TestCircuitBreakerHook_TransientFailures(t *testing.T) {
 		})
 		err := processHook(ctx, goredis.NewStringCmd(ctx, "get", "key"))
 		assert.Error(t, err)
-		assert.NotEqual(t, gobreaker.ErrOpenState, err)
+		assert.NotErrorIs(t, err, circuitbreaker.ErrOpen)
 	}
 
 	// Circuit should remain closed (not enough requests to trip)
-	assert.Equal(t, gobreaker.StateClosed, hook.GetState())
+	assert.Equal(t, circuitbreaker.ClosedState, hook.GetState())
 }
 
 func TestCircuitBreakerHook_OpensAfterSustainedFailures(t *testing.T) {
@@ -70,7 +70,7 @@ func TestCircuitBreakerHook_OpensAfterSustainedFailures(t *testing.T) {
 	}
 
 	// Circuit should now be open
-	assert.Equal(t, gobreaker.StateOpen, hook.GetState())
+	assert.Equal(t, circuitbreaker.OpenState, hook.GetState())
 }
 
 func TestCircuitBreakerHook_FailsFastWhenOpen(t *testing.T) {
@@ -87,7 +87,7 @@ func TestCircuitBreakerHook_FailsFastWhenOpen(t *testing.T) {
 	}
 
 	// Circuit should be open
-	require.Equal(t, gobreaker.StateOpen, hook.GetState())
+	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
 	// Next request should fail fast without calling Redis
 	called := false
@@ -107,17 +107,15 @@ func TestCircuitBreakerHook_FailsFastWhenOpen(t *testing.T) {
 }
 
 func TestCircuitBreakerHook_RecoveryToHalfOpen(t *testing.T) {
-	// Create hook with very short timeout for testing
+	// Create hook with very short delay for testing
+	cb := circuitbreaker.NewBuilder[any]().
+		WithFailureThresholdRatio(3, 3).
+		WithDelay(100 * time.Millisecond). // Very short delay for test
+		WithSuccessThreshold(3).
+		Build()
+
 	hook := &CircuitBreakerHook{
-		cb: gobreaker.NewCircuitBreaker(gobreaker.Settings{
-			Name:        "redis-test",
-			MaxRequests: 3,
-			Interval:    60 * time.Second,
-			Timeout:     100 * time.Millisecond, // Very short timeout for test
-			ReadyToTrip: func(counts gobreaker.Counts) bool {
-				return counts.Requests >= 3 && float64(counts.TotalFailures)/float64(counts.Requests) >= 0.6
-			},
-		}),
+		cb: cb,
 		cache: &cacheStore{
 			values: make(map[string]cachedValue),
 		},
@@ -133,9 +131,9 @@ func TestCircuitBreakerHook_RecoveryToHalfOpen(t *testing.T) {
 		_ = processHook(ctx, goredis.NewStringCmd(ctx, "get", "key"))
 	}
 
-	require.Equal(t, gobreaker.StateOpen, hook.GetState())
+	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
-	// Wait for timeout
+	// Wait for delay
 	time.Sleep(150 * time.Millisecond)
 
 	// Next request should enter half-open state
@@ -146,21 +144,19 @@ func TestCircuitBreakerHook_RecoveryToHalfOpen(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Circuit should be in half-open state
-	assert.Equal(t, gobreaker.StateHalfOpen, hook.GetState())
+	assert.Equal(t, circuitbreaker.HalfOpenState, hook.GetState())
 }
 
 func TestCircuitBreakerHook_ClosesAfterSuccessfulRecovery(t *testing.T) {
-	// Create hook with very short timeout
+	// Create hook with very short delay
+	cb := circuitbreaker.NewBuilder[any]().
+		WithFailureThresholdRatio(3, 3).
+		WithDelay(100 * time.Millisecond).
+		WithSuccessThreshold(3).
+		Build()
+
 	hook := &CircuitBreakerHook{
-		cb: gobreaker.NewCircuitBreaker(gobreaker.Settings{
-			Name:        "redis-test",
-			MaxRequests: 3,
-			Interval:    60 * time.Second,
-			Timeout:     100 * time.Millisecond,
-			ReadyToTrip: func(counts gobreaker.Counts) bool {
-				return counts.Requests >= 3 && float64(counts.TotalFailures)/float64(counts.Requests) >= 0.6
-			},
-		}),
+		cb: cb,
 		cache: &cacheStore{
 			values: make(map[string]cachedValue),
 		},
@@ -176,12 +172,12 @@ func TestCircuitBreakerHook_ClosesAfterSuccessfulRecovery(t *testing.T) {
 		_ = processHook(ctx, goredis.NewStringCmd(ctx, "get", "key"))
 	}
 
-	require.Equal(t, gobreaker.StateOpen, hook.GetState())
+	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
-	// Wait for timeout → half-open
+	// Wait for delay → half-open
 	time.Sleep(150 * time.Millisecond)
 
-	// Make 3 successful requests (MaxRequests)
+	// Make 3 successful requests (SuccessThreshold)
 	for i := 0; i < 3; i++ {
 		processHook := hook.ProcessHook(func(ctx context.Context, cmd goredis.Cmder) error {
 			return nil
@@ -191,7 +187,7 @@ func TestCircuitBreakerHook_ClosesAfterSuccessfulRecovery(t *testing.T) {
 	}
 
 	// Circuit should be closed again
-	assert.Equal(t, gobreaker.StateClosed, hook.GetState())
+	assert.Equal(t, circuitbreaker.ClosedState, hook.GetState())
 }
 
 func TestCircuitBreakerHook_CachesFallback(t *testing.T) {
@@ -237,7 +233,7 @@ func TestCircuitBreakerHook_ServesCachedValueWhenOpen(t *testing.T) {
 		_ = processHook(ctx, goredis.NewStringCmd(ctx, "set", "key", "value"))
 	}
 
-	require.Equal(t, gobreaker.StateOpen, hook.GetState())
+	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
 	// Try to GET the cached key
 	processHook := hook.ProcessHook(func(ctx context.Context, cmd goredis.Cmder) error {
@@ -275,7 +271,7 @@ func TestCircuitBreakerHook_CacheExpiry(t *testing.T) {
 		_ = processHook(ctx, goredis.NewStringCmd(ctx, "set", "key", "value"))
 	}
 
-	require.Equal(t, gobreaker.StateOpen, hook.GetState())
+	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
 	// Try to GET the expired key
 	processHook := hook.ProcessHook(func(ctx context.Context, cmd goredis.Cmder) error {
@@ -302,7 +298,7 @@ func TestCircuitBreakerHook_FallbackForReadOnlyFunction(t *testing.T) {
 		_ = processHook(ctx, goredis.NewStringCmd(ctx, "set", "key", "value"))
 	}
 
-	require.Equal(t, gobreaker.StateOpen, hook.GetState())
+	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
 	// Try to call FCALL_RO for get_decayed_value (sentiment read)
 	processHook := hook.ProcessHook(func(ctx context.Context, cmd goredis.Cmder) error {
@@ -331,7 +327,7 @@ func TestCircuitBreakerHook_WriteOperationsFailWhenOpen(t *testing.T) {
 		_ = processHook(ctx, goredis.NewStringCmd(ctx, "get", "key"))
 	}
 
-	require.Equal(t, gobreaker.StateOpen, hook.GetState())
+	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
 	// Try write operations (SET, HSET, FCALL)
 	writeCommands := [][]any{
@@ -367,7 +363,7 @@ func TestCircuitBreakerHook_PipelineFailsWhenOpen(t *testing.T) {
 		_ = processHook(ctx, goredis.NewStringCmd(ctx, "get", "key"))
 	}
 
-	require.Equal(t, gobreaker.StateOpen, hook.GetState())
+	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
 	// Try pipeline operation
 	pipelineHook := hook.ProcessPipelineHook(func(ctx context.Context, cmds []goredis.Cmder) error {
@@ -388,18 +384,40 @@ func TestCircuitBreakerHook_PipelineFailsWhenOpen(t *testing.T) {
 
 func TestStateToFloat(t *testing.T) {
 	tests := []struct {
-		state    gobreaker.State
+		state    circuitbreaker.State
 		expected float64
+		name     string
 	}{
-		{gobreaker.StateClosed, 0},
-		{gobreaker.StateHalfOpen, 1},
-		{gobreaker.StateOpen, 2},
+		{circuitbreaker.ClosedState, 0, "closed"},
+		{circuitbreaker.HalfOpenState, 1, "half-open"},
+		{circuitbreaker.OpenState, 2, "open"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.state.String(), func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			result := stateToFloat(tt.state)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestCircuitBreakerHook_RedisNilIsNotFailure(t *testing.T) {
+	hook := NewCircuitBreakerHook()
+	ctx := context.Background()
+
+	// Simulate many redis.Nil responses (cache misses)
+	for i := 0; i < 10; i++ {
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd goredis.Cmder) error {
+			return goredis.Nil
+		})
+		err := processHook(ctx, goredis.NewStringCmd(ctx, "get", "missing-key"))
+		// redis.Nil gets wrapped in our error format
+		assert.Error(t, err)
+	}
+
+	// Circuit should remain closed — redis.Nil is not a failure
+	assert.Equal(t, circuitbreaker.ClosedState, hook.GetState())
+	m := hook.GetMetrics()
+	assert.Equal(t, uint(0), m.Failures())
+	assert.Equal(t, uint(10), m.Successes())
 }

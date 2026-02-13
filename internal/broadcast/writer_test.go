@@ -1,6 +1,7 @@
 package broadcast
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -105,7 +106,8 @@ func TestClientWriter_GracefulStop(t *testing.T) {
 	_, _, err = client.ReadMessage()
 
 	// WebSocket library returns CloseError when close frame is received
-	if closeErr, ok := err.(*websocket.CloseError); ok {
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
 		assert.Equal(t, websocket.CloseNormalClosure, closeErr.Code)
 		assert.Contains(t, closeErr.Text, "shutting down")
 	} else {

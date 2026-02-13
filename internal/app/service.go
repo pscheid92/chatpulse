@@ -30,24 +30,23 @@ const (
 // Service is the application layer — the only component that references multiple
 // domain components. It orchestrates all use cases.
 type Service struct {
-	users            domain.UserRepository
-	configs          domain.ConfigRepository
-	store            domain.SessionRepository
-	engine           domain.Engine
-	twitch           domain.TwitchService
-	redis            *redis.Client
-	activationGroup  singleflight.Group
-	clock            clockwork.Clock
-	cleanupStopCh    chan struct{}
-	stopOnce         sync.Once
-	cleanupWg        sync.WaitGroup
-	cleanupFailures  int           // consecutive cleanup failures
-	cleanupBackoff   time.Duration // current backoff duration
-	cleanupMu        sync.Mutex    // protects cleanup state
-	orphanMaxAge     time.Duration
-	cleanupInterval  time.Duration
-	leaderElector    *LeaderElector // Redis-based leader election for cleanup
-	isLeader         bool           // true if this instance is cleanup leader
+	users           domain.UserRepository
+	configs         domain.ConfigRepository
+	store           domain.SessionRepository
+	engine          domain.Engine
+	twitch          domain.TwitchService
+	redis           *redis.Client
+	activationGroup singleflight.Group
+	clock           clockwork.Clock
+	cleanupStopCh   chan struct{}
+	stopOnce        sync.Once
+	cleanupWg       sync.WaitGroup
+	cleanupFailures int        // consecutive cleanup failures
+	cleanupMu       sync.Mutex // protects cleanup state
+	orphanMaxAge    time.Duration
+	cleanupInterval time.Duration
+	leaderElector   *LeaderElector // Redis-based leader election for cleanup
+	isLeader        bool           // true if this instance is cleanup leader
 }
 
 // NewService creates the application layer service.
@@ -88,22 +87,38 @@ func generateInstanceID() string {
 
 // GetUserByID retrieves a user by internal ID.
 func (s *Service) GetUserByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
-	return s.users.GetByID(ctx, userID)
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user by ID: %w", err)
+	}
+	return user, nil
 }
 
 // GetUserByOverlayUUID retrieves a user by overlay UUID.
 func (s *Service) GetUserByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
-	return s.users.GetByOverlayUUID(ctx, overlayUUID)
+	user, err := s.users.GetByOverlayUUID(ctx, overlayUUID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user by overlay UUID: %w", err)
+	}
+	return user, nil
 }
 
 // GetConfig retrieves a user's config.
 func (s *Service) GetConfig(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
-	return s.configs.GetByUserID(ctx, userID)
+	config, err := s.configs.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config by user ID: %w", err)
+	}
+	return config, nil
 }
 
 // UpsertUser creates or updates a user.
 func (s *Service) UpsertUser(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error) {
-	return s.users.Upsert(ctx, twitchUserID, twitchUsername, accessToken, refreshToken, tokenExpiry)
+	user, err := s.users.Upsert(ctx, twitchUserID, twitchUsername, accessToken, refreshToken, tokenExpiry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upsert user: %w", err)
+	}
+	return user, nil
 }
 
 // EnsureSessionActive activates a session if not already active, or resumes it.
@@ -127,7 +142,7 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 
 		exists, err := s.store.SessionExists(activationCtx, overlayUUID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to check session existence: %w", err)
 		}
 
 		if exists {
@@ -137,12 +152,12 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 		// New session — need DB lookup
 		user, err := s.users.GetByOverlayUUID(activationCtx, overlayUUID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get user by overlay UUID: %w", err)
 		}
 
 		config, err := s.configs.GetByUserID(activationCtx, user.ID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get config by user ID: %w", err)
 		}
 
 		snapshot := domain.ConfigSnapshot{
@@ -155,7 +170,7 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 		}
 
 		if err := s.store.ActivateSession(activationCtx, overlayUUID, user.TwitchUserID, snapshot); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to activate session: %w", err)
 		}
 
 		if s.twitch != nil {
@@ -163,7 +178,7 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 				if delErr := s.store.DeleteSession(activationCtx, overlayUUID); delErr != nil {
 					slog.Error("Failed to rollback session after subscribe failure", "session_uuid", overlayUUID.String(), "error", delErr)
 				}
-				return nil, err
+				return nil, fmt.Errorf("failed to subscribe to EventSub: %w", err)
 			}
 		}
 
@@ -177,7 +192,7 @@ func (s *Service) EnsureSessionActive(ctx context.Context, overlayUUID uuid.UUID
 	case <-ctx.Done():
 		// Caller's context timed out (e.g., 5s WebSocket deadline)
 		// Activation may still be running in background (benefits future callers)
-		slog.Warn("session activation timeout (caller-specific)",
+		slog.Warn("Session activation timeout (caller-specific)",
 			"session_uuid", overlayUUID,
 			"error", ctx.Err())
 		metrics.SessionActivationTimeoutsTotal.WithLabelValues("context_deadline").Inc()
@@ -207,18 +222,24 @@ func (s *Service) OnSessionEmpty(ctx context.Context, sessionUUID uuid.UUID) {
 // Called when the first local client connects to a session (after EnsureSessionActive).
 func (s *Service) IncrRefCount(ctx context.Context, sessionUUID uuid.UUID) error {
 	_, err := s.store.IncrRefCount(ctx, sessionUUID)
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to increment ref count: %w", err)
+	}
+	return nil
 }
 
 // ResetSentiment resets the sentiment value for a session to zero.
 func (s *Service) ResetSentiment(ctx context.Context, overlayUUID uuid.UUID) error {
-	return s.engine.ResetSentiment(ctx, overlayUUID)
+	if err := s.engine.ResetSentiment(ctx, overlayUUID); err != nil {
+		return fmt.Errorf("failed to reset sentiment: %w", err)
+	}
+	return nil
 }
 
 // SaveConfig validates and saves the config, updating the live session if active.
 func (s *Service) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, overlayUUID uuid.UUID) error {
 	if err := s.configs.Update(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed); err != nil {
-		return err
+		return fmt.Errorf("failed to update config: %w", err)
 	}
 
 	// Fetch updated config to get new version (incremented by trigger)
@@ -264,7 +285,11 @@ func (s *Service) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, 
 
 // RotateOverlayUUID generates a new overlay UUID for a user.
 func (s *Service) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
-	return s.users.RotateOverlayUUID(ctx, userID)
+	newUUID, err := s.users.RotateOverlayUUID(ctx, userID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to rotate overlay UUID: %w", err)
+	}
+	return newUUID, nil
 }
 
 // CleanupOrphans removes sessions that have been disconnected longer than orphanMaxAge.
@@ -290,7 +315,7 @@ func (s *Service) CleanupOrphans(ctx context.Context) error {
 	orphans, err := s.store.ListOrphans(scanCtx, s.orphanMaxAge)
 	if err != nil {
 		slog.Error("ListOrphans error", "error", err)
-		return err
+		return fmt.Errorf("failed to list orphan sessions: %w", err)
 	}
 
 	var deletedSessions []uuid.UUID
@@ -407,7 +432,7 @@ func (s *Service) startCleanupTimer() {
 						backoff = maxCleanupBackoff
 					}
 
-					slog.Info("cleanup backoff after failures",
+					slog.Info("Cleanup backoff after failures",
 						"failures", failures,
 						"backoff_seconds", backoff.Seconds())
 
@@ -426,18 +451,18 @@ func (s *Service) startCleanupTimer() {
 				if !s.isLeader {
 					acquired, err := s.leaderElector.TryAcquire(context.Background())
 					if err != nil {
-						slog.Error("failed to acquire leader lock", "error", err)
+						slog.Error("Failed to acquire leader lock", "error", err)
 						metrics.LeaderElectionFailuresTotal.WithLabelValues("acquire_failed").Inc()
 						continue
 					}
 					if !acquired {
-						slog.Debug("skipping cleanup (not leader)")
+						slog.Debug("Skipping cleanup (not leader)")
 						metrics.CleanupSkippedTotal.WithLabelValues("not_leader").Inc()
 						continue
 					}
 					s.isLeader = true
 					metrics.CleanupLeaderGauge.WithLabelValues(s.leaderElector.instanceID).Set(1)
-					slog.Info("became cleanup leader", "instance_id", s.leaderElector.instanceID)
+					slog.Info("Became cleanup leader", "instance_id", s.leaderElector.instanceID)
 				}
 
 				// Run cleanup as leader
@@ -447,11 +472,11 @@ func (s *Service) startCleanupTimer() {
 				if err != nil {
 					s.cleanupFailures++
 					metrics.OrphanCleanupFailuresTotal.Inc()
-					slog.Error("cleanup failed", "error", err, "failures", s.cleanupFailures)
+					slog.Error("Cleanup failed", "error", err, "failures", s.cleanupFailures)
 				} else {
 					// Reset on success
 					if s.cleanupFailures > 0 {
-						slog.Info("cleanup recovered", "previous_failures", s.cleanupFailures)
+						slog.Info("Cleanup recovered", "previous_failures", s.cleanupFailures)
 					}
 					s.cleanupFailures = 0
 				}
@@ -461,7 +486,7 @@ func (s *Service) startCleanupTimer() {
 				// Renew leadership lease
 				if s.isLeader {
 					if err := s.leaderElector.Renew(context.Background()); err != nil {
-						slog.Warn("lost leader lock", "error", err)
+						slog.Warn("Lost leader lock", "error", err)
 						metrics.LeaderElectionFailuresTotal.WithLabelValues("renew_failed").Inc()
 						metrics.CleanupLeaderGauge.WithLabelValues(s.leaderElector.instanceID).Set(0)
 						s.isLeader = false
@@ -485,9 +510,9 @@ func (s *Service) Stop() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := s.leaderElector.Release(ctx); err != nil {
-				slog.Error("failed to release leader lock", "error", err)
+				slog.Error("Failed to release leader lock", "error", err)
 			} else {
-				slog.Info("released cleanup leader lock")
+				slog.Info("Released cleanup leader lock")
 			}
 		}
 

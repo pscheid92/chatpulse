@@ -73,7 +73,7 @@ func ConnectWithConfig(ctx context.Context, databaseURL string, cfg PoolConfig) 
 			// Success: verify with ping
 			pingErr := pool.Ping(ctx)
 			if pingErr == nil {
-				slog.Info("database connected",
+				slog.Info("Database connected",
 					"attempt", attempt,
 					"min_conns", cfg.MinConns,
 					"max_conns", cfg.MaxConns)
@@ -85,7 +85,7 @@ func ConnectWithConfig(ctx context.Context, databaseURL string, cfg PoolConfig) 
 		}
 
 		if attempt < cfg.MaxRetries {
-			slog.Warn("database connection failed, retrying",
+			slog.Warn("Database connection failed, retrying",
 				"attempt", attempt,
 				"backoff_seconds", backoff.Seconds(),
 				"error", err)

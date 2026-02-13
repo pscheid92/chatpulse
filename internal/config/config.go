@@ -60,7 +60,7 @@ func Load() (*Config, error) {
 
 	var cfg Config
 	if err := env.Load(&cfg, nil); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load environment variables: %w", err)
 	}
 
 	if err := validate(&cfg); err != nil {

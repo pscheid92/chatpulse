@@ -74,14 +74,14 @@ func (c *twitchOAuthHTTPClient) exchangeCode(ctx context.Context, code string) (
 
 	req, err := http.NewRequestWithContext(ctx, "POST", twitchTokenURL, nil)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, fmt.Errorf("failed to create token request: %w", err)
 	}
 	req.URL.RawQuery = data.Encode()
 
 	client := &http.Client{Timeout: httpCallTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, fmt.Errorf("failed to execute token request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -96,7 +96,7 @@ func (c *twitchOAuthHTTPClient) exchangeCode(ctx context.Context, code string) (
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", "", 0, err
+		return "", "", 0, fmt.Errorf("failed to decode token response: %w", err)
 	}
 
 	return tokenResp.AccessToken, tokenResp.RefreshToken, tokenResp.ExpiresIn, nil
@@ -105,7 +105,7 @@ func (c *twitchOAuthHTTPClient) exchangeCode(ctx context.Context, code string) (
 func (c *twitchOAuthHTTPClient) fetchTwitchUser(ctx context.Context, accessToken string) (string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", twitchUsersURL, nil)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to create user request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Client-Id", c.clientID)
@@ -113,7 +113,7 @@ func (c *twitchOAuthHTTPClient) fetchTwitchUser(ctx context.Context, accessToken
 	client := &http.Client{Timeout: httpCallTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to execute user request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -130,7 +130,7 @@ func (c *twitchOAuthHTTPClient) fetchTwitchUser(ctx context.Context, accessToken
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&userResp); err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to decode user response: %w", err)
 	}
 
 	if len(userResp.Data) == 0 {

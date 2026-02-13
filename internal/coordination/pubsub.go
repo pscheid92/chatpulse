@@ -2,6 +2,7 @@ package coordination
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -29,7 +30,9 @@ func NewConfigInvalidator(redis *redis.Client, engine domain.Engine) *ConfigInva
 // Blocks until ctx is cancelled.
 func (c *ConfigInvalidator) Start(ctx context.Context) {
 	pubsub := c.redis.Subscribe(ctx, "config:invalidate")
-	defer pubsub.Close()
+	defer func() {
+		_ = pubsub.Close()
+	}()
 
 	ch := pubsub.Channel()
 	for {
@@ -65,5 +68,8 @@ func (c *ConfigInvalidator) handleInvalidation(payload string) {
 // PublishConfigInvalidation broadcasts a config invalidation message to all instances.
 // This should be called after updating a user's config in the database.
 func PublishConfigInvalidation(ctx context.Context, redis *redis.Client, overlayUUID uuid.UUID) error {
-	return redis.Publish(ctx, "config:invalidate", overlayUUID.String()).Err()
+	if err := redis.Publish(ctx, "config:invalidate", overlayUUID.String()).Err(); err != nil {
+		return fmt.Errorf("failed to publish config invalidation: %w", err)
+	}
+	return nil
 }

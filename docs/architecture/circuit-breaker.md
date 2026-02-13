@@ -22,40 +22,40 @@ We implemented the circuit breaker using a **hooks-based approach** rather than 
 └──────────┘    │ (requests pass through)
       │         │
       │ 5 failures @ 60% rate
-      │         │
+      │         │  (within 10s window)
       ▼         │
 ┌──────────┐    │
 │   OPEN   │    │ Fail fast
 └──────────┘    │ (no Redis calls)
       │         │
-      │ 10s timeout
+      │ 30s delay
       │         │
       ▼         │
 ┌──────────┐    │
 │ HALF-OPEN│    │ Testing recovery
-└──────────┘    │ (3 test requests)
+└──────────┘    │ (1 test request)
       │         │
-      │ 3 successes
+      │ 1 success
       └─────────┘
 ```
 
 ### State Transitions
 
 **CLOSED → OPEN:**
-- Trigger: 5+ requests with ≥60% failure rate within 60-second window
+- Trigger: 5+ requests with ≥60% failure rate within 10-second rolling window
 - Behavior: Circuit opens, all requests fail fast without calling Redis
 
 **OPEN → HALF-OPEN:**
-- Trigger: 10 seconds elapsed since circuit opened
-- Behavior: Allow limited requests (MaxRequests=3) to test if Redis recovered
+- Trigger: 30 seconds elapsed since circuit opened
+- Behavior: Allow 1 test request to check if Redis recovered
 
 **HALF-OPEN → CLOSED:**
-- Trigger: 3 consecutive successful requests
+- Trigger: 1 successful request
 - Behavior: Circuit closes, normal operation resumes
 
 **HALF-OPEN → OPEN:**
 - Trigger: Any failure during half-open state
-- Behavior: Circuit re-opens for another 10-second timeout
+- Behavior: Circuit re-opens for another 30-second delay
 
 ## Fallback Behavior
 
@@ -100,26 +100,21 @@ We implemented the circuit breaker using a **hooks-based approach** rather than 
 ## Configuration
 
 ```go
-gobreaker.Settings{
-    Name:        "redis",
-    MaxRequests: 3,              // Half-open: allow 3 test requests
-    Interval:    60 * time.Second,  // Rolling window for failure counting
-    Timeout:     10 * time.Second,  // How long circuit stays open
-    ReadyToTrip: func(counts gobreaker.Counts) bool {
-        // Open if ≥5 requests and ≥60% failures
-        return counts.Requests >= 5 && 
-               float64(counts.TotalFailures)/float64(counts.Requests) >= 0.6
-    },
-}
+circuitbreaker.NewBuilder[any]().
+    WithFailureRateThreshold(0.6, 5, 10*time.Second). // 60% failure rate, min 5 requests, 10s rolling window
+    WithDelay(30 * time.Second).                       // Wait 30s before transitioning to half-open
+    WithSuccessThreshold(1).                           // 1 success in half-open to close
+    OnStateChanged(func(e circuitbreaker.StateChangedEvent) { ... }).
+    Build()
 ```
 
 ### Tuning Parameters
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| **Failure Threshold** | 5 requests @ 60% | Avoids false positives from transient failures |
-| **Timeout** | 10 seconds | Balance between recovery speed and Redis stability |
-| **MaxRequests** | 3 | Sufficient to verify recovery without overload |
+| **Failure Rate Threshold** | 60% with min 5 requests in 10s | Avoids false positives from transient failures |
+| **Delay** | 30 seconds | Gives Redis time to recover before test requests |
+| **Success Threshold** | 1 | Conservative: single success proves recovery |
 | **Cache TTL** | 5 minutes | Stale data acceptable for short period during outages |
 
 ## Metrics
@@ -162,10 +157,11 @@ rate(redis_operations_total[5m])
 ## Testing
 
 ### Unit Tests
-- `circuit_breaker_hook_test.go` - 13 test cases
+- `circuit_breaker_hook_test.go` - 14 test cases
 - Covers all state transitions
 - Validates cache behavior and TTL
 - Tests command-specific fallback logic
+- Verifies `redis.Nil` is not counted as a failure
 
 ### Integration Tests
 - `circuit_breaker_integration_test.go` - 3 scenarios
@@ -249,8 +245,14 @@ rdb.AddHook(&MetricsHook{})           // Outer - wraps circuit breaker
 
 Circuit breaker hook executes first, so metrics capture both successful operations and circuit-breaker-blocked operations.
 
+### Standalone API (TryAcquirePermit)
+We use failsafe-go's **standalone API** (`TryAcquirePermit` + `RecordSuccess`/`RecordError`) rather than `failsafe.With().Run()`. This fits the Redis hooks pattern — we control execution flow via `next()` and need custom fallback logic when the circuit is open.
+
+### redis.Nil Handling
+`redis.Nil` (cache miss) is explicitly treated as a success, not a failure. This is correct — a cache miss is not a Redis infrastructure failure. The previous gobreaker implementation counted `redis.Nil` as a failure since it was a non-nil error returned from `Execute`.
+
 ### Thread Safety
-- Circuit breaker state managed by `gobreaker` library (thread-safe)
+- Circuit breaker state managed by `failsafe-go` library (mutex-protected, concurrency safe)
 - Cache uses `sync.RWMutex` for concurrent access
 - No additional locking required
 
@@ -282,6 +284,7 @@ Pre-populate cache with frequently accessed keys:
 
 ## References
 
-- [GoBreaker Library](https://github.com/sony/gobreaker)
+- [failsafe-go Library](https://github.com/failsafe-go/failsafe-go)
+- [failsafe-go Circuit Breaker Docs](https://failsafe-go.dev/circuit-breaker/)
 - [Redis Hooks Documentation](https://redis.uptrace.dev/guide/go-redis-hooks.html)
 - [Circuit Breaker Pattern](https://martinfowler.com/bliki/CircuitBreaker.html)

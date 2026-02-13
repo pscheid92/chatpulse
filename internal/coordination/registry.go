@@ -3,10 +3,14 @@ package coordination
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+const instancesKey = "instances"
 
 // InstanceRegistry tracks active ChatPulse instances in Redis.
 // Each instance sends periodic heartbeats to a shared hash.
@@ -62,7 +66,7 @@ func (r *InstanceRegistry) Start(ctx context.Context) {
 // register writes this instance's heartbeat to Redis.
 // Uses HSET on "instances" hash with instanceID as field.
 func (r *InstanceRegistry) register(ctx context.Context) {
-	key := "instances"
+	key := instancesKey
 	value := InstanceInfo{
 		InstanceID: r.instanceID,
 		Timestamp:  time.Now().Unix(),
@@ -74,23 +78,27 @@ func (r *InstanceRegistry) register(ctx context.Context) {
 		return
 	}
 
-	r.redis.HSet(ctx, key, r.instanceID, data)
+	if err := r.redis.HSet(ctx, key, r.instanceID, data).Err(); err != nil {
+		slog.Warn("Failed to register instance heartbeat", "instance_id", r.instanceID, "error", err)
+	}
 }
 
 // unregister removes this instance from the registry.
 // Called during graceful shutdown.
 func (r *InstanceRegistry) unregister() {
 	ctx := context.Background()
-	key := "instances"
-	r.redis.HDel(ctx, key, r.instanceID)
+	key := instancesKey
+	if err := r.redis.HDel(ctx, key, r.instanceID).Err(); err != nil {
+		slog.Warn("Failed to unregister instance", "instance_id", r.instanceID, "error", err)
+	}
 }
 
 // GetActiveInstances returns a list of instance IDs with heartbeats within the last 60 seconds.
 func (r *InstanceRegistry) GetActiveInstances(ctx context.Context) ([]string, error) {
-	key := "instances"
+	key := instancesKey
 	instances, err := r.redis.HGetAll(ctx, key).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get active instances: %w", err)
 	}
 
 	active := []string{}
@@ -113,10 +121,10 @@ func (r *InstanceRegistry) GetActiveInstances(ctx context.Context) ([]string, er
 
 // GetInstanceInfo returns detailed information about all registered instances.
 func (r *InstanceRegistry) GetInstanceInfo(ctx context.Context) ([]InstanceInfo, error) {
-	key := "instances"
+	key := instancesKey
 	instances, err := r.redis.HGetAll(ctx, key).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get instance info: %w", err)
 	}
 
 	infos := []InstanceInfo{}

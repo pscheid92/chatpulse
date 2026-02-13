@@ -146,10 +146,11 @@ func TestApplyVote_InvalidRedisValue(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 
-	// ApplyVote should fail when Lua function returns invalid float
-	_, err = sentiment.ApplyVote(ctx, overlayUUID, 10.0, 1.0, now)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "returned invalid float value")
+	// ApplyVote should gracefully degrade (use default 0) when Redis value is corrupt
+	// The Lua validate_number function returns default=0 for non-numeric values
+	value, err := sentiment.ApplyVote(ctx, overlayUUID, 10.0, 1.0, now)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, value, "Should apply delta to default value (0)") // 0 + 10 = 10
 }
 
 func TestGetSentiment_InvalidRedisValue(t *testing.T) {
@@ -167,8 +168,9 @@ func TestGetSentiment_InvalidRedisValue(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 
-	// GetSentiment should fail when Lua function returns invalid float
-	_, err = sentiment.GetSentiment(ctx, overlayUUID, 1.0, now)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "returned invalid float value")
+	// GetSentiment should gracefully degrade (use default 0) when Redis value is corrupt
+	// The Lua validate_number function returns default=0 for non-numeric values
+	value, err := sentiment.GetSentiment(ctx, overlayUUID, 1.0, now)
+	require.NoError(t, err)
+	assert.Equal(t, 0.0, value, "Should return default value for corrupt data")
 }

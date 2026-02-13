@@ -20,9 +20,15 @@ func renderTemplate(c echo.Context, tmpl *template.Template, data any) error {
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		slog.Error("Template execution failed", "path", c.Request().URL.Path, "error", err)
-		return c.String(500, "Failed to render page")
+		if err := c.String(500, "Failed to render page"); err != nil {
+			return fmt.Errorf("failed to send error response: %w", err)
+		}
+		return nil
 	}
-	return c.HTMLBlob(200, buf.Bytes())
+	if err := c.HTMLBlob(200, buf.Bytes()); err != nil {
+		return fmt.Errorf("failed to send HTML response: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) getBaseURL(c echo.Context) string {

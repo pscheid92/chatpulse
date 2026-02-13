@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,7 +26,7 @@ func (r *ConfigRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain
 		return nil, domain.ErrConfigNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get config by user ID: %w", err)
 	}
 	return &domain.Config{
 		UserID:         row.UserID,
@@ -50,7 +51,7 @@ func (r *ConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigger, a
 		UserID:         userID,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to update config: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return domain.ErrConfigNotFound

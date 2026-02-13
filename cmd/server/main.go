@@ -99,7 +99,6 @@ func setupConfig() *config.Config {
 	return cfg
 }
 
-
 func setupRedis(ctx context.Context, cfg *config.Config) *goredis.Client {
 	client, err := redis.NewClient(ctx, cfg.RedisURL)
 	if err != nil {
@@ -293,12 +292,12 @@ func main() {
 	reconciler := app.NewConfigReconciler(configRepo, store, userRepo, clock)
 	go reconciler.Start(context.Background())
 
-	onFirstClient := func(sessionUUID uuid.UUID) {
-		if err := appSvc.IncrRefCount(context.Background(), sessionUUID); err != nil {
+	onFirstClient := func(ctx context.Context, sessionUUID uuid.UUID) {
+		if err := appSvc.IncrRefCount(ctx, sessionUUID); err != nil {
 			slog.Error("Failed to increment ref count", "session_uuid", sessionUUID.String(), "error", err)
 		}
 	}
-	onSessionEmpty := func(sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(context.Background(), sessionUUID) }
+	onSessionEmpty := func(ctx context.Context, sessionUUID uuid.UUID) { appSvc.OnSessionEmpty(ctx, sessionUUID) }
 	broadcaster := broadcast.NewBroadcaster(engine, onFirstClient, onSessionEmpty, clock, 50, 50*time.Millisecond)
 
 	// Create and start the HTTP server (pass nil explicitly to avoid typed-nil interface)

@@ -46,7 +46,10 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 			WithField("overlay_uuid", overlayUUID.String())
 	}
 
-	return c.JSON(200, map[string]string{"status": "ok"})
+	if err := c.JSON(200, map[string]string{"status": "ok"}); err != nil {
+		return fmt.Errorf("failed to send JSON response: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
@@ -66,9 +69,12 @@ func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
 	}
 
 	newURL := fmt.Sprintf("%s/overlay/%s", s.getBaseURL(c), newUUID)
-	return c.JSON(200, map[string]any{
+	if err := c.JSON(200, map[string]any{
 		"status":   "ok",
 		"new_uuid": newUUID.String(),
 		"new_url":  newURL,
-	})
+	}); err != nil {
+		return fmt.Errorf("failed to send JSON response: %w", err)
+	}
+	return nil
 }

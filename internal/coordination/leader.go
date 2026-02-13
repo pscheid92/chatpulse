@@ -2,6 +2,8 @@ package coordination
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -33,7 +35,10 @@ func NewLeaderElection(redis *redis.Client, instanceID string, key string, ttl t
 // Returns true if this instance is now the leader, false otherwise.
 func (l *LeaderElection) TryBecomeLeader(ctx context.Context) (bool, error) {
 	success, err := l.redis.SetNX(ctx, l.key, l.instanceID, l.ttl).Result()
-	return success, err
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire leadership: %w", err)
+	}
+	return success, nil
 }
 
 // RenewLease extends the leader's TTL.
@@ -51,7 +56,7 @@ func (l *LeaderElection) RenewLease(ctx context.Context) error {
 
 	result, err := l.redis.Eval(ctx, script, []string{l.key}, l.instanceID, int(l.ttl.Seconds())).Result()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to renew lease: %w", err)
 	}
 
 	if result == int64(0) {
@@ -65,11 +70,11 @@ func (l *LeaderElection) RenewLease(ctx context.Context) error {
 // IsLeader checks if this instance is currently the leader.
 func (l *LeaderElection) IsLeader(ctx context.Context) (bool, error) {
 	currentLeader, err := l.redis.Get(ctx, l.key).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to check leader status: %w", err)
 	}
 
 	return currentLeader == l.instanceID, nil
@@ -87,7 +92,10 @@ func (l *LeaderElection) ReleaseLease(ctx context.Context) error {
 	end
 	`
 
-	return l.redis.Eval(ctx, script, []string{l.key}, l.instanceID).Err()
+	if err := l.redis.Eval(ctx, script, []string{l.key}, l.instanceID).Err(); err != nil {
+		return fmt.Errorf("failed to release lease: %w", err)
+	}
+	return nil
 }
 
 // ErrNotLeader is returned by RenewLease when this instance is no longer the leader.

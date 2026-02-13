@@ -63,7 +63,7 @@ func (s *Server) handleLoginPage(c echo.Context) error {
 
 	session, err := s.sessionStore.Get(c.Request(), sessionName)
 	if err != nil {
-		slog.Error("Warning: failed to get session for OAuth state", "error", err)
+		slog.Error("Failed to get session for OAuth state", "error", err)
 	}
 	session.Values[sessionKeyOAuthState] = state
 	if err := session.Save(c.Request(), c.Response().Writer); err != nil {
@@ -141,13 +141,16 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 		return apperrors.InternalError("failed to save session", err)
 	}
 
-	return c.Redirect(302, "/dashboard")
+	if err := c.Redirect(302, "/dashboard"); err != nil {
+		return fmt.Errorf("failed to redirect: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleLogout(c echo.Context) error {
 	session, err := s.sessionStore.Get(c.Request(), sessionName)
 	if err != nil {
-		slog.Error("Warning: failed to get session during logout", "error", err)
+		slog.Error("Failed to get session during logout", "error", err)
 		session, err = s.sessionStore.New(c.Request(), sessionName)
 		if err != nil {
 			return apperrors.InternalError("failed to create new session during logout", err)
@@ -159,5 +162,8 @@ func (s *Server) handleLogout(c echo.Context) error {
 		return apperrors.InternalError("failed to save logout session", err)
 	}
 
-	return c.Redirect(302, "/auth/login")
+	if err := c.Redirect(302, "/auth/login"); err != nil {
+		return fmt.Errorf("failed to redirect: %w", err)
+	}
+	return nil
 }

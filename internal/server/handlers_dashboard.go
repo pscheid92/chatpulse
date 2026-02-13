@@ -142,5 +142,8 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 			WithField("overlay_uuid", user.OverlayUUID.String())
 	}
 
-	return c.Redirect(302, "/dashboard")
+	if err := c.Redirect(302, "/dashboard"); err != nil {
+		return fmt.Errorf("failed to redirect: %w", err)
+	}
+	return nil
 }

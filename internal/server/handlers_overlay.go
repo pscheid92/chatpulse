@@ -106,25 +106,18 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 		case LimitReasonRate:
 			metrics.WebSocketConnectionsRejected.WithLabelValues("rate_limit").Inc()
 			slog.Warn("WebSocket connection rate limited", "ip", clientIP, "reason", reason)
-			return apperrors.ValidationError("too many connection attempts").
-				WithField("client_ip", clientIP).
-				WithField("reason", "rate_limit")
+			return echo.NewHTTPError(http.StatusTooManyRequests, "too many connection attempts")
 		case LimitReasonGlobal:
 			metrics.WebSocketConnectionsRejected.WithLabelValues("global_limit").Inc()
 			slog.Warn("WebSocket connection rejected: global limit", "ip", clientIP, "capacity_pct", s.connLimits.Global().CapacityPct())
-			return apperrors.InternalError("server at capacity", nil).
-				WithField("client_ip", clientIP).
-				WithField("capacity_pct", s.connLimits.Global().CapacityPct())
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "server at capacity")
 		case LimitReasonPerIP:
 			metrics.WebSocketConnectionsRejected.WithLabelValues("ip_limit").Inc()
 			slog.Warn("WebSocket connection rejected: per-IP limit", "ip", clientIP, "connections", s.connLimits.PerIP().Count(clientIP))
-			return apperrors.ValidationError("too many connections from your IP address").
-				WithField("client_ip", clientIP).
-				WithField("connections", s.connLimits.PerIP().Count(clientIP))
+			return echo.NewHTTPError(http.StatusTooManyRequests, "too many connections from your IP address")
 		default:
 			metrics.WebSocketConnectionsRejected.WithLabelValues("unknown").Inc()
-			return apperrors.InternalError("connection limit exceeded", nil).
-				WithField("client_ip", clientIP)
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "connection limit exceeded")
 		}
 	}
 	// Ensure we release the connection slot when the handler exits

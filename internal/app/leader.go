@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -44,7 +45,7 @@ func (l *LeaderElector) TryAcquire(ctx context.Context) (bool, error) {
 func (l *LeaderElector) Renew(ctx context.Context) error {
 	// Check current value is our instance ID (don't steal lock)
 	currentLeader, err := l.rdb.Get(ctx, l.lockKey).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return fmt.Errorf("leader lock lost")
 	}
 	if err != nil {
@@ -80,5 +81,8 @@ func (l *LeaderElector) Release(ctx context.Context) error {
 	`
 
 	_, err := l.rdb.Eval(ctx, script, []string{l.lockKey}, l.instanceID).Result()
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to release leader lock: %w", err)
+	}
+	return nil
 }

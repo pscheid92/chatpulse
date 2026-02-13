@@ -1,6 +1,8 @@
 package errors
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -32,7 +34,8 @@ func Middleware() echo.MiddlewareFunc {
 
 			// Check if it's an Echo HTTPError (from middleware like CSRF)
 			// If so, pass it through unchanged to preserve the status code
-			if httpErr, ok := err.(*echo.HTTPError); ok {
+			var httpErr *echo.HTTPError
+			if errors.As(err, &httpErr) {
 				// Still record metrics for Echo errors
 				structuredErr := WrapHTTPError(httpErr)
 				HTTPErrorsTotal.WithLabelValues(string(structuredErr.Type)).Inc()
@@ -50,7 +53,10 @@ func Middleware() echo.MiddlewareFunc {
 			logError(c, structuredErr)
 
 			// Return JSON response
-			return c.JSON(structuredErr.HTTPStatus(), structuredErr.ToResponse())
+			if err := c.JSON(structuredErr.HTTPStatus(), structuredErr.ToResponse()); err != nil {
+				return fmt.Errorf("failed to write error response: %w", err)
+			}
+			return nil
 		}
 	}
 }
@@ -108,7 +114,10 @@ func HandleError(c echo.Context, err error) error {
 	structuredErr := AsStructuredError(err)
 	HTTPErrorsTotal.WithLabelValues(string(structuredErr.Type)).Inc()
 	logError(c, structuredErr)
-	return c.JSON(structuredErr.HTTPStatus(), structuredErr.ToResponse())
+	if err := c.JSON(structuredErr.HTTPStatus(), structuredErr.ToResponse()); err != nil {
+		return fmt.Errorf("failed to write error response: %w", err)
+	}
+	return nil
 }
 
 // HandleValidationError is a convenience function for validation errors.

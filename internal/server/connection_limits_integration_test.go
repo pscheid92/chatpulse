@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,11 +11,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/sessions"
 	"github.com/gorilla/websocket"
 	"github.com/jonboulle/clockwork"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"github.com/pscheid92/chatpulse/internal/broadcast"
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	apperrors "github.com/pscheid92/chatpulse/internal/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,8 +56,7 @@ func TestConnectionLimitsIntegration_GlobalLimit(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
-	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
-	require.NoError(t, err)
+	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
@@ -116,8 +120,7 @@ func TestConnectionLimitsIntegration_PerIPLimit(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
-	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
-	require.NoError(t, err)
+	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
@@ -182,8 +185,7 @@ func TestConnectionLimitsIntegration_RateLimit(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
-	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
-	require.NoError(t, err)
+	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
@@ -193,16 +195,14 @@ func TestConnectionLimitsIntegration_RateLimit(t *testing.T) {
 	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws/overlay/" + overlayUUID.String()
 
 	// Rapidly open connections (exhaust burst)
-	var conns []*websocket.Conn
 	for i := 0; i < 2; i++ {
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 		require.NoError(t, err, "Connection %d should succeed (burst)", i+1)
-		conns = append(conns, conn)
 		conn.Close() // Close immediately to free up slots
 	}
 
 	// 3rd rapid connection should be rate limited
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	require.Error(t, err, "3rd rapid connection should fail")
 	require.NotNil(t, resp)
 	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "Should return 429 for rate limit")
@@ -211,7 +211,7 @@ func TestConnectionLimitsIntegration_RateLimit(t *testing.T) {
 	time.Sleep(600 * time.Millisecond) // > 1/2 second at 2/sec rate
 
 	// Now connection should succeed
-	conn, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	require.NoError(t, err, "Connection after rate limit refill should succeed")
 	if conn != nil {
 		conn.Close()
@@ -250,8 +250,7 @@ func TestConnectionLimitsIntegration_ReleaseOnDisconnect(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
-	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
-	require.NoError(t, err)
+	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
@@ -316,8 +315,7 @@ func TestConnectionLimitsIntegration_ConcurrentConnections(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, nil, clock, 50, 50*time.Millisecond)
 	defer broadcaster.Stop()
 
-	srv, err := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
-	require.NoError(t, err)
+	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
@@ -345,9 +343,8 @@ func TestConnectionLimitsIntegration_ConcurrentConnections(t *testing.T) {
 				conns = append(conns, conn)
 			} else {
 				failCount++
-				if resp != nil && resp.StatusCode == http.StatusServiceUnavailable {
-					// Expected global limit rejection
-				}
+				// Expected global limit rejection - verify status code
+				assert.True(t, resp != nil && resp.StatusCode == http.StatusServiceUnavailable, "Failed connection should return 503")
 			}
 		}()
 	}
@@ -365,19 +362,60 @@ func TestConnectionLimitsIntegration_ConcurrentConnections(t *testing.T) {
 }
 
 // Helper function to create a test server with custom limits
-func newTestServerWithLimits(t *testing.T, cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster) (*Server, error) {
+func newTestServerWithLimits(t *testing.T, cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster) *Server {
 	t.Helper()
 
-	// Fill in required config fields
-	if cfg.TwitchClientID == "" {
-		cfg.TwitchClientID = "test-client-id"
-	}
-	if cfg.TwitchRedirectURI == "" {
-		cfg.TwitchRedirectURI = "http://localhost/callback"
-	}
-	if cfg.SessionSecret == "" {
-		cfg.SessionSecret = "test-secret-key-32-bytes-long!!!"
+	// Create minimal templates for testing
+	loginTmpl := template.Must(template.New("login.html").Parse(`Login`))
+	dashTmpl := template.Must(template.New("dashboard.html").Parse(`Dashboard`))
+	overlayTmpl := template.Must(template.New("overlay.html").Parse(`Overlay`))
+
+	// Create session store
+	store := sessions.NewCookieStore([]byte("test-secret-key-32-bytes-long!!!"))
+	store.Options = &sessions.Options{
+		Path:   "/",
+		MaxAge: 3600,
 	}
 
-	return NewServer(cfg, app, broadcaster, nil, nil, nil)
+	// Create Echo instance without Prometheus middleware to avoid duplicate registration
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogStatus: true,
+		LogURI:    true,
+		LogMethod: true,
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			return nil
+		},
+	}))
+	e.Use(middleware.Recover())
+	e.Use(apperrors.Middleware())
+
+	// Create connection limiter
+	connLimits := NewConnectionLimits(
+		int64(cfg.MaxWebSocketConnections),
+		cfg.MaxConnectionsPerIP,
+		cfg.ConnectionRatePerIP,
+		cfg.ConnectionRateBurst,
+	)
+
+	// Manually construct server to avoid Prometheus middleware registration
+	srv := &Server{
+		echo:              e,
+		config:            cfg,
+		app:               app,
+		broadcaster:       broadcaster,
+		sessionStore:      store,
+		loginTemplate:     loginTmpl,
+		dashboardTemplate: dashTmpl,
+		overlayTemplate:   overlayTmpl,
+		connLimits:        connLimits,
+		startTime:         time.Now(),
+	}
+
+	// Register routes
+	srv.registerRoutes()
+
+	return srv
 }
