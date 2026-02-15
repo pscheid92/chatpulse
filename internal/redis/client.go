@@ -13,13 +13,10 @@ import (
 //go:embed chatpulse.lua
 var chatpulseLibrary string
 
-//go:embed vote_rate_limit.lua
-var voteRateLimitLibrary string
-
 // LibraryVersion is the current version of the chatpulse Lua library.
 // Must match LIBRARY_VERSION in chatpulse.lua.
 // Increment on breaking changes to function signatures or behavior.
-const LibraryVersion = "3"
+const LibraryVersion = "4"
 
 // NewClient creates a Redis client and loads the chatpulse Lua function library.
 // The client is wrapped with a circuit breaker hook for graceful degradation
@@ -58,12 +55,6 @@ func NewClient(ctx context.Context, redisURL string) (*redis.Client, error) {
 	if err := rdb.FunctionLoadReplace(ctx, chatpulseLibrary).Err(); err != nil {
 		_ = rdb.Close()
 		return nil, fmt.Errorf("load chatpulse library: %w", err)
-	}
-
-	// Load vote_rate_limit library (rate limiting functions)
-	if err := rdb.FunctionLoadReplace(ctx, voteRateLimitLibrary).Err(); err != nil {
-		_ = rdb.Close()
-		return nil, fmt.Errorf("load vote_rate_limit library: %w", err)
 	}
 
 	// Store version in Redis for version coordination across instances

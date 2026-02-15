@@ -85,9 +85,6 @@ func (s *testStore) getValue(broadcasterID string) float64 {
 }
 
 // Stub methods to satisfy domain.SentimentStore.
-func (s *testStore) GetSentiment(_ context.Context, _ string, _ float64, _ int64) (float64, error) {
-	return 0, nil
-}
 func (s *testStore) GetRawSentiment(_ context.Context, _ string) (float64, int64, error) {
 	return 0, 0, nil
 }
@@ -111,13 +108,6 @@ func (d *testDebouncer) CheckDebounce(_ context.Context, broadcasterID string, t
 		return false, nil
 	}
 	d.debounced[key] = true
-	return true, nil
-}
-
-// alwaysAllowRateLimiter always allows votes (for webhook tests).
-type alwaysAllowRateLimiter struct{}
-
-func (a *alwaysAllowRateLimiter) CheckVoteRateLimit(_ context.Context, _ string) (bool, error) {
 	return true, nil
 }
 
@@ -246,10 +236,9 @@ func setupWebhookTest(t *testing.T) (*WebhookHandler, *testStore, string) {
 	store.addSession(broadcasterID, config)
 
 	debouncer := newTestDebouncer()
-	rateLimiter := &alwaysAllowRateLimiter{}
 	clock := clockwork.NewRealClock()
 	cache := sentiment.NewConfigCache(10*time.Second, clock)
-	engine := sentiment.NewEngine(store, store, debouncer, rateLimiter, clock, cache)
+	engine := sentiment.NewEngine(store, store, debouncer, clock, cache)
 	handler := NewWebhookHandler(testWebhookSecret, engine, nil)
 	return handler, store, broadcasterID
 }
@@ -527,7 +516,7 @@ func TestWebhook_ReplayAttack(t *testing.T) {
 	assert.Equal(t, 10.0, store.getValue(broadcasterID))
 }
 
-// --- Timestamp Freshness Tests ---
+// --- UnixTimestamp Freshness Tests ---
 
 // TestValidateTimestampFreshness_FreshMessage verifies recent timestamps are accepted
 func TestValidateTimestampFreshness_FreshMessage(t *testing.T) {
@@ -616,7 +605,7 @@ func TestWebhook_FutureTimestamp(t *testing.T) {
 	assert.Equal(t, 0.0, store.getValue(broadcasterID), "Future timestamp prevents vote application")
 }
 
-// --- Timestamp Freshness Validation Tests ---
+// --- UnixTimestamp Freshness Validation Tests ---
 
 func TestValidateTimestampFreshness_WithinWindow(t *testing.T) {
 	now := time.Now()
@@ -638,7 +627,7 @@ func TestValidateTimestampFreshness_WithinWindow(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := validateTimestampFreshness(tc.timestamp, now)
-			assert.True(t, result, "Timestamp should be considered fresh: %s", tc.name)
+			assert.True(t, result, "UnixTimestamp should be considered fresh: %s", tc.name)
 		})
 	}
 }
@@ -660,7 +649,7 @@ func TestValidateTimestampFreshness_OutsideWindow(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := validateTimestampFreshness(tc.timestamp, now)
-			assert.False(t, result, "Timestamp should be considered stale: %s", tc.name)
+			assert.False(t, result, "UnixTimestamp should be considered stale: %s", tc.name)
 		})
 	}
 }
@@ -759,7 +748,7 @@ func TestWebhook_NoViewersSkipsProcessVote(t *testing.T) {
 	// Create engine with the same store
 	clock := clockwork.NewRealClock()
 	cache := sentiment.NewConfigCache(10*time.Second, clock)
-	engine := sentiment.NewEngine(store, store, newTestDebouncer(), &alwaysAllowRateLimiter{}, clock, cache)
+	engine := sentiment.NewEngine(store, store, newTestDebouncer(), clock, cache)
 
 	// hasViewers always returns false — no viewers connected
 	hasViewers := func(_ string) bool { return false }

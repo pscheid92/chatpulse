@@ -36,7 +36,7 @@ func TestMain(m *testing.M) {
 
 	// Start PostgreSQL container once for all tests
 	postgresContainer, err := postgres.Run(ctx,
-		"postgres:15-alpine",
+		"postgres:18-alpine",
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("testuser"),
 		postgres.WithPassword("testpass"),

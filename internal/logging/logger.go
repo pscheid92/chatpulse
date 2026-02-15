@@ -42,23 +42,3 @@ func InitLogger(level, format string) {
 	Logger = slog.New(handler)
 	slog.SetDefault(Logger)
 }
-
-// WithSession returns a logger with session_uuid field.
-func WithSession(sessionUUID string) *slog.Logger {
-	return Logger.With("session_uuid", sessionUUID)
-}
-
-// WithUser returns a logger with user_id field.
-func WithUser(userID string) *slog.Logger {
-	return Logger.With("user_id", userID)
-}
-
-// WithBroadcaster returns a logger with broadcaster_user_id field.
-func WithBroadcaster(broadcasterUserID string) *slog.Logger {
-	return Logger.With("broadcaster_user_id", broadcasterUserID)
-}
-
-// WithError returns a logger with error field.
-func WithError(err error) *slog.Logger {
-	return Logger.With("error", err)
-}

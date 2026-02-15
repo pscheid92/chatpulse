@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:15-alpine
+    image: postgres:18-alpine
     environment:
       - POSTGRES_USER=twitchuser
       - POSTGRES_PASSWORD=twitchpass
@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     ports:
       - "6379:6379"
     healthcheck:

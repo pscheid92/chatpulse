@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +39,7 @@ func TestGetConfig_NotFound(t *testing.T) {
 	configRepo := NewConfigRepo(testPool)
 	ctx := context.Background()
 
-	randomID := uuid.New()
+	randomID := uuid.NewV4()
 	config, err := configRepo.GetByUserID(ctx, randomID)
 
 	assert.Error(t, err)
@@ -52,8 +52,8 @@ func TestUpdateConfig_NotFound(t *testing.T) {
 	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
-	randomID := uuid.New()
-	err := configRepo.Update(ctx, randomID, "LUL", "BibleThump", "Happy", "Sad", 1.5)
+	randomID := uuid.NewV4()
+	err := configRepo.Update(ctx, randomID, "LUL", "BibleThump", "Happy", "Sad", 1.5, 2)
 
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, domain.ErrConfigNotFound)
@@ -71,7 +71,7 @@ func TestUpdateConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update config
-	err = configRepo.Update(ctx, user.ID, "LUL", "BibleThump", "Happy", "Sad", 1.5)
+	err = configRepo.Update(ctx, user.ID, "LUL", "BibleThump", "Happy", "Sad", 1.5, 2)
 	require.NoError(t, err)
 
 	// Verify update

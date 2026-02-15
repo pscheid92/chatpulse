@@ -234,7 +234,7 @@ func TestCircuitBreakerIntegration_GracefulDegradation(t *testing.T) {
 	time.Sleep(2 * time.Second)
 }
 
-func TestCircuitBreakerIntegration_SentimentFailsWhenOpen(t *testing.T) {
+func TestCircuitBreakerIntegration_FCallFailsWhenOpen(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -252,17 +252,11 @@ func TestCircuitBreakerIntegration_SentimentFailsWhenOpen(t *testing.T) {
 	// Flush Redis
 	require.NoError(t, client.FlushAll(ctx).Err())
 
-	// Phase 1: Create a test session and verify read works
-	sessionKey := "session:test-uuid"
-	err = client.HSet(ctx, sessionKey, map[string]any{
-		"value":       "50.0",
-		"last_update": "0",
-	}).Err()
+	// Phase 1: Verify apply_vote works normally
+	sessionKey := "sentiment:test-broadcaster"
+	result, err := client.FCall(ctx, fnApplyVote, []string{sessionKey}, "10", "1.0", "123456").Text()
 	require.NoError(t, err)
-
-	result, err := client.FCallRO(ctx, fnGetSentiment, []string{sessionKey}, "1.0", "123456").Text()
-	require.NoError(t, err)
-	t.Logf("Initial sentiment read: %s", result)
+	t.Logf("Initial apply_vote result: %s", result)
 
 	// Phase 2: Stop Redis
 	t.Log("Stopping Redis...")
@@ -276,11 +270,11 @@ func TestCircuitBreakerIntegration_SentimentFailsWhenOpen(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Phase 4: Sentiment read should fail with circuit open (no fake 0.0 fallback)
-	t.Log("Testing sentiment read with circuit open...")
-	_, err = client.FCallRO(ctx, fnGetSentiment, []string{sessionKey}, "1.0", "123456").Text()
-	assert.Error(t, err, "Sentiment read should fail when circuit is open")
-	t.Logf("Sentiment read correctly failed: %v", err)
+	// Phase 4: FCALL should fail with circuit open
+	t.Log("Testing FCALL with circuit open...")
+	_, err = client.FCall(ctx, fnApplyVote, []string{sessionKey}, "10", "1.0", "999999").Text()
+	assert.Error(t, err, "FCALL should fail when circuit is open")
+	t.Logf("FCALL correctly failed: %v", err)
 
 	// Phase 5: Restart Redis for cleanup
 	t.Log("Restarting Redis...")

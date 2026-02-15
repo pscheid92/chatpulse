@@ -4,24 +4,21 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/pscheid92/uuid"
 )
 
 type User struct {
-	ID             uuid.UUID
-	OverlayUUID    uuid.UUID
+	ID          uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	OverlayUUID uuid.UUID
+
 	TwitchUserID   string
 	TwitchUsername string
-	// Tokens are kept in User struct for simplicity. Rationale:
-	// - User and tokens have identical lifecycle (created/updated together)
-	// - No use case for querying users without tokens or vice versa
-	// - Separation would add complexity (JOIN queries, dual updates) without clear benefit
-	// - Token encryption is handled at repository layer, not domain layer
+
 	AccessToken  string
 	RefreshToken string
 	TokenExpiry  time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
 }
 
 type UserRepository interface {

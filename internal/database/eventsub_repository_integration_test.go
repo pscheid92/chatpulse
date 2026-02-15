@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -73,7 +73,7 @@ func TestGetEventSubSubscription_NotFound(t *testing.T) {
 	repo := NewEventSubRepo(pool)
 	ctx := context.Background()
 
-	randomID := uuid.New()
+	randomID := uuid.NewV4()
 	sub, err := repo.GetByUserID(ctx, randomID)
 
 	assert.Error(t, err)
@@ -108,7 +108,7 @@ func TestDeleteEventSubSubscription_NonExistent(t *testing.T) {
 	ctx := context.Background()
 
 	// Deleting a non-existent subscription should not error
-	err := repo.Delete(ctx, uuid.New())
+	err := repo.Delete(ctx, uuid.NewV4())
 	assert.NoError(t, err)
 }
 

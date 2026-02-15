@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/coordination"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -90,24 +90,29 @@ func (s *Service) ResetSentiment(ctx context.Context, overlayUUID uuid.UUID) err
 }
 
 // SaveConfig saves the config to PostgreSQL and invalidates all cache layers.
-func (s *Service) SaveConfig(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, broadcasterID string) error {
-	if err := s.configs.Update(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed); err != nil {
+func (s *Service) SaveConfig(ctx context.Context, req domain.SaveConfigRequest) error {
+	current, err := s.configs.GetByUserID(ctx, req.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get current config: %w", err)
+	}
+
+	if err := s.configs.Update(ctx, req.UserID, req.ForTrigger, req.AgainstTrigger, req.LeftLabel, req.RightLabel, req.DecaySpeed, current.Version+1); err != nil {
 		return fmt.Errorf("failed to update config: %w", err)
 	}
 
 	// Invalidate Redis config cache (best-effort)
-	if err := s.configCacheInvalidator.InvalidateCache(ctx, broadcasterID); err != nil {
+	if err := s.configCacheInvalidator.InvalidateCache(ctx, req.BroadcasterID); err != nil {
 		slog.Warn("Failed to invalidate Redis config cache",
-			"broadcaster_id", broadcasterID,
+			"broadcaster_id", req.BroadcasterID,
 			"error", err)
 		// Non-fatal: cache will expire via TTL
 	}
 
 	// Broadcast invalidation to all instances via pub/sub
 	// (each instance evicts its local in-memory cache + Redis cache)
-	if err := coordination.PublishConfigInvalidation(ctx, s.redis, broadcasterID); err != nil {
+	if err := coordination.PublishConfigInvalidation(ctx, s.redis, req.BroadcasterID); err != nil {
 		slog.Warn("Failed to publish config invalidation",
-			"broadcaster_id", broadcasterID,
+			"broadcaster_id", req.BroadcasterID,
 			"error", err)
 		// Non-fatal: other instances will get update via TTL expiry
 	}

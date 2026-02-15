@@ -9,9 +9,9 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	apperrors "github.com/pscheid92/chatpulse/internal/errors"
+	"github.com/pscheid92/uuid"
 )
 
 const (
@@ -114,7 +114,7 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 	}
 
 	tokenExpiry := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
-	user, err := s.app.UpsertUser(ctx, result.UserID, result.Username, result.AccessToken, result.RefreshToken, tokenExpiry)
+	user, err := s.users.UpsertUser(ctx, result.UserID, result.Username, result.AccessToken, result.RefreshToken, tokenExpiry)
 	if err != nil {
 		return apperrors.InternalError("failed to save user", err).
 			WithField("twitch_user_id", result.UserID)

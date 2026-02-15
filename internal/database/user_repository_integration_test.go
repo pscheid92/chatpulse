@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -124,7 +124,7 @@ func TestGetUserByID_NotFound(t *testing.T) {
 	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
-	randomID := uuid.New()
+	randomID := uuid.NewV4()
 	user, err := repo.GetByID(ctx, randomID)
 
 	assert.Error(t, err)
@@ -175,7 +175,7 @@ func TestGetUserByOverlayUUID_NotFound(t *testing.T) {
 	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
-	randomUUID := uuid.New()
+	randomUUID := uuid.NewV4()
 	user, err := repo.GetByOverlayUUID(ctx, randomUUID)
 
 	assert.Error(t, err)
@@ -211,7 +211,7 @@ func TestRotateOverlayUUID_NotFound(t *testing.T) {
 	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
-	randomID := uuid.New()
+	randomID := uuid.NewV4()
 	_, err := repo.RotateOverlayUUID(ctx, randomID)
 
 	assert.Error(t, err)
@@ -223,7 +223,7 @@ func TestUpdateTokens_NotFound(t *testing.T) {
 	repo := NewUserRepo(pool, crypto.NoopService{})
 	ctx := context.Background()
 
-	randomID := uuid.New()
+	randomID := uuid.NewV4()
 	expiry := time.Now().UTC().Add(1 * time.Hour)
 	err := repo.UpdateTokens(ctx, randomID, "access", "refresh", expiry)
 

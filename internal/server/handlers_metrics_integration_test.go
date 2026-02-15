@@ -18,7 +18,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 
 	// Create test server
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 
 	// Make request to /metrics endpoint
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -68,7 +68,7 @@ func TestMetricsEndpointContainsExpectedMetrics(t *testing.T) {
 	metrics.VoteProcessingTotal.WithLabelValues("applied").Inc()
 
 	// Create test server
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 
 	// Make request to /metrics endpoint
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -113,7 +113,7 @@ func TestMetricsPrometheusFormat(t *testing.T) {
 	metrics.RedisOpsTotal.WithLabelValues("test", "success").Inc()
 
 	// Create test server
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 
 	// Make request
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -165,7 +165,7 @@ func TestMetricsEndpointLabels(t *testing.T) {
 	metrics.VoteProcessingTotal.WithLabelValues("debounced").Inc()
 
 	// Create test server
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 
 	// Make request
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -182,7 +182,7 @@ func TestMetricsEndpointLabels(t *testing.T) {
 
 func TestMetricsEndpointNoAuth(t *testing.T) {
 	// Verify metrics endpoint doesn't require authentication
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	// Deliberately not setting any auth headers or session
@@ -206,7 +206,7 @@ func TestMetricTypes(t *testing.T) {
 	metrics.PubSubMessageLatency.Observe(0.001)                    // Histogram
 
 	// Create test server
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 
 	// Make request
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -230,7 +230,7 @@ func TestMetricsEndpointPerformance(t *testing.T) {
 	}
 
 	// Create test server
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 
 	// Make multiple requests to verify performance
 	for i := 0; i < 10; i++ {

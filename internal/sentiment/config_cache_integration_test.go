@@ -45,14 +45,10 @@ func TestConfigCache_Integration_HighHitRate(t *testing.T) {
 		},
 	}
 
-	sentimentStore := &mockSentimentStore{
-		getSentimentFn: func(_ context.Context, _ string, _ float64, _ int64) (float64, error) {
-			return 50.0, nil
-		},
-	}
+	sentimentStore := &mockSentimentStore{}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
+	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, fakeClock, cache)
 
 	ctx := context.Background()
 
@@ -101,14 +97,10 @@ func TestConfigCache_Integration_TTLExpiry(t *testing.T) {
 		},
 	}
 
-	sentimentStore := &mockSentimentStore{
-		getSentimentFn: func(_ context.Context, _ string, _ float64, _ int64) (float64, error) {
-			return 50.0, nil
-		},
-	}
+	sentimentStore := &mockSentimentStore{}
 
 	cache := NewConfigCache(5*time.Second, fakeClock)
-	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
+	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, fakeClock, cache)
 
 	ctx := context.Background()
 
@@ -157,14 +149,10 @@ func TestConfigCache_Integration_Invalidation(t *testing.T) {
 		},
 	}
 
-	sentimentStore := &mockSentimentStore{
-		getSentimentFn: func(_ context.Context, _ string, _ float64, _ int64) (float64, error) {
-			return 50.0, nil
-		},
-	}
+	sentimentStore := &mockSentimentStore{}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
+	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, fakeClock, cache)
 
 	ctx := context.Background()
 
@@ -210,14 +198,10 @@ func TestConfigCache_Integration_MultipleBroadcastersIsolation(t *testing.T) {
 		},
 	}
 
-	sentimentStore := &mockSentimentStore{
-		getSentimentFn: func(_ context.Context, _ string, _ float64, _ int64) (float64, error) {
-			return 50.0, nil
-		},
-	}
+	sentimentStore := &mockSentimentStore{}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
+	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, fakeClock, cache)
 
 	ctx := context.Background()
 
@@ -281,14 +265,10 @@ func TestConfigCache_Integration_ConcurrentAccess(t *testing.T) {
 		},
 	}
 
-	sentimentStore := &mockSentimentStore{
-		getSentimentFn: func(_ context.Context, _ string, _ float64, _ int64) (float64, error) {
-			return 50.0, nil
-		},
-	}
+	sentimentStore := &mockSentimentStore{}
 
 	cache := NewConfigCache(10*time.Second, realClock)
-	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, &mockVoteRateLimiter{}, realClock, cache)
+	engine := NewEngine(trackingSource, sentimentStore, &mockDebouncer{}, realClock, cache)
 
 	ctx := context.Background()
 

@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pscheid92/chatpulse/internal/crypto"
 	"github.com/pscheid92/chatpulse/internal/database/sqlcgen"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 )
 
 type UserRepo struct {

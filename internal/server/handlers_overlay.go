@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	apperrors "github.com/pscheid92/chatpulse/internal/errors"
 	"github.com/pscheid92/chatpulse/internal/metrics"
+	"github.com/pscheid92/uuid"
 )
 
 // upgrader configures WebSocket upgrade behavior for overlay connections.
@@ -54,7 +54,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
-	user, err := s.app.GetUserByOverlayUUID(ctx, overlayUUID)
+	user, err := s.users.GetUserByOverlayUUID(ctx, overlayUUID)
 	if errors.Is(err, domain.ErrUserNotFound) {
 		return apperrors.NotFoundError("overlay not found").WithField("overlay_uuid", overlayUUID.String())
 	}
@@ -63,7 +63,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 			WithField("overlay_uuid", overlayUUID.String())
 	}
 
-	config, err := s.app.GetConfig(ctx, user.ID)
+	config, err := s.configs.GetConfig(ctx, user.ID)
 	if err != nil {
 		if errors.Is(err, domain.ErrConfigNotFound) {
 			return apperrors.NotFoundError("config not found").
@@ -129,7 +129,7 @@ func (s *Server) handleWebSocket(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
-	user, err := s.app.GetUserByOverlayUUID(ctx, overlayUUID)
+	user, err := s.users.GetUserByOverlayUUID(ctx, overlayUUID)
 	if errors.Is(err, domain.ErrUserNotFound) {
 		return apperrors.NotFoundError("session not found").WithField("overlay_uuid", overlayUUID.String())
 	}

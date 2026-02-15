@@ -32,25 +32,7 @@ type Config struct {
 	ConnectionRatePerIP     float64 `env:"CONNECTION_RATE_PER_IP" default:"10"`
 	ConnectionRateBurst     int     `env:"CONNECTION_RATE_BURST" default:"20"`
 
-	// Vote rate limiting (token bucket)
-	VoteRateLimitCapacity int `env:"VOTE_RATE_LIMIT_CAPACITY" default:"100"`
-	VoteRateLimitRate     int `env:"VOTE_RATE_LIMIT_RATE" default:"100"`
-
-	// PostgreSQL connection pool configuration
-	DBMinConns          int32         `env:"DB_MIN_CONNS" default:"2"`
-	DBMaxConns          int32         `env:"DB_MAX_CONNS" default:"10"`
-	DBMaxConnIdleTime   time.Duration `env:"DB_MAX_CONN_IDLE_TIME" default:"5m"`
-	DBHealthCheckPeriod time.Duration `env:"DB_HEALTH_CHECK_PERIOD" default:"1m"`
-	DBConnectTimeout    time.Duration `env:"DB_CONNECT_TIMEOUT" default:"5s"`
-	DBMaxRetries        int           `env:"DB_MAX_RETRIES" default:"3"`
-	DBInitialBackoff    time.Duration `env:"DB_INITIAL_BACKOFF" default:"1s"`
-
-	// Performance tuning (optional, defaults optimized for production)
-	BroadcasterMaxClientsPerSession int           `env:"BROADCASTER_MAX_CLIENTS_PER_SESSION" default:"50"`
-	BroadcasterTickInterval         time.Duration `env:"BROADCASTER_TICK_INTERVAL" default:"50ms"`
-	CleanupInterval                 time.Duration `env:"CLEANUP_INTERVAL" default:"30s"`
-	OrphanMaxAge                    time.Duration `env:"ORPHAN_MAX_AGE" default:"30s"`
-	SessionMaxAge                   time.Duration `env:"SESSION_MAX_AGE" default:"168h"` // 7 days
+	SessionMaxAge time.Duration `env:"SESSION_MAX_AGE" default:"168h"` // 7 days
 }
 
 func Load() (*Config, error) {
@@ -78,6 +60,9 @@ func validate(cfg *Config) error {
 		"TWITCH_REDIRECT_URI":  cfg.TwitchRedirectURI,
 		"SESSION_SECRET":       cfg.SessionSecret,
 		"REDIS_URL":            cfg.RedisURL,
+		"WEBHOOK_CALLBACK_URL": cfg.WebhookCallbackURL,
+		"WEBHOOK_SECRET":       cfg.WebhookSecret,
+		"BOT_USER_ID":          cfg.BotUserID,
 	}
 	for name, value := range required {
 		if value == "" {
@@ -85,19 +70,8 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	if cfg.WebhookCallbackURL != "" || cfg.WebhookSecret != "" {
-		if cfg.WebhookCallbackURL == "" {
-			return fmt.Errorf("WEBHOOK_CALLBACK_URL is required when WEBHOOK_SECRET is set")
-		}
-		if cfg.WebhookSecret == "" {
-			return fmt.Errorf("WEBHOOK_SECRET is required when WEBHOOK_CALLBACK_URL is set")
-		}
-		if len(cfg.WebhookSecret) < 10 || len(cfg.WebhookSecret) > 100 {
-			return fmt.Errorf("WEBHOOK_SECRET must be between 10 and 100 characters")
-		}
-		if cfg.BotUserID == "" {
-			return fmt.Errorf("BOT_USER_ID is required when WEBHOOK_CALLBACK_URL is set")
-		}
+	if len(cfg.WebhookSecret) < 10 || len(cfg.WebhookSecret) > 100 {
+		return fmt.Errorf("WEBHOOK_SECRET must be between 10 and 100 characters")
 	}
 
 	if cfg.TokenEncryptionKey != "" {

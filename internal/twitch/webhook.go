@@ -38,7 +38,7 @@ type WebhookHandler struct {
 //   - Automatic 403 rejection of invalid/duplicate requests
 //
 // Additional security (implemented in this handler):
-//   - Timestamp freshness validation (10-minute window per Twitch spec)
+//   - UnixTimestamp freshness validation (10-minute window per Twitch spec)
 //   - Defense-in-depth against replay attacks using expired messages
 //
 // Vote processing pipeline:

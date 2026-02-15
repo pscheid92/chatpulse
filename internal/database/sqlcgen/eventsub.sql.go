@@ -8,16 +8,22 @@ package sqlcgen
 import (
 	"context"
 
-	"github.com/google/uuid"
+	"github.com/pscheid92/uuid"
 )
 
 const createEventSubSubscription = `-- name: CreateEventSubSubscription :exec
-INSERT INTO eventsub_subscriptions (user_id, broadcaster_user_id, subscription_id, conduit_id, created_at)
+INSERT INTO eventsub_subscriptions (
+    user_id,
+    broadcaster_user_id,
+    subscription_id,
+    conduit_id,
+    created_at
+)
 VALUES ($1, $2, $3, $4, NOW())
-ON CONFLICT (user_id) DO UPDATE SET
-    broadcaster_user_id = EXCLUDED.broadcaster_user_id,
-    subscription_id = EXCLUDED.subscription_id,
-    conduit_id = EXCLUDED.conduit_id
+ON CONFLICT (user_id) DO UPDATE
+    SET broadcaster_user_id = EXCLUDED.broadcaster_user_id,
+        subscription_id     = EXCLUDED.subscription_id,
+        conduit_id          = EXCLUDED.conduit_id
 `
 
 type CreateEventSubSubscriptionParams struct {
@@ -38,7 +44,9 @@ func (q *Queries) CreateEventSubSubscription(ctx context.Context, arg CreateEven
 }
 
 const deleteEventSubByUserID = `-- name: DeleteEventSubByUserID :exec
-DELETE FROM eventsub_subscriptions WHERE user_id = $1
+DELETE
+FROM eventsub_subscriptions
+WHERE user_id = $1
 `
 
 func (q *Queries) DeleteEventSubByUserID(ctx context.Context, userID uuid.UUID) error {
@@ -47,8 +55,13 @@ func (q *Queries) DeleteEventSubByUserID(ctx context.Context, userID uuid.UUID) 
 }
 
 const getEventSubByUserID = `-- name: GetEventSubByUserID :one
-SELECT user_id, broadcaster_user_id, subscription_id, conduit_id, created_at
-FROM eventsub_subscriptions WHERE user_id = $1
+SELECT user_id,
+       broadcaster_user_id,
+       subscription_id,
+       conduit_id,
+       created_at
+FROM eventsub_subscriptions
+WHERE user_id = $1
 `
 
 func (q *Queries) GetEventSubByUserID(ctx context.Context, userID uuid.UUID) (EventsubSubscription, error) {
@@ -65,7 +78,11 @@ func (q *Queries) GetEventSubByUserID(ctx context.Context, userID uuid.UUID) (Ev
 }
 
 const listEventSubSubscriptions = `-- name: ListEventSubSubscriptions :many
-SELECT user_id, broadcaster_user_id, subscription_id, conduit_id, created_at
+SELECT user_id,
+       broadcaster_user_id,
+       subscription_id,
+       conduit_id,
+       created_at
 FROM eventsub_subscriptions
 `
 

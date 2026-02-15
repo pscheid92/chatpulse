@@ -383,7 +383,7 @@ func (b *Broadcaster) handleSentimentUpdate(c sentimentUpdateCmd) {
 	cancel()
 
 	var decaySpeed float64
-	if err != nil || broadcastData == nil {
+	if err != nil {
 		// Fall back to a sensible default; the client will still display the value
 		decaySpeed = 1.0
 	} else {

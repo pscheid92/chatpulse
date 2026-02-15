@@ -158,21 +158,12 @@ func main() {
 	// Check file descriptor limits for WebSocket connections
 	checkUlimit(cfg.MaxWebSocketConnections)
 
-	// Connect to database with retry logic (30s max)
+	// Connect to database
 	dbCtx, dbCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer dbCancel()
-	poolCfg := database.PoolConfig{
-		MinConns:          cfg.DBMinConns,
-		MaxConns:          cfg.DBMaxConns,
-		MaxConnIdleTime:   cfg.DBMaxConnIdleTime,
-		HealthCheckPeriod: cfg.DBHealthCheckPeriod,
-		ConnectTimeout:    cfg.DBConnectTimeout,
-		MaxRetries:        cfg.DBMaxRetries,
-		InitialBackoff:    cfg.DBInitialBackoff,
-	}
-	pool, err := database.ConnectWithConfig(dbCtx, cfg.DatabaseURL, poolCfg)
+	pool, err := database.Connect(dbCtx, cfg.DatabaseURL)
 	if err != nil {
-		slog.Error("failed to connect to database after retries", "error", err)
+		slog.Error("failed to connect to database", "error", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
@@ -195,7 +186,6 @@ func main() {
 	store := redis.NewSessionRepo(redisClient, clock)
 	sentimentStore := redis.NewSentimentStore(redisClient)
 	debouncer := redis.NewDebouncer(redisClient)
-	voteRateLimiter := redis.NewVoteRateLimiter(redisClient, clock, cfg.VoteRateLimitCapacity, cfg.VoteRateLimitRate)
 
 	// Create config cache with 10-second TTL
 	configCache := sentiment.NewConfigCache(10*time.Second, clock)
@@ -251,7 +241,7 @@ func main() {
 	eventSubRepo := database.NewEventSubRepo(pool)
 
 	configCacheRepo := redis.NewConfigCacheRepo(redisClient, configRepo)
-	engine := sentiment.NewEngine(configCacheRepo, sentimentStore, debouncer, voteRateLimiter, clock, configCache)
+	engine := sentiment.NewEngine(configCacheRepo, sentimentStore, debouncer, clock, configCache)
 
 	// Start config invalidation subscriber
 	// On pub/sub message: evict local in-memory cache + DEL Redis config cache key
@@ -283,22 +273,18 @@ func main() {
 	var twitchSvc domain.TwitchService
 	var eventsubMgr *twitch.EventSubManager
 	var webhookHdlr *twitch.WebhookHandler
-	if cfg.WebhookCallbackURL != "" {
-		wh, err := initWebhooks(cfg, engine, eventSubRepo, hasViewers)
-		if err != nil {
-			// EventSub setup failed - continue without webhooks (graceful degradation)
-			slog.Warn("EventSub setup failed, continuing without webhooks",
-				"error", err,
-				"impact", "votes will not be processed until EventSub recovers")
-			metrics.EventSubSetupFailuresTotal.Inc()
-		} else {
-			eventsubMgr = wh.eventsubManager
-			webhookHdlr = wh.webhookHandler
-			twitchSvc = eventsubMgr
-			slog.Info("EventSub configured", "callback_url", cfg.WebhookCallbackURL)
-		}
+	wh, err := initWebhooks(cfg, engine, eventSubRepo, hasViewers)
+	if err != nil {
+		// EventSub setup failed - continue without webhooks (graceful degradation)
+		slog.Warn("EventSub setup failed, continuing without webhooks",
+			"error", err,
+			"impact", "votes will not be processed until EventSub recovers")
+		metrics.EventSubSetupFailuresTotal.Inc()
 	} else {
-		slog.Info("EventSub disabled (WEBHOOK_CALLBACK_URL not set)")
+		eventsubMgr = wh.eventsubManager
+		webhookHdlr = wh.webhookHandler
+		twitchSvc = eventsubMgr
+		slog.Info("EventSub configured", "callback_url", cfg.WebhookCallbackURL)
 	}
 
 	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, configCacheRepo, clock, redisClient)
@@ -312,9 +298,9 @@ func main() {
 		srvErr error
 	)
 	if webhookHdlr != nil {
-		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, webhookHdlr, twitchSvc, pool, redisClient)
+		srv, srvErr = server.NewServer(cfg, appSvc, appSvc, broadcaster, webhookHdlr, twitchSvc, pool, redisClient)
 	} else {
-		srv, srvErr = server.NewServer(cfg, appSvc, broadcaster, nil, nil, pool, redisClient)
+		srv, srvErr = server.NewServer(cfg, appSvc, appSvc, broadcaster, nil, nil, pool, redisClient)
 	}
 	if srvErr != nil {
 		slog.Error("Failed to create server", "error", srvErr)

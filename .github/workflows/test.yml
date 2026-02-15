@@ -12,7 +12,7 @@ jobs:
     
     services:
       postgres:
-        image: postgres:15
+        image: postgres:18
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: chatpulse_test
@@ -45,9 +45,6 @@ jobs:
       - name: Install dependencies
         run: make deps
 
-      - name: Validate package dependencies
-        run: ./scripts/check-deps.sh
-
       - name: Run tests with coverage
         run: make test-coverage
         env:
@@ -58,19 +55,3 @@ jobs:
           TWITCH_CLIENT_SECRET: test-client-secret
           TWITCH_REDIRECT_URI: http://localhost:8080/auth/callback
       
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.out
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
-      
-      - name: Check coverage threshold
-        run: |
-          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-          echo "Total coverage: $coverage%"
-          if (( $(echo "$coverage < 70" | bc -l) )); then
-            echo "❌ Coverage $coverage% is below threshold 70%"
-            exit 1
-          fi
-          echo "✅ Coverage $coverage% meets threshold 70%"

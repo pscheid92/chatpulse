@@ -286,7 +286,7 @@ func TestCircuitBreakerHook_CacheExpiry(t *testing.T) {
 	assert.Contains(t, err.Error(), "circuit breaker open")
 }
 
-func TestCircuitBreakerHook_ReadOnlyFunctionFailsWhenOpen(t *testing.T) {
+func TestCircuitBreakerHook_FCallFailsWhenOpen(t *testing.T) {
 	hook := NewCircuitBreakerHook()
 	ctx := context.Background()
 
@@ -300,16 +300,16 @@ func TestCircuitBreakerHook_ReadOnlyFunctionFailsWhenOpen(t *testing.T) {
 
 	require.Equal(t, circuitbreaker.OpenState, hook.GetState())
 
-	// Try to call FCALL_RO for get_decayed_value (sentiment read)
+	// Try to call FCALL for apply_vote (sentiment write)
 	processHook := hook.ProcessHook(func(ctx context.Context, cmd goredis.Cmder) error {
 		t.Fatal("Redis should not be called")
 		return nil
 	})
 
-	cmd := goredis.NewCmd(ctx, "fcall_ro", "get_decayed_value", "1", "session:uuid", "1.0", "123456")
+	cmd := goredis.NewCmd(ctx, "fcall", "apply_vote", "1", "sentiment:test", "10", "1.0", "123456")
 	err := processHook(ctx, cmd)
 
-	// Should return error — no fake 0.0 fallback
+	// Should return error — circuit breaker is open
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "circuit breaker open")
 }

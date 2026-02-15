@@ -29,7 +29,7 @@ A dedicated bot account reads chat on behalf of all streamers, making this a mul
    - Authorize the bot with `user:read:chat` and `user:bot` scopes (one-time setup)
    - Note the bot's Twitch user ID for `BOT_USER_ID`
 
-3. **PostgreSQL**: Version 15 or higher
+3. **PostgreSQL**: Version 18 or higher (required for `uuidv7()`)
 
 4. **Public HTTPS URL**: Required for EventSub webhook delivery (use [ngrok](https://ngrok.com/) for local development)
 
@@ -97,7 +97,7 @@ docker run -d \
   -e POSTGRES_PASSWORD=twitchpass \
   -e POSTGRES_DB=twitchdb \
   -p 5432:5432 \
-  postgres:15-alpine
+  postgres:18-alpine
 ```
 
 3. Expose your local server for webhooks:
@@ -186,7 +186,7 @@ See `.env.example` for all variables.
 ## Architecture
 
 - **Backend**: Single Go binary (Echo v4) serving HTTP, WebSocket, and webhook endpoints
-- **Database**: PostgreSQL 15+ with auto-migrations for users, configs, and EventSub subscriptions
+- **Database**: PostgreSQL 18+ with auto-migrations for users, configs, and EventSub subscriptions
 - **Scaling**: Single-instance (in-memory) or multi-instance (Redis with Lua scripts for atomic operations and Pub/Sub for cross-instance broadcasting)
 - **Concurrency**: Actor pattern for the Sentiment Engine and WebSocket Hub — no mutexes on actor-owned state
 - **Frontend**: Minimal HTML/CSS/JS with no external dependencies

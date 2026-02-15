@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
 	"github.com/gorilla/websocket"
 	"github.com/jonboulle/clockwork"
@@ -20,6 +19,7 @@ import (
 	"github.com/pscheid92/chatpulse/internal/config"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	apperrors "github.com/pscheid92/chatpulse/internal/errors"
+	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,15 +37,12 @@ func TestConnectionLimitsIntegration_GlobalLimit(t *testing.T) {
 		ConnectionRateBurst:     100,
 	}
 
-	mockApp := &mockAppService{
+	mockUsers := &mockUserService{
 		getUserByOverlayFn: func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
 			return &domain.User{
-				ID:          uuid.New(),
+				ID:          uuid.NewV4(),
 				OverlayUUID: overlayUUID,
 			}, nil
-		},
-		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
-			return &domain.Config{}, nil
 		},
 	}
 
@@ -53,13 +50,13 @@ func TestConnectionLimitsIntegration_GlobalLimit(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
-	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
+	srv := newTestServerWithLimits(t, cfg, mockUsers, &mockConfigService{}, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
 	defer ts.Close()
 
-	overlayUUID := uuid.New()
+	overlayUUID := uuid.NewV4()
 	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws/overlay/" + overlayUUID.String()
 
 	// Connect up to the limit (3 connections)
@@ -98,15 +95,12 @@ func TestConnectionLimitsIntegration_PerIPLimit(t *testing.T) {
 		ConnectionRateBurst:     100,
 	}
 
-	mockApp := &mockAppService{
+	mockUsers := &mockUserService{
 		getUserByOverlayFn: func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
 			return &domain.User{
-				ID:          uuid.New(),
+				ID:          uuid.NewV4(),
 				OverlayUUID: overlayUUID,
 			}, nil
-		},
-		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
-			return &domain.Config{}, nil
 		},
 	}
 
@@ -114,13 +108,13 @@ func TestConnectionLimitsIntegration_PerIPLimit(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
-	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
+	srv := newTestServerWithLimits(t, cfg, mockUsers, &mockConfigService{}, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
 	defer ts.Close()
 
-	overlayUUID := uuid.New()
+	overlayUUID := uuid.NewV4()
 	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws/overlay/" + overlayUUID.String()
 
 	// All connections come from same IP (127.0.0.1)
@@ -160,15 +154,12 @@ func TestConnectionLimitsIntegration_RateLimit(t *testing.T) {
 		ConnectionRateBurst:     2, // Burst of 2
 	}
 
-	mockApp := &mockAppService{
+	mockUsers := &mockUserService{
 		getUserByOverlayFn: func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
 			return &domain.User{
-				ID:          uuid.New(),
+				ID:          uuid.NewV4(),
 				OverlayUUID: overlayUUID,
 			}, nil
-		},
-		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
-			return &domain.Config{}, nil
 		},
 	}
 
@@ -176,13 +167,13 @@ func TestConnectionLimitsIntegration_RateLimit(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
-	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
+	srv := newTestServerWithLimits(t, cfg, mockUsers, &mockConfigService{}, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
 	defer ts.Close()
 
-	overlayUUID := uuid.New()
+	overlayUUID := uuid.NewV4()
 	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws/overlay/" + overlayUUID.String()
 
 	// Rapidly open connections (exhaust burst)
@@ -222,15 +213,12 @@ func TestConnectionLimitsIntegration_ReleaseOnDisconnect(t *testing.T) {
 		ConnectionRateBurst:     100,
 	}
 
-	mockApp := &mockAppService{
+	mockUsers := &mockUserService{
 		getUserByOverlayFn: func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
 			return &domain.User{
-				ID:          uuid.New(),
+				ID:          uuid.NewV4(),
 				OverlayUUID: overlayUUID,
 			}, nil
-		},
-		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
-			return &domain.Config{}, nil
 		},
 	}
 
@@ -238,13 +226,13 @@ func TestConnectionLimitsIntegration_ReleaseOnDisconnect(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
-	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
+	srv := newTestServerWithLimits(t, cfg, mockUsers, &mockConfigService{}, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
 	defer ts.Close()
 
-	overlayUUID := uuid.New()
+	overlayUUID := uuid.NewV4()
 	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws/overlay/" + overlayUUID.String()
 
 	// Fill up the limit
@@ -284,15 +272,12 @@ func TestConnectionLimitsIntegration_ConcurrentConnections(t *testing.T) {
 		ConnectionRateBurst:     100,
 	}
 
-	mockApp := &mockAppService{
+	mockUsers := &mockUserService{
 		getUserByOverlayFn: func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
 			return &domain.User{
-				ID:          uuid.New(),
+				ID:          uuid.NewV4(),
 				OverlayUUID: overlayUUID,
 			}, nil
-		},
-		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
-			return &domain.Config{}, nil
 		},
 	}
 
@@ -300,13 +285,13 @@ func TestConnectionLimitsIntegration_ConcurrentConnections(t *testing.T) {
 	broadcaster := broadcast.NewBroadcaster(nil, nil, clock, 50, 5*time.Second)
 	defer broadcaster.Stop()
 
-	srv := newTestServerWithLimits(t, cfg, mockApp, broadcaster)
+	srv := newTestServerWithLimits(t, cfg, mockUsers, &mockConfigService{}, broadcaster)
 
 	// Create test HTTP server
 	ts := httptest.NewServer(srv.echo)
 	defer ts.Close()
 
-	overlayUUID := uuid.New()
+	overlayUUID := uuid.NewV4()
 	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws/overlay/" + overlayUUID.String()
 
 	// Try to open 40 connections concurrently (limit is 20)
@@ -347,7 +332,7 @@ func TestConnectionLimitsIntegration_ConcurrentConnections(t *testing.T) {
 }
 
 // Helper function to create a test server with custom limits
-func newTestServerWithLimits(t *testing.T, cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster) *Server {
+func newTestServerWithLimits(t *testing.T, cfg *config.Config, users domain.UserService, configs domain.ConfigService, broadcaster *broadcast.Broadcaster) *Server {
 	t.Helper()
 
 	// Create minimal templates for testing
@@ -389,7 +374,8 @@ func newTestServerWithLimits(t *testing.T, cfg *config.Config, app domain.AppSer
 	srv := &Server{
 		echo:              e,
 		config:            cfg,
-		app:               app,
+		users:             users,
+		configs:           configs,
 		broadcaster:       broadcaster,
 		sessionStore:      store,
 		loginTemplate:     loginTmpl,

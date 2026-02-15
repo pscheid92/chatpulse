@@ -67,7 +67,8 @@ type webhookHandler interface {
 type Server struct {
 	echo              *echo.Echo
 	config            *config.Config
-	app               domain.AppService
+	users             domain.UserService
+	configs           domain.ConfigService
 	broadcaster       *broadcast.Broadcaster
 	webhook           webhookHandler
 	oauthClient       twitchOAuthClient
@@ -86,7 +87,7 @@ type Server struct {
 	postgresHealthCheck postgresHealthChecker
 }
 
-func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast.Broadcaster, webhook webhookHandler, twitchService domain.TwitchService, db *pgxpool.Pool, redisClient *goredis.Client) (*Server, error) {
+func NewServer(cfg *config.Config, users domain.UserService, configs domain.ConfigService, broadcaster *broadcast.Broadcaster, webhook webhookHandler, twitchService domain.TwitchService, db *pgxpool.Pool, redisClient *goredis.Client) (*Server, error) {
 	// Parse templates once at startup
 	loginPath, err := getTemplatePath("web/templates/login.html")
 	if err != nil {
@@ -181,7 +182,8 @@ func NewServer(cfg *config.Config, app domain.AppService, broadcaster *broadcast
 	srv := &Server{
 		echo:              e,
 		config:            cfg,
-		app:               app,
+		users:             users,
+		configs:           configs,
 		broadcaster:       broadcaster,
 		webhook:           webhook,
 		twitchService:     twitchService,

@@ -2,6 +2,7 @@ package sentiment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -17,17 +18,15 @@ type Engine struct {
 	configSource domain.ConfigSource
 	sentiment    domain.SentimentStore
 	debounce     domain.Debouncer
-	rateLimiter  domain.VoteRateLimiter
 	clock        clockwork.Clock
 	configCache  *ConfigCache
 }
 
-func NewEngine(configSource domain.ConfigSource, sentiment domain.SentimentStore, debounce domain.Debouncer, rateLimiter domain.VoteRateLimiter, clock clockwork.Clock, configCache *ConfigCache) *Engine {
+func NewEngine(configSource domain.ConfigSource, sentiment domain.SentimentStore, debounce domain.Debouncer, clock clockwork.Clock, configCache *ConfigCache) *Engine {
 	return &Engine{
 		configSource: configSource,
 		sentiment:    sentiment,
 		debounce:     debounce,
-		rateLimiter:  rateLimiter,
 		clock:        clock,
 		configCache:  configCache,
 	}
@@ -38,20 +37,18 @@ func (e *Engine) GetBroadcastData(ctx context.Context, broadcasterID string) (*d
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
-	if config == nil {
-		return nil, nil
-	}
 
 	value, lastUpdateMs, err := e.sentiment.GetRawSentiment(ctx, broadcasterID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get raw sentiment: %w", err)
 	}
 
-	return &domain.BroadcastData{
-		Value:      value,
-		DecaySpeed: config.DecaySpeed,
-		Timestamp:  lastUpdateMs,
-	}, nil
+	data := domain.BroadcastData{
+		Value:         value,
+		DecaySpeed:    config.DecaySpeed,
+		UnixTimestamp: lastUpdateMs,
+	}
+	return &data, nil
 }
 
 func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (float64, domain.VoteResult, error) {
@@ -64,13 +61,13 @@ func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUser
 
 	// Get config by broadcaster_id (cache + fallback to session hash)
 	config, err := e.getConfig(ctx, broadcasterUserID)
+	if errors.Is(err, domain.ErrConfigNotFound) {
+		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteNoSession.String()).Inc()
+		return 0, domain.VoteNoSession, nil
+	}
 	if err != nil {
 		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteNoSession.String()).Inc()
 		return 0, domain.VoteNoSession, fmt.Errorf("config lookup failed: %w", err)
-	}
-	if config == nil {
-		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteNoSession.String()).Inc()
-		return 0, domain.VoteNoSession, nil
 	}
 
 	delta := matchTrigger(messageText, config)
@@ -91,19 +88,6 @@ func (e *Engine) ProcessVote(ctx context.Context, broadcasterUserID, chatterUser
 	if err != nil || !allowed {
 		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteDebounced.String()).Inc()
 		return 0, domain.VoteDebounced, nil
-	}
-
-	// Check per-broadcaster rate limit (prevents coordinated bot attacks)
-	rateLimitAllowed, err := e.rateLimiter.CheckVoteRateLimit(ctx, broadcasterUserID)
-	if err != nil {
-		// Fail open: allow vote if rate limiter fails (availability over strict enforcement)
-		slog.Error("Rate limit check failed, allowing vote", "error", err)
-		rateLimitAllowed = true
-	}
-	if !rateLimitAllowed {
-		slog.Debug("Vote rate limited", "broadcaster_id", broadcasterUserID)
-		metrics.VoteProcessingTotal.WithLabelValues(domain.VoteRateLimited.String()).Inc()
-		return 0, domain.VoteRateLimited, nil
 	}
 
 	nowMs := e.clock.Now().UnixMilli()
@@ -142,7 +126,7 @@ func (e *Engine) getConfig(ctx context.Context, broadcasterID string) (*domain.C
 		return nil, fmt.Errorf("config lookup failed: %w", err)
 	}
 	if fetchedConfig == nil {
-		return nil, nil
+		return nil, domain.ErrConfigNotFound
 	}
 
 	// Populate local cache

@@ -67,7 +67,7 @@ func BenchmarkEngine_GetBroadcastData_CacheHit(b *testing.B) {
 	sentimentStore := &mockSentimentStore{}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(configSource, sentimentStore, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
+	engine := NewEngine(configSource, sentimentStore, &mockDebouncer{}, fakeClock, cache)
 
 	ctx := context.Background()
 
@@ -98,7 +98,7 @@ func BenchmarkEngine_GetBroadcastData_CacheMiss(b *testing.B) {
 	sentimentStore := &mockSentimentStore{}
 
 	cache := NewConfigCache(10*time.Second, fakeClock)
-	engine := NewEngine(configSource, sentimentStore, &mockDebouncer{}, &mockVoteRateLimiter{}, fakeClock, cache)
+	engine := NewEngine(configSource, sentimentStore, &mockDebouncer{}, fakeClock, cache)
 
 	ctx := context.Background()
 

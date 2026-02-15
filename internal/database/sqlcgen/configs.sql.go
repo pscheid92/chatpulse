@@ -7,35 +7,29 @@ package sqlcgen
 
 import (
 	"context"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/pscheid92/uuid"
 )
 
 const getConfigByBroadcasterID = `-- name: GetConfigByBroadcasterID :one
-SELECT c.user_id, c.for_trigger, c.against_trigger, c.left_label, c.right_label,
-       c.decay_speed, c.version, c.created_at, c.updated_at
+SELECT c.user_id,
+       c.for_trigger,
+       c.against_trigger,
+       c.left_label,
+       c.right_label,
+       c.decay_speed,
+       c.version,
+       c.created_at,
+       c.updated_at
 FROM configs c
 JOIN users u ON c.user_id = u.id
 WHERE u.twitch_user_id = $1
 `
 
-type GetConfigByBroadcasterIDRow struct {
-	UserID         uuid.UUID
-	ForTrigger     string
-	AgainstTrigger string
-	LeftLabel      string
-	RightLabel     string
-	DecaySpeed     float64
-	Version        int32
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-}
-
-func (q *Queries) GetConfigByBroadcasterID(ctx context.Context, twitchUserID string) (GetConfigByBroadcasterIDRow, error) {
+func (q *Queries) GetConfigByBroadcasterID(ctx context.Context, twitchUserID string) (Config, error) {
 	row := q.db.QueryRow(ctx, getConfigByBroadcasterID, twitchUserID)
-	var i GetConfigByBroadcasterIDRow
+	var i Config
 	err := row.Scan(
 		&i.UserID,
 		&i.ForTrigger,
@@ -51,26 +45,22 @@ func (q *Queries) GetConfigByBroadcasterID(ctx context.Context, twitchUserID str
 }
 
 const getConfigByUserID = `-- name: GetConfigByUserID :one
-SELECT user_id, for_trigger, against_trigger, left_label, right_label,
-       decay_speed, version, created_at, updated_at
-FROM configs WHERE user_id = $1
+SELECT user_id,
+       for_trigger,
+       against_trigger,
+       left_label,
+       right_label,
+       decay_speed,
+       version,
+       created_at,
+       updated_at
+FROM configs
+WHERE user_id = $1
 `
 
-type GetConfigByUserIDRow struct {
-	UserID         uuid.UUID
-	ForTrigger     string
-	AgainstTrigger string
-	LeftLabel      string
-	RightLabel     string
-	DecaySpeed     float64
-	Version        int32
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-}
-
-func (q *Queries) GetConfigByUserID(ctx context.Context, userID uuid.UUID) (GetConfigByUserIDRow, error) {
+func (q *Queries) GetConfigByUserID(ctx context.Context, userID uuid.UUID) (Config, error) {
 	row := q.db.QueryRow(ctx, getConfigByUserID, userID)
-	var i GetConfigByUserIDRow
+	var i Config
 	err := row.Scan(
 		&i.UserID,
 		&i.ForTrigger,
@@ -87,9 +77,14 @@ func (q *Queries) GetConfigByUserID(ctx context.Context, userID uuid.UUID) (GetC
 
 const updateConfig = `-- name: UpdateConfig :execresult
 UPDATE configs
-SET for_trigger = $1, against_trigger = $2, left_label = $3,
-    right_label = $4, decay_speed = $5, updated_at = NOW()
-WHERE user_id = $6
+SET for_trigger     = $1,
+    against_trigger = $2,
+    left_label      = $3,
+    right_label     = $4,
+    decay_speed     = $5,
+    version         = $6,
+    updated_at      = NOW()
+WHERE user_id = $7
 `
 
 type UpdateConfigParams struct {
@@ -98,6 +93,7 @@ type UpdateConfigParams struct {
 	LeftLabel      string
 	RightLabel     string
 	DecaySpeed     float64
+	Version        int32
 	UserID         uuid.UUID
 }
 
@@ -108,6 +104,7 @@ func (q *Queries) UpdateConfig(ctx context.Context, arg UpdateConfigParams) (pgc
 		arg.LeftLabel,
 		arg.RightLabel,
 		arg.DecaySpeed,
+		arg.Version,
 		arg.UserID,
 	)
 }

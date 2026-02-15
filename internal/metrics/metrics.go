@@ -255,27 +255,6 @@ var (
 	)
 )
 
-// Vote Rate Limiting Metrics
-var (
-	// VoteRateLimitChecks tracks vote rate limit checks by result
-	VoteRateLimitChecks = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "vote_rate_limit_checks_total",
-			Help: "Vote rate limit checks by result (allowed/rejected/error)",
-		},
-		[]string{"result"},
-	)
-
-	// VoteRateLimitTokensRemaining tracks remaining tokens in rate limit bucket
-	VoteRateLimitTokensRemaining = promauto.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "vote_rate_limit_tokens_remaining",
-			Help:    "Remaining tokens in vote rate limit bucket",
-			Buckets: []float64{0, 10, 25, 50, 75, 90, 100},
-		},
-	)
-)
-
 // EventSub Metrics
 var (
 	// EventSubSetupFailuresTotal tracks EventSub setup failures at startup

@@ -34,8 +34,7 @@ func Middleware() echo.MiddlewareFunc {
 
 			// Check if it's an Echo HTTPError (from middleware like CSRF)
 			// If so, pass it through unchanged to preserve the status code
-			var httpErr *echo.HTTPError
-			if errors.As(err, &httpErr) {
+			if httpErr, ok := errors.AsType[*echo.HTTPError](err); ok {
 				// Still record metrics for Echo errors
 				structuredErr := WrapHTTPError(httpErr)
 				HTTPErrorsTotal.WithLabelValues(string(structuredErr.Type)).Inc()

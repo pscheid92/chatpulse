@@ -16,6 +16,9 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("SESSION_SECRET", "test-session-secret")
 	t.Setenv("TOKEN_ENCRYPTION_KEY", "")
 	t.Setenv("REDIS_URL", "redis://localhost:6379")
+	t.Setenv("WEBHOOK_CALLBACK_URL", "https://example.com/webhooks/eventsub")
+	t.Setenv("WEBHOOK_SECRET", "test-webhook-secret-at-least-10")
+	t.Setenv("BOT_USER_ID", "12345")
 }
 
 func TestLoad_AllRequiredVarsSet(t *testing.T) {
@@ -43,6 +46,9 @@ func TestLoad_MissingRequired(t *testing.T) {
 		{"missing TWITCH_REDIRECT_URI", "TWITCH_REDIRECT_URI", "TWITCH_REDIRECT_URI is required"},
 		{"missing SESSION_SECRET", "SESSION_SECRET", "SESSION_SECRET is required"},
 		{"missing REDIS_URL", "REDIS_URL", "REDIS_URL is required"},
+		{"missing WEBHOOK_CALLBACK_URL", "WEBHOOK_CALLBACK_URL", "WEBHOOK_CALLBACK_URL is required"},
+		{"missing WEBHOOK_SECRET", "WEBHOOK_SECRET", "WEBHOOK_SECRET is required"},
+		{"missing BOT_USER_ID", "BOT_USER_ID", "BOT_USER_ID is required"},
 	}
 
 	for _, tt := range tests {

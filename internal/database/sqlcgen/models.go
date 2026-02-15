@@ -7,7 +7,7 @@ package sqlcgen
 import (
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/pscheid92/uuid"
 )
 
 type Config struct {
@@ -17,9 +17,9 @@ type Config struct {
 	LeftLabel      string
 	RightLabel     string
 	DecaySpeed     float64
+	Version        int32
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	Version        int32
 }
 
 type EventsubSubscription struct {

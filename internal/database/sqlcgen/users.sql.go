@@ -9,14 +9,22 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/pscheid92/uuid"
 )
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, overlay_uuid, twitch_user_id, twitch_username,
-       access_token, refresh_token, token_expiry, created_at, updated_at
-FROM users WHERE id = $1
+SELECT id,
+       overlay_uuid,
+       twitch_user_id,
+       twitch_username,
+       access_token,
+       refresh_token,
+       token_expiry,
+       created_at,
+       updated_at
+FROM users
+WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -37,9 +45,17 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 }
 
 const getUserByOverlayUUID = `-- name: GetUserByOverlayUUID :one
-SELECT id, overlay_uuid, twitch_user_id, twitch_username,
-       access_token, refresh_token, token_expiry, created_at, updated_at
-FROM users WHERE overlay_uuid = $1
+SELECT id,
+       overlay_uuid,
+       twitch_user_id,
+       twitch_username,
+       access_token,
+       refresh_token,
+       token_expiry,
+       created_at,
+       updated_at
+FROM users
+WHERE overlay_uuid = $1
 `
 
 func (q *Queries) GetUserByOverlayUUID(ctx context.Context, overlayUuid uuid.UUID) (User, error) {
@@ -72,7 +88,8 @@ func (q *Queries) InsertDefaultConfig(ctx context.Context, userID uuid.UUID) err
 
 const rotateOverlayUUID = `-- name: RotateOverlayUUID :one
 UPDATE users
-SET overlay_uuid = gen_random_uuid(), updated_at = NOW()
+SET overlay_uuid = uuidv7(),
+    updated_at   = NOW()
 WHERE id = $1
 RETURNING overlay_uuid
 `
@@ -86,7 +103,10 @@ func (q *Queries) RotateOverlayUUID(ctx context.Context, id uuid.UUID) (uuid.UUI
 
 const updateTokens = `-- name: UpdateTokens :execresult
 UPDATE users
-SET access_token = $1, refresh_token = $2, token_expiry = $3, updated_at = NOW()
+SET access_token  = $1,
+    refresh_token = $2,
+    token_expiry  = $3,
+    updated_at    = NOW()
 WHERE id = $4
 `
 
@@ -107,16 +127,31 @@ func (q *Queries) UpdateTokens(ctx context.Context, arg UpdateTokensParams) (pgc
 }
 
 const upsertUser = `-- name: UpsertUser :one
-INSERT INTO users (twitch_user_id, twitch_username, access_token, refresh_token, token_expiry, created_at, updated_at)
+INSERT INTO users (
+    twitch_user_id,
+    twitch_username,
+    access_token,
+    refresh_token,
+    token_expiry,
+    created_at,
+    updated_at
+)
 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-ON CONFLICT (twitch_user_id) DO UPDATE SET
-    twitch_username = EXCLUDED.twitch_username,
-    access_token = EXCLUDED.access_token,
-    refresh_token = EXCLUDED.refresh_token,
-    token_expiry = EXCLUDED.token_expiry,
-    updated_at = NOW()
-RETURNING id, overlay_uuid, twitch_user_id, twitch_username,
-          access_token, refresh_token, token_expiry, created_at, updated_at
+ON CONFLICT (twitch_user_id) DO UPDATE
+    SET twitch_username = EXCLUDED.twitch_username,
+        access_token   = EXCLUDED.access_token,
+        refresh_token  = EXCLUDED.refresh_token,
+        token_expiry   = EXCLUDED.token_expiry,
+        updated_at     = NOW()
+RETURNING id,
+          overlay_uuid,
+          twitch_user_id,
+          twitch_username,
+          access_token,
+          refresh_token,
+          token_expiry,
+          created_at,
+          updated_at
 `
 
 type UpsertUserParams struct {

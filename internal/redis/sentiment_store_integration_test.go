@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 	"math"
-	"strconv"
 	"testing"
 	"time"
 
@@ -83,34 +82,6 @@ func TestApplyVote_Clamping(t *testing.T) {
 	assert.Equal(t, -100.0, val)
 }
 
-func TestGetSentiment(t *testing.T) {
-	sentiment := setupTestSentimentStore(t)
-	ctx := context.Background()
-
-	broadcasterID := "broadcaster-get"
-	now := time.Now().UnixMilli()
-
-	_, err := sentiment.ApplyVote(ctx, broadcasterID, 80.0, 0.0, now)
-	require.NoError(t, err)
-
-	// Immediate read — no decay
-	val, err := sentiment.GetSentiment(ctx, broadcasterID, 1.0, now)
-	require.NoError(t, err)
-	assert.InDelta(t, 80.0, val, 0.01)
-
-	// 1 second later: 80 * exp(-1.0) ≈ 29.43
-	val, err = sentiment.GetSentiment(ctx, broadcasterID, 1.0, now+1000)
-	require.NoError(t, err)
-	assert.InDelta(t, 80.0*math.Exp(-1.0), val, 0.01)
-
-	// Pure read — stored value unchanged
-	raw, err := sentiment.rdb.HGet(ctx, sentimentKey(broadcasterID), "value").Result()
-	require.NoError(t, err)
-	rawVal, err := strconv.ParseFloat(raw, 64)
-	require.NoError(t, err)
-	assert.Equal(t, 80.0, rawVal)
-}
-
 func TestApplyVote_InvalidRedisValue(t *testing.T) {
 	sentiment := setupTestSentimentStore(t)
 	ctx := context.Background()
@@ -128,25 +99,6 @@ func TestApplyVote_InvalidRedisValue(t *testing.T) {
 	value, err := sentiment.ApplyVote(ctx, broadcasterID, 10.0, 1.0, now)
 	require.NoError(t, err)
 	assert.Equal(t, 10.0, value, "Should apply delta to default value (0)") // 0 + 10 = 10
-}
-
-func TestGetSentiment_InvalidRedisValue(t *testing.T) {
-	sentiment := setupTestSentimentStore(t)
-	ctx := context.Background()
-
-	broadcasterID := "broadcaster-invalid-get"
-
-	// Corrupt the stored value with non-numeric data
-	err := sentiment.rdb.HSet(ctx, sentimentKey(broadcasterID), "value", "corrupted").Err()
-	require.NoError(t, err)
-
-	now := time.Now().UnixMilli()
-
-	// GetSentiment should gracefully degrade (use default 0) when Redis value is corrupt
-	// The Lua validate_number function returns default=0 for non-numeric values
-	value, err := sentiment.GetSentiment(ctx, broadcasterID, 1.0, now)
-	require.NoError(t, err)
-	assert.Equal(t, 0.0, value, "Should return default value for corrupt data")
 }
 
 func TestApplyVote_TTLRefreshed(t *testing.T) {

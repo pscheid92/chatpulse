@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 // --- requireAuth tests ---
 
 func TestRequireAuth_NoSession(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
@@ -36,7 +36,7 @@ func TestRequireAuth_NoSession(t *testing.T) {
 }
 
 func TestRequireAuth_InvalidUUID(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
@@ -66,9 +66,9 @@ func TestRequireAuth_InvalidUUID(t *testing.T) {
 }
 
 func TestRequireAuth_ValidSession(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	e := srv.echo
-	userID := uuid.New()
+	userID := uuid.NewV4()
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
 	rec := httptest.NewRecorder()
@@ -97,7 +97,7 @@ func TestRequireAuth_ValidSession(t *testing.T) {
 // --- handleLoginPage tests ---
 
 func TestHandleLoginPage_Success(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
@@ -114,7 +114,7 @@ func TestHandleLoginPage_Success(t *testing.T) {
 // --- handleLogout tests ---
 
 func TestHandleLogout_Success(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
@@ -153,8 +153,8 @@ func setupOAuthCallbackRequest(t *testing.T, srv *Server, code, state string) (e
 }
 
 func TestHandleOAuthCallback_Success(t *testing.T) {
-	userID := uuid.New()
-	app := &mockAppService{
+	userID := uuid.NewV4()
+	users := &mockUserService{
 		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
 			return &domain.User{ID: userID, TwitchUsername: "testuser"}, nil
 		},
@@ -169,7 +169,7 @@ func TestHandleOAuthCallback_Success(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, app, withOAuthClient(oauth))
+	srv := newTestServer(t, users, &mockConfigService{}, withOAuthClient(oauth))
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 
@@ -180,7 +180,7 @@ func TestHandleOAuthCallback_Success(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_MissingCode(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/callback", nil)
@@ -192,7 +192,7 @@ func TestHandleOAuthCallback_MissingCode(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_InvalidState(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 
 	// Set up session with one state, but send a different state in the request
 	setupReq := httptest.NewRequest(http.MethodGet, "/auth/callback", nil)
@@ -218,7 +218,7 @@ func TestHandleOAuthCallback_ExchangeError(t *testing.T) {
 		err: fmt.Errorf("exchange failed"),
 	}
 
-	srv := newTestServer(t, &mockAppService{}, withOAuthClient(oauth))
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{}, withOAuthClient(oauth))
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 
@@ -227,12 +227,12 @@ func TestHandleOAuthCallback_ExchangeError(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_SubscribeCalledOnSuccess(t *testing.T) {
-	userID := uuid.New()
+	userID := uuid.NewV4()
 	twitchUserID := "12345"
 	var subscribeCalled bool
 	var subscribedBroadcasterID string
 
-	app := &mockAppService{
+	users := &mockUserService{
 		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
 			return &domain.User{ID: userID, TwitchUsername: "testuser"}, nil
 		},
@@ -254,7 +254,7 @@ func TestHandleOAuthCallback_SubscribeCalledOnSuccess(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, app, withOAuthClient(oauth), withTwitchService(ts))
+	srv := newTestServer(t, users, &mockConfigService{}, withOAuthClient(oauth), withTwitchService(ts))
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 
@@ -267,9 +267,9 @@ func TestHandleOAuthCallback_SubscribeCalledOnSuccess(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_SubscribeFailureDoesNotBlockOAuth(t *testing.T) {
-	userID := uuid.New()
+	userID := uuid.NewV4()
 
-	app := &mockAppService{
+	users := &mockUserService{
 		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
 			return &domain.User{ID: userID, TwitchUsername: "testuser"}, nil
 		},
@@ -289,7 +289,7 @@ func TestHandleOAuthCallback_SubscribeFailureDoesNotBlockOAuth(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, app, withOAuthClient(oauth), withTwitchService(ts))
+	srv := newTestServer(t, users, &mockConfigService{}, withOAuthClient(oauth), withTwitchService(ts))
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 
@@ -300,10 +300,10 @@ func TestHandleOAuthCallback_SubscribeFailureDoesNotBlockOAuth(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_ReloginIdempotent(t *testing.T) {
-	userID := uuid.New()
+	userID := uuid.NewV4()
 	subscribeCallCount := 0
 
-	app := &mockAppService{
+	users := &mockUserService{
 		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
 			return &domain.User{ID: userID, TwitchUsername: "testuser"}, nil
 		},
@@ -325,7 +325,7 @@ func TestHandleOAuthCallback_ReloginIdempotent(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, app, withOAuthClient(oauth), withTwitchService(ts))
+	srv := newTestServer(t, users, &mockConfigService{}, withOAuthClient(oauth), withTwitchService(ts))
 
 	// First login
 	c1, rec1 := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
@@ -343,7 +343,7 @@ func TestHandleOAuthCallback_ReloginIdempotent(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_DBError(t *testing.T) {
-	app := &mockAppService{
+	users := &mockUserService{
 		upsertUserFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.User, error) {
 			return nil, fmt.Errorf("db error")
 		},
@@ -358,7 +358,7 @@ func TestHandleOAuthCallback_DBError(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, app, withOAuthClient(oauth))
+	srv := newTestServer(t, users, &mockConfigService{}, withOAuthClient(oauth))
 
 	c, rec := setupOAuthCallbackRequest(t, srv, "valid-code", "valid-state")
 

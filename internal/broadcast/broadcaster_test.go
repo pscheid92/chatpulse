@@ -37,7 +37,7 @@ func (m *mockEngine) GetBroadcastData(ctx context.Context, _ string) (*domain.Br
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return &domain.BroadcastData{Value: m.value, DecaySpeed: 1.0, Timestamp: time.Now().UnixMilli()}, nil
+	return &domain.BroadcastData{Value: m.value, DecaySpeed: 1.0, UnixTimestamp: time.Now().UnixMilli()}, nil
 }
 
 func (m *mockEngine) ProcessVote(_ context.Context, _, _, _ string) (float64, domain.VoteResult, error) {

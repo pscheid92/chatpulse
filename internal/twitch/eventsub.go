@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/Its-donkey/kappopher/helix"
-	"github.com/google/uuid"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/metrics"
+	"github.com/pscheid92/uuid"
 )
 
 const (

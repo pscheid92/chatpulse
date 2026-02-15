@@ -3,7 +3,7 @@ package domain
 import (
 	"context"
 
-	"github.com/google/uuid"
+	"github.com/pscheid92/uuid"
 )
 
 type SessionUpdate struct {
@@ -14,8 +14,6 @@ type SessionUpdate struct {
 }
 
 type SessionRepository interface {
-	// Session queries
-
 	GetSessionByBroadcaster(ctx context.Context, broadcasterUserID string) (uuid.UUID, bool, error)
 	GetBroadcasterID(ctx context.Context, sessionUUID uuid.UUID) (string, error)
 	GetSessionConfig(ctx context.Context, sessionUUID uuid.UUID) (*ConfigSnapshot, error)

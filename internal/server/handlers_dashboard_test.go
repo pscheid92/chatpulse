@@ -9,15 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 )
 
 // --- handleSaveConfig tests ---
 
 func TestHandleSaveConfig_BadDecay(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	e := srv.echo
 
 	form := url.Values{}
@@ -31,14 +31,14 @@ func TestHandleSaveConfig_BadDecay(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	c.Set("userID", uuid.New())
+	c.Set("userID", uuid.NewV4())
 
 	_ = callHandler(srv.handleSaveConfig, c)
 	assert.Equal(t, 400, rec.Code)
 }
 
 func TestHandleSaveConfig_ValidationError(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	e := srv.echo
 
 	form := url.Values{}
@@ -52,23 +52,23 @@ func TestHandleSaveConfig_ValidationError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	c.Set("userID", uuid.New())
+	c.Set("userID", uuid.NewV4())
 
 	_ = callHandler(srv.handleSaveConfig, c)
 	assert.Equal(t, 400, rec.Code)
 }
 
 func TestHandleSaveConfig_Success(t *testing.T) {
-	userID := uuid.New()
-	overlayUUID := uuid.New()
+	userID := uuid.NewV4()
+	overlayUUID := uuid.NewV4()
 
-	app := &mockAppService{
+	users := &mockUserService{
 		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
 			return &domain.User{ID: userID, OverlayUUID: overlayUUID}, nil
 		},
 	}
 
-	srv := newTestServer(t, app)
+	srv := newTestServer(t, users, &mockConfigService{})
 	e := srv.echo
 
 	form := url.Values{}
@@ -92,35 +92,35 @@ func TestHandleSaveConfig_Success(t *testing.T) {
 // --- handleDashboard tests ---
 
 func TestHandleDashboard_DBError(t *testing.T) {
-	app := &mockAppService{
+	users := &mockUserService{
 		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
 			return nil, fmt.Errorf("db error")
 		},
 	}
 
-	srv := newTestServer(t, app)
+	srv := newTestServer(t, users, &mockConfigService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	c.Set("userID", uuid.New())
+	c.Set("userID", uuid.NewV4())
 
 	_ = callHandler(srv.handleDashboard, c)
 	assert.Equal(t, 500, rec.Code)
 }
 
 func TestHandleDashboard_Success(t *testing.T) {
-	userID := uuid.New()
-	overlayUUID := uuid.New()
+	userID := uuid.NewV4()
+	overlayUUID := uuid.NewV4()
 
-	app := &mockAppService{
+	users := &mockUserService{
 		getUserByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.User, error) {
 			return &domain.User{ID: userID, OverlayUUID: overlayUUID, TwitchUsername: "testuser"}, nil
 		},
 	}
 
-	srv := newTestServer(t, app)
+	srv := newTestServer(t, users, &mockConfigService{})
 	e := srv.echo
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/pscheid92/uuid"
 )
 
 type EventSubSubscription struct {

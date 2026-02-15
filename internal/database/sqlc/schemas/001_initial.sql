@@ -1,6 +1,6 @@
 CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    overlay_uuid UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
+    overlay_uuid UUID NOT NULL UNIQUE DEFAULT uuidv7(),
     twitch_user_id TEXT UNIQUE NOT NULL,
     twitch_username TEXT NOT NULL,
     access_token TEXT NOT NULL,
@@ -17,6 +17,7 @@ CREATE TABLE configs (
     left_label TEXT NOT NULL DEFAULT 'Against',
     right_label TEXT NOT NULL DEFAULT 'For',
     decay_speed FLOAT NOT NULL DEFAULT 0.5,
+    version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );

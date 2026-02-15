@@ -10,8 +10,7 @@ import (
 
 const (
 	// Redis Function names (loaded from chatpulse.lua).
-	fnApplyVote    = "apply_vote"
-	fnGetSentiment = "get_decayed_value"
+	fnApplyVote = "apply_vote"
 )
 
 type SentimentStore struct {
@@ -38,25 +37,6 @@ func (s *SentimentStore) ApplyVote(ctx context.Context, broadcasterID string, de
 	value, err := strconv.ParseFloat(result, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%s returned invalid float value %q: %w", fnApplyVote, result, err)
-	}
-	return value, nil
-}
-
-func (s *SentimentStore) GetSentiment(ctx context.Context, broadcasterID string, decayRate float64, nowMs int64) (float64, error) {
-	sk := sentimentKey(broadcasterID)
-	keys := []string{sk}
-
-	decayRateArg := strconv.FormatFloat(decayRate, 'f', -1, 64)
-	nowMsArg := strconv.FormatInt(nowMs, 10)
-
-	result, err := s.rdb.FCallRO(ctx, fnGetSentiment, keys, decayRateArg, nowMsArg).Text()
-	if err != nil {
-		return 0, fmt.Errorf("%s function failed: %w", fnGetSentiment, err)
-	}
-
-	value, err := strconv.ParseFloat(result, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%s returned invalid float value %q: %w", fnGetSentiment, result, err)
 	}
 	return value, nil
 }

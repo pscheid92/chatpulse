@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,7 +57,7 @@ func (m *mockUserRepo) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) 
 	if m.rotateOverlayUUIDFn != nil {
 		return m.rotateOverlayUUIDFn(ctx, userID)
 	}
-	return uuid.New(), nil
+	return uuid.NewV4(), nil
 }
 
 func (m *mockUserRepo) ListUsersWithLegacyTokens(ctx context.Context, currentVersion string, limit int) ([]*domain.User, error) {
@@ -70,7 +70,7 @@ func (m *mockUserRepo) ListUsersWithLegacyTokens(ctx context.Context, currentVer
 type mockConfigRepo struct {
 	getByUserIDFn        func(ctx context.Context, userID uuid.UUID) (*domain.Config, error)
 	getByBroadcasterIDFn func(ctx context.Context, broadcasterID string) (*domain.Config, error)
-	updateFn             func(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64) error
+	updateFn             func(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, version int) error
 }
 
 func (m *mockConfigRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
@@ -87,9 +87,9 @@ func (m *mockConfigRepo) GetByBroadcasterID(ctx context.Context, broadcasterID s
 	return nil, domain.ErrConfigNotFound
 }
 
-func (m *mockConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64) error {
+func (m *mockConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, version int) error {
 	if m.updateFn != nil {
-		return m.updateFn(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed)
+		return m.updateFn(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, version)
 	}
 	return nil
 }
@@ -168,7 +168,7 @@ func newTestService(users domain.UserRepository, configs domain.ConfigRepository
 // --- ResetSentiment tests ---
 
 func TestResetSentiment(t *testing.T) {
-	overlayUUID := uuid.New()
+	overlayUUID := uuid.NewV4()
 	var called bool
 
 	engine := &mockEngine{
@@ -196,23 +196,27 @@ func TestResetSentiment_Error(t *testing.T) {
 	clock := clockwork.NewFakeClock()
 	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, &mockSessionRepo{}, engine, clock)
 
-	err := svc.ResetSentiment(context.Background(), uuid.New())
+	err := svc.ResetSentiment(context.Background(), uuid.NewV4())
 	assert.Error(t, err)
 }
 
 // --- SaveConfig tests ---
 
 func TestSaveConfig_Success(t *testing.T) {
-	userID := uuid.New()
+	userID := uuid.NewV4()
 	var configUpdated bool
 
 	configs := &mockConfigRepo{
-		updateFn: func(_ context.Context, id uuid.UUID, forT, againstT, leftL, rightL string, decay float64) error {
+		getByUserIDFn: func(_ context.Context, id uuid.UUID) (*domain.Config, error) {
+			return &domain.Config{UserID: id, Version: 3}, nil
+		},
+		updateFn: func(_ context.Context, id uuid.UUID, forT, againstT, leftL, rightL string, decay float64, version int) error {
 			configUpdated = true
 			assert.Equal(t, userID, id)
 			assert.Equal(t, "yes", forT)
 			assert.Equal(t, "no", againstT)
 			assert.Equal(t, 1.5, decay)
+			assert.Equal(t, 4, version)
 			return nil
 		},
 	}
@@ -220,14 +224,25 @@ func TestSaveConfig_Success(t *testing.T) {
 	clock := clockwork.NewFakeClock()
 	svc := newTestService(&mockUserRepo{}, configs, &mockSessionRepo{}, &mockEngine{}, clock)
 
-	err := svc.SaveConfig(context.Background(), userID, "yes", "no", "Left", "Right", 1.5, "broadcaster-1")
+	err := svc.SaveConfig(context.Background(), domain.SaveConfigRequest{
+		UserID:         userID,
+		ForTrigger:     "yes",
+		AgainstTrigger: "no",
+		LeftLabel:      "Left",
+		RightLabel:     "Right",
+		DecaySpeed:     1.5,
+		BroadcasterID:  "broadcaster-1",
+	})
 	require.NoError(t, err)
 	assert.True(t, configUpdated)
 }
 
 func TestSaveConfig_DBError(t *testing.T) {
 	configs := &mockConfigRepo{
-		updateFn: func(_ context.Context, _ uuid.UUID, _, _, _, _ string, _ float64) error {
+		getByUserIDFn: func(_ context.Context, id uuid.UUID) (*domain.Config, error) {
+			return &domain.Config{UserID: id, Version: 1}, nil
+		},
+		updateFn: func(_ context.Context, _ uuid.UUID, _, _, _, _ string, _ float64, _ int) error {
 			return fmt.Errorf("db error")
 		},
 	}
@@ -235,15 +250,23 @@ func TestSaveConfig_DBError(t *testing.T) {
 	clock := clockwork.NewFakeClock()
 	svc := newTestService(&mockUserRepo{}, configs, &mockSessionRepo{}, &mockEngine{}, clock)
 
-	err := svc.SaveConfig(context.Background(), uuid.New(), "yes", "no", "L", "R", 1.0, "broadcaster-1")
+	err := svc.SaveConfig(context.Background(), domain.SaveConfigRequest{
+		UserID:         uuid.NewV4(),
+		ForTrigger:     "yes",
+		AgainstTrigger: "no",
+		LeftLabel:      "L",
+		RightLabel:     "R",
+		DecaySpeed:     1.0,
+		BroadcasterID:  "broadcaster-1",
+	})
 	assert.Error(t, err)
 }
 
 // --- RotateOverlayUUID tests ---
 
 func TestRotateOverlayUUID(t *testing.T) {
-	userID := uuid.New()
-	newUUID := uuid.New()
+	userID := uuid.NewV4()
+	newUUID := uuid.NewV4()
 
 	users := &mockUserRepo{
 		rotateOverlayUUIDFn: func(_ context.Context, id uuid.UUID) (uuid.UUID, error) {

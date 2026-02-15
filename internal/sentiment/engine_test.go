@@ -28,16 +28,8 @@ func (m *mockConfigSource) GetConfigByBroadcaster(ctx context.Context, broadcast
 // --- Mock SentimentStore ---
 
 type mockSentimentStore struct {
-	getSentimentFn   func(ctx context.Context, broadcasterID string, decayRate float64, nowMs int64) (float64, error)
 	applyVoteFn      func(ctx context.Context, broadcasterID string, delta, decayRate float64, nowMs int64) (float64, error)
 	resetSentimentFn func(ctx context.Context, broadcasterID string) error
-}
-
-func (m *mockSentimentStore) GetSentiment(ctx context.Context, broadcasterID string, decayRate float64, nowMs int64) (float64, error) {
-	if m.getSentimentFn != nil {
-		return m.getSentimentFn(ctx, broadcasterID, decayRate, nowMs)
-	}
-	return 0, nil
 }
 
 func (m *mockSentimentStore) ApplyVote(ctx context.Context, broadcasterID string, delta, decayRate float64, nowMs int64) (float64, error) {
@@ -71,19 +63,6 @@ func (m *mockDebouncer) CheckDebounce(ctx context.Context, broadcasterID string,
 	return false, nil
 }
 
-// --- Mock Vote Rate Limiter ---
-
-type mockVoteRateLimiter struct {
-	checkVoteRateLimitFn func(ctx context.Context, broadcasterID string) (bool, error)
-}
-
-func (m *mockVoteRateLimiter) CheckVoteRateLimit(ctx context.Context, broadcasterID string) (bool, error) {
-	if m.checkVoteRateLimitFn != nil {
-		return m.checkVoteRateLimitFn(ctx, broadcasterID)
-	}
-	return true, nil // Default: allow votes
-}
-
 // --- ProcessVote Tests ---
 
 var testConfig = &domain.ConfigSnapshot{
@@ -115,7 +94,7 @@ func TestProcessVote_Success(t *testing.T) {
 	configSource, sentiment, debounce := newHappyPathMocks()
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(configSource, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
+	engine := NewEngine(configSource, sentiment, debounce, clock, testCache)
 
 	val, result, err := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	require.NoError(t, err)
@@ -130,7 +109,7 @@ func TestProcessVote_NoConfig(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(configSource, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
+	engine := NewEngine(configSource, sentiment, debounce, clock, testCache)
 
 	val, result, err := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	require.NoError(t, err)
@@ -145,7 +124,7 @@ func TestProcessVote_ConfigLookupError(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(configSource, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
+	engine := NewEngine(configSource, sentiment, debounce, clock, testCache)
 
 	val, result, err := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.Error(t, err)
@@ -157,7 +136,7 @@ func TestProcessVote_NoTriggerMatch(t *testing.T) {
 	configSource, sentiment, debounce := newHappyPathMocks()
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(configSource, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
+	engine := NewEngine(configSource, sentiment, debounce, clock, testCache)
 
 	val, result, err := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "hello world")
 	require.NoError(t, err)
@@ -172,7 +151,7 @@ func TestProcessVote_Debounced(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(configSource, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
+	engine := NewEngine(configSource, sentiment, debounce, clock, testCache)
 
 	val, result, err := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	require.NoError(t, err)
@@ -187,7 +166,7 @@ func TestProcessVote_ApplyVoteError(t *testing.T) {
 	}
 	clock := clockwork.NewFakeClock()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(configSource, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
+	engine := NewEngine(configSource, sentiment, debounce, clock, testCache)
 
 	val, result, err := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.Error(t, err)
@@ -208,7 +187,7 @@ func TestProcessVote_UsesClockTime(t *testing.T) {
 	clock := clockwork.NewFakeClock()
 	expectedMs := clock.Now().UnixMilli()
 	testCache := NewConfigCache(10*time.Second, clock)
-	engine := NewEngine(configSource, sentiment, debounce, &mockVoteRateLimiter{}, clock, testCache)
+	engine := NewEngine(configSource, sentiment, debounce, clock, testCache)
 
 	_, result, err := engine.ProcessVote(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	require.NoError(t, err)

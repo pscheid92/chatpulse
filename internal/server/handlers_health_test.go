@@ -55,7 +55,7 @@ func TestHandleStartup(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{},
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 		withRedisHealthCheck(&mockRedisClient{
 			libraries: []goredis.Library{
 				{Name: "chatpulse"},
@@ -77,7 +77,7 @@ func TestHandleStartup_RedisDown(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{},
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 		withRedisHealthCheck(&mockRedisClient{pingErr: errors.New("connection refused")}),
 		withPostgresHealthCheck(&mockPgxPool{}),
 	)
@@ -96,7 +96,7 @@ func TestHandleLiveness(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	err := srv.handleLiveness(c)
 
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestHandleReadiness_AllHealthy(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{},
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 		withRedisHealthCheck(&mockRedisClient{
 			libraries: []goredis.Library{
 				{Name: "chatpulse"},
@@ -136,7 +136,7 @@ func TestHandleReadiness_RedisDown(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{},
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 		withRedisHealthCheck(&mockRedisClient{pingErr: errors.New("connection refused")}),
 		withPostgresHealthCheck(&mockPgxPool{}),
 	)
@@ -156,7 +156,7 @@ func TestHandleReadiness_PostgresDown(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{},
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 		withRedisHealthCheck(&mockRedisClient{
 			libraries: []goredis.Library{
 				{Name: "chatpulse"},
@@ -180,7 +180,7 @@ func TestHandleReadiness_RedisFunctionsNotLoaded(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{},
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 		withRedisHealthCheck(&mockRedisClient{libraries: []goredis.Library{}}), // Empty list
 		withPostgresHealthCheck(&mockPgxPool{}),
 	)
@@ -200,7 +200,7 @@ func TestHandleReadiness_RedisFunctionListError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{},
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 		withRedisHealthCheck(&mockRedisClient{functionListErr: errors.New("FUNCTION LIST failed")}),
 		withPostgresHealthCheck(&mockPgxPool{}),
 	)
@@ -234,7 +234,7 @@ func TestCheckRedis(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := newTestServer(t, &mockAppService{},
+			srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 				withRedisHealthCheck(&mockRedisClient{pingErr: tt.pingErr}),
 			)
 
@@ -269,7 +269,7 @@ func TestCheckPostgres(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := newTestServer(t, &mockAppService{},
+			srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 				withPostgresHealthCheck(&mockPgxPool{pingErr: tt.pingErr}),
 			)
 
@@ -313,7 +313,7 @@ func TestCheckRedisFunc(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := newTestServer(t, &mockAppService{},
+			srv := newTestServer(t, &mockUserService{}, &mockConfigService{},
 				withRedisHealthCheck(&mockRedisClient{
 					functionListErr: tt.functionListErr,
 					libraries:       tt.libraries,
@@ -340,7 +340,7 @@ func TestHandleVersion(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	err := srv.handleVersion(c)
 
 	require.NoError(t, err)

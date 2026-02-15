@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,22 +21,24 @@ const csrfTokenCookieName = "csrf_token"
 
 // TestCSRFProtection_ConfigSave verifies CSRF protection on config save endpoint
 func TestCSRFProtection_ConfigSave(t *testing.T) {
-	userID := uuid.New()
-	overlayUUID := uuid.New()
+	userID := uuid.NewV4()
+	overlayUUID := uuid.NewV4()
 
-	app := &mockAppService{
+	users := &mockUserService{
 		getUserByIDFn: func(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 			return &domain.User{
 				ID:          userID,
 				OverlayUUID: overlayUUID,
 			}, nil
 		},
-		saveConfigFn: func(_ context.Context, _ uuid.UUID, _, _, _, _ string, _ float64, _ string) error {
+	}
+	configs := &mockConfigService{
+		saveConfigFn: func(_ context.Context, _ domain.SaveConfigRequest) error {
 			return nil
 		},
 	}
 
-	srv := newTestServer(t, app)
+	srv := newTestServer(t, users, configs)
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
 		CookieName:  csrfTokenCookieName,
@@ -109,16 +111,18 @@ func TestCSRFProtection_ConfigSave(t *testing.T) {
 
 // TestCSRFProtection_ResetSentiment verifies CSRF protection on reset endpoint
 func TestCSRFProtection_ResetSentiment(t *testing.T) {
-	userID := uuid.New()
-	overlayUUID := uuid.New()
+	userID := uuid.NewV4()
+	overlayUUID := uuid.NewV4()
 
-	app := &mockAppService{
+	users := &mockUserService{
 		getUserByIDFn: func(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 			return &domain.User{
 				ID:          userID,
 				OverlayUUID: overlayUUID,
 			}, nil
 		},
+	}
+	configs := &mockConfigService{
 		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 			return &domain.Config{
 				ForTrigger: "yes", AgainstTrigger: "no",
@@ -130,7 +134,7 @@ func TestCSRFProtection_ResetSentiment(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, app)
+	srv := newTestServer(t, users, configs)
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
 		CookieName:  csrfTokenCookieName,
@@ -183,16 +187,18 @@ func TestCSRFProtection_ResetSentiment(t *testing.T) {
 
 // TestCSRFProtection_RotateOverlayUUID verifies CSRF protection on rotate UUID endpoint
 func TestCSRFProtection_RotateOverlayUUID(t *testing.T) {
-	userID := uuid.New()
-	overlayUUID := uuid.New()
+	userID := uuid.NewV4()
+	overlayUUID := uuid.NewV4()
 
-	app := &mockAppService{
+	users := &mockUserService{
 		getUserByIDFn: func(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 			return &domain.User{
 				ID:          userID,
 				OverlayUUID: overlayUUID,
 			}, nil
 		},
+	}
+	configs := &mockConfigService{
 		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 			return &domain.Config{
 				ForTrigger: "yes", AgainstTrigger: "no",
@@ -200,11 +206,11 @@ func TestCSRFProtection_RotateOverlayUUID(t *testing.T) {
 			}, nil
 		},
 		rotateOverlayUUIDFn: func(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
-			return uuid.New(), nil
+			return uuid.NewV4(), nil
 		},
 	}
 
-	srv := newTestServer(t, app)
+	srv := newTestServer(t, users, configs)
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
 		CookieName:  csrfTokenCookieName,
@@ -257,16 +263,18 @@ func TestCSRFProtection_RotateOverlayUUID(t *testing.T) {
 
 // TestCSRFProtection_Logout verifies CSRF protection on logout endpoint
 func TestCSRFProtection_Logout(t *testing.T) {
-	userID := uuid.New()
-	overlayUUID := uuid.New()
+	userID := uuid.NewV4()
+	overlayUUID := uuid.NewV4()
 
-	app := &mockAppService{
+	users := &mockUserService{
 		getUserByIDFn: func(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 			return &domain.User{
 				ID:          userID,
 				OverlayUUID: overlayUUID,
 			}, nil
 		},
+	}
+	configs := &mockConfigService{
 		getConfigFn: func(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
 			return &domain.Config{
 				ForTrigger: "yes", AgainstTrigger: "no",
@@ -275,7 +283,7 @@ func TestCSRFProtection_Logout(t *testing.T) {
 		},
 	}
 
-	srv := newTestServer(t, app)
+	srv := newTestServer(t, users, configs)
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",
 		CookieName:  csrfTokenCookieName,
@@ -332,11 +340,9 @@ func TestCSRFProtection_Logout(t *testing.T) {
 
 // TestCSRFProtection_WebhookExempt verifies webhook endpoint is exempt from CSRF
 func TestCSRFProtection_WebhookExempt(t *testing.T) {
-	app := &mockAppService{}
-
 	mockWebhook := &mockWebhookHandler{}
 
-	srv := newTestServer(t, app)
+	srv := newTestServer(t, &mockUserService{}, &mockConfigService{})
 	srv.webhook = mockWebhook
 	srv.csrfMiddleware = middleware.CSRFWithConfig(middleware.CSRFConfig{
 		TokenLookup: "form:csrf_token,header:X-CSRF-Token",

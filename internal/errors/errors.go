@@ -147,8 +147,7 @@ func AsStructuredError(err error) *Error {
 		return nil
 	}
 
-	var structuredErr *Error
-	if errors.As(err, &structuredErr) {
+	if structuredErr, ok := errors.AsType[*Error](err); ok {
 		return structuredErr
 	}
 

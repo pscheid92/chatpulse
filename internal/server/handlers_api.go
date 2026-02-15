@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	apperrors "github.com/pscheid92/chatpulse/internal/errors"
+	"github.com/pscheid92/uuid"
 )
 
 func (s *Server) handleResetSentiment(c echo.Context) error {
@@ -25,7 +25,7 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
-	user, err := s.app.GetUserByID(ctx, userID)
+	user, err := s.users.GetUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrUserNotFound) {
 			return apperrors.NotFoundError("user not found").WithField("user_id", userID.String())
@@ -40,7 +40,7 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 			WithField("expected_uuid", user.OverlayUUID.String())
 	}
 
-	if err := s.app.ResetSentiment(ctx, overlayUUID); err != nil {
+	if err := s.configs.ResetSentiment(ctx, overlayUUID); err != nil {
 		slog.Error("Failed to reset sentiment", "error", err, "overlay_uuid", overlayUUID)
 		return apperrors.InternalError("failed to reset sentiment", err).
 			WithField("overlay_uuid", overlayUUID.String())
@@ -59,7 +59,7 @@ func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 
-	newUUID, err := s.app.RotateOverlayUUID(ctx, userID)
+	newUUID, err := s.configs.RotateOverlayUUID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrUserNotFound) {
 			return apperrors.NotFoundError("user not found").WithField("user_id", userID.String())

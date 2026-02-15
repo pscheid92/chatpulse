@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pscheid92/chatpulse/internal/database/sqlcgen"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/uuid"
 )
 
 type ConfigRepo struct {
@@ -62,13 +62,14 @@ func (r *ConfigRepo) GetByBroadcasterID(ctx context.Context, broadcasterID strin
 	}, nil
 }
 
-func (r *ConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64) error {
+func (r *ConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, version int) error {
 	tag, err := r.q.UpdateConfig(ctx, sqlcgen.UpdateConfigParams{
 		ForTrigger:     forTrigger,
 		AgainstTrigger: againstTrigger,
 		LeftLabel:      leftLabel,
 		RightLabel:     rightLabel,
 		DecaySpeed:     decaySpeed,
+		Version:        int32(version),
 		UserID:         userID,
 	})
 	if err != nil {

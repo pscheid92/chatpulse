@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
+	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ func TestGetSessionConfig_NonExistent(t *testing.T) {
 	store := setupTestRepo(t)
 	ctx := context.Background()
 
-	cfg, err := store.GetSessionConfig(ctx, uuid.New())
+	cfg, err := store.GetSessionConfig(ctx, uuid.NewV4())
 	require.NoError(t, err)
 	assert.Nil(t, cfg)
 }

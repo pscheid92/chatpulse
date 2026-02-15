@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/tern/v2/migrate"
 	"github.com/pscheid92/chatpulse/internal/metrics"
@@ -16,90 +17,28 @@ import (
 //go:embed sqlc/schemas/*.sql
 var migrationFiles embed.FS
 
-// PoolConfig contains connection pool configuration
-type PoolConfig struct {
-	MinConns          int32
-	MaxConns          int32
-	MaxConnIdleTime   time.Duration
-	HealthCheckPeriod time.Duration
-	ConnectTimeout    time.Duration
-	MaxRetries        int
-	InitialBackoff    time.Duration
-}
-
-// DefaultPoolConfig returns recommended pool settings
-func DefaultPoolConfig() PoolConfig {
-	return PoolConfig{
-		MinConns:          2,
-		MaxConns:          10,
-		MaxConnIdleTime:   5 * time.Minute,
-		HealthCheckPeriod: 1 * time.Minute,
-		ConnectTimeout:    5 * time.Second,
-		MaxRetries:        3,
-		InitialBackoff:    1 * time.Second,
-	}
-}
-
-// Connect establishes a connection pool with retry logic and explicit pool configuration.
-// Uses exponential backoff (1s, 2s, 4s) for transient connection failures.
+// Connect establishes a connection pool to PostgreSQL.
+// Pool settings (pool_max_conns, pool_min_conns, etc.) are configured via the connection string.
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	return ConnectWithConfig(ctx, databaseURL, DefaultPoolConfig())
-}
-
-// ConnectWithConfig establishes a connection pool with custom configuration
-func ConnectWithConfig(ctx context.Context, databaseURL string, cfg PoolConfig) (*pgxpool.Pool, error) {
 	poolCfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse database URL: %w", err)
 	}
 
-	// Configure connection pool (explicit settings for predictable behavior)
-	poolCfg.MinConns = cfg.MinConns
-	poolCfg.MaxConns = cfg.MaxConns
-	poolCfg.MaxConnIdleTime = cfg.MaxConnIdleTime
-	poolCfg.HealthCheckPeriod = cfg.HealthCheckPeriod
-	poolCfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
-
-	// Add metrics tracer to collect query metrics
 	poolCfg.ConnConfig.Tracer = &MetricsTracer{}
 
-	// Retry strategy: exponential backoff for transient failures
-	var pool *pgxpool.Pool
-	backoff := cfg.InitialBackoff
-
-	for attempt := 1; attempt <= cfg.MaxRetries; attempt++ {
-		pool, err = pgxpool.NewWithConfig(ctx, poolCfg)
-		if err == nil {
-			// Success: verify with ping
-			pingErr := pool.Ping(ctx)
-			if pingErr == nil {
-				slog.Info("Database connected",
-					"attempt", attempt,
-					"min_conns", cfg.MinConns,
-					"max_conns", cfg.MaxConns)
-				return pool, nil
-			}
-			// Ping failed, close and retry
-			pool.Close()
-			err = pingErr
-		}
-
-		if attempt < cfg.MaxRetries {
-			slog.Warn("Database connection failed, retrying",
-				"attempt", attempt,
-				"backoff_seconds", backoff.Seconds(),
-				"error", err)
-
-			select {
-			case <-time.After(backoff):
-				backoff *= 2 // Exponential backoff
-			case <-ctx.Done():
-				return nil, fmt.Errorf("context cancelled during retry: %w", ctx.Err())
-			}
-		}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	return nil, fmt.Errorf("database connection failed after %d attempts: %w", cfg.MaxRetries, err)
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	slog.Info("Database connected", "min_conns", poolCfg.MinConns, "max_conns", poolCfg.MaxConns)
+	return pool, nil
 }
 
 // UpdatePoolMetrics updates database connection pool metrics
@@ -159,49 +98,42 @@ func RunMigrationsWithLock(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	defer conn.Release()
 
-	// Try to acquire advisory lock (non-blocking check first)
-	var lockAcquired bool
-	err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", migrationLockID).Scan(&lockAcquired)
-	if err != nil {
-		return fmt.Errorf("failed to check migration lock: %w", err)
-	}
-
-	if !lockAcquired {
-		// Another instance is running migrations, wait for it (blocking)
-		slog.Info("waiting for migration lock (another instance migrating)")
-		err = conn.QueryRow(ctx, "SELECT pg_advisory_lock($1)", migrationLockID).Scan(&lockAcquired)
-		if err != nil {
-			return fmt.Errorf("failed to acquire migration lock: %w", err)
-		}
+	// Acquire advisory lock (blocks until available)
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockID); err != nil {
+		return fmt.Errorf("failed to acquire migration lock: %w", err)
 	}
 
 	// Release lock on function exit (use background context in case ctx is cancelled)
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		var unlocked bool
-		if err := conn.QueryRow(unlockCtx, "SELECT pg_advisory_unlock($1)", migrationLockID).Scan(&unlocked); err != nil {
+		if _, err := conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", migrationLockID); err != nil {
 			slog.Error("failed to release migration lock", "error", err)
 		}
 	}()
 
 	slog.Info("running database migrations")
-	return RunMigrations(ctx, pool)
+	return runMigrations(ctx, conn.Conn())
 }
 
+// RunMigrations runs database migrations using a connection from the pool.
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	connection, err := pool.Acquire(ctx)
+	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to acquire connection from pool: %w", err)
 	}
-	defer connection.Release()
+	defer conn.Release()
 
+	return runMigrations(ctx, conn.Conn())
+}
+
+func runMigrations(ctx context.Context, conn *pgx.Conn) error {
 	migrationFS, err := fs.Sub(migrationFiles, "sqlc/schemas")
 	if err != nil {
 		return fmt.Errorf("failed to read migrations: %w", err)
 	}
 
-	migrator, err := migrate.NewMigrator(ctx, connection.Conn(), "public.schema_version")
+	migrator, err := migrate.NewMigrator(ctx, conn, "public.schema_version")
 	if err != nil {
 		return fmt.Errorf("failed to create migrator: %w", err)
 	}
@@ -212,9 +144,9 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 	currentVersion, err := migrator.GetCurrentVersion(ctx)
 	if err != nil {
-		slog.Debug("Could not get current DB version (likely fresh DB)", "error", err)
+		slog.Debug("could not get current DB version (likely fresh DB)", "error", err)
 	} else {
-		slog.Info("Current DB version", "version", currentVersion)
+		slog.Info("current DB version", "version", currentVersion)
 	}
 
 	if err := migrator.Migrate(ctx); err != nil {

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	apperrors "github.com/pscheid92/chatpulse/internal/errors"
+	"github.com/pscheid92/uuid"
 )
 
 const (
@@ -67,7 +67,7 @@ func (s *Server) handleDashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 
-	user, err := s.app.GetUserByID(ctx, userID)
+	user, err := s.users.GetUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrUserNotFound) {
 			return apperrors.NotFoundError("user not found").WithField("user_id", userID.String())
@@ -75,7 +75,7 @@ func (s *Server) handleDashboard(c echo.Context) error {
 		return apperrors.InternalError("failed to load user", err).WithField("user_id", userID.String())
 	}
 
-	config, err := s.app.GetConfig(ctx, userID)
+	config, err := s.configs.GetConfig(ctx, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrConfigNotFound) {
 			return apperrors.NotFoundError("config not found").WithField("user_id", userID.String())
@@ -128,7 +128,7 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 			WithField("decay_speed", decaySpeed)
 	}
 
-	user, err := s.app.GetUserByID(ctx, userID)
+	user, err := s.users.GetUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrUserNotFound) {
 			return apperrors.NotFoundError("user not found").WithField("user_id", userID.String())
@@ -136,7 +136,15 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 		return apperrors.InternalError("failed to get user", err).WithField("user_id", userID.String())
 	}
 
-	if err := s.app.SaveConfig(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, user.TwitchUserID); err != nil {
+	if err := s.configs.SaveConfig(ctx, domain.SaveConfigRequest{
+		UserID:         userID,
+		ForTrigger:     forTrigger,
+		AgainstTrigger: againstTrigger,
+		LeftLabel:      leftLabel,
+		RightLabel:     rightLabel,
+		DecaySpeed:     decaySpeed,
+		BroadcasterID:  user.TwitchUserID,
+	}); err != nil {
 		return apperrors.InternalError("failed to save config", err).
 			WithField("user_id", userID.String()).
 			WithField("broadcaster_id", user.TwitchUserID)
