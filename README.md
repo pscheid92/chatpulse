@@ -11,13 +11,17 @@ A dedicated bot account reads chat on behalf of all streamers, making this a mul
 ## Features
 
 - **Real-time sentiment tracking** from Twitch chat messages via EventSub webhooks
-- **Customizable triggers** for "for" and "against" votes
-- **Glassmorphism overlay** for OBS browser sources
+- **Two display modes**: combined tug-of-war bar or split positive/negative bars
+- **Customizable triggers** and labels for "for" and "against" votes
 - **Configurable decay speed** to smoothly return the bar to center
-- **Multi-instance scaling** with Redis (optional) for horizontal deployment
+- **Overdrive mode** lets the bar "stick" at the edge before decaying (1.0x-2.0x multiplier)
+- **Configurable vote delta** (1-50 per vote) for fine-tuned sensitivity
+- **Multi-instance scaling** with Redis for horizontal deployment
 - **Bot account architecture** — streamers only grant `channel:bot` scope; a single bot reads all channels
-- **Token encryption at rest** with AES-256-GCM (optional)
+- **Token encryption at rest** with AES-256-GCM
 - **Overlay URL rotation** to invalidate old URLs
+- **Per-user debouncing** (1s) to prevent spam
+- **Zero-cost idle** — skips processing when no overlay viewers are connected
 
 ## Prerequisites
 
@@ -31,25 +35,11 @@ A dedicated bot account reads chat on behalf of all streamers, making this a mul
 
 3. **PostgreSQL**: Version 18 or higher (required for `uuidv7()`)
 
-4. **Public HTTPS URL**: Required for EventSub webhook delivery (use [ngrok](https://ngrok.com/) for local development)
+4. **Redis**: Version 7+ (required for Redis Functions)
 
-## Testing
+5. **Public HTTPS URL**: Required for EventSub webhook delivery (use [ngrok](https://ngrok.com/) for local development)
 
-```bash
-make test           # Run all tests (unit + integration, ~15s)
-make test-short     # Run unit tests only (skip integration, <2s)
-make test-race      # Run with race detector
-make test-coverage  # Generate coverage report
-```
-
-**TDD workflow:**
-- Use `make test-short` for rapid feedback during development (<2s, no Docker)
-- Run `make test` before committing (full suite with testcontainers)
-- CI runs full suite on every push
-
-**Coverage targets:** 70% minimum overall, higher for critical paths (sentiment 90%, broadcast 85%)
-
-5. **Go**: Version 1.25+ (for local development only)
+6. **Go**: Version 1.26+ (for local development only)
 
 ## Quick Start with Docker
 
@@ -70,6 +60,7 @@ TWITCH_CLIENT_ID=your_client_id
 TWITCH_CLIENT_SECRET=your_client_secret
 TWITCH_REDIRECT_URI=http://localhost:8080/auth/callback
 SESSION_SECRET=$(openssl rand -hex 32)
+TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
 WEBHOOK_CALLBACK_URL=https://your-subdomain.ngrok-free.app/webhooks/eventsub
 WEBHOOK_SECRET=$(openssl rand -hex 16)
 BOT_USER_ID=your_bot_twitch_user_id
@@ -89,7 +80,7 @@ make docker-up
 make deps
 ```
 
-2. Start PostgreSQL (or use Docker):
+2. Start PostgreSQL and Redis (or use Docker):
 ```bash
 docker run -d \
   --name chatpulse-postgres \
@@ -98,6 +89,11 @@ docker run -d \
   -e POSTGRES_DB=twitchdb \
   -p 5432:5432 \
   postgres:18-alpine
+
+docker run -d \
+  --name chatpulse-redis \
+  -p 6379:6379 \
+  redis:8-alpine
 ```
 
 3. Expose your local server for webhooks:
@@ -115,21 +111,37 @@ make run
 ### Make Targets
 
 ```
-make build          # Build binary -> ./server
-make run            # Build and run locally
+make build             # Build binary -> ./server
+make run               # Build and run locally
 make test              # Run all tests (unit + integration, ~15s)
 make test-short        # Run unit tests only (fast, <2s, no Docker)
 make test-unit         # Alias for test-short
 make test-integration  # Run integration tests only (~12s, requires Docker)
 make test-race         # Run tests with race detector
 make test-coverage     # Generate coverage report
-make fmt            # Format code
-make lint           # Run golangci-lint
-make deps           # Download and tidy dependencies
-make docker-up      # Start with Docker Compose (app + PostgreSQL + Redis)
-make docker-down    # Stop Docker Compose
-make clean          # Remove build artifacts
+make fmt               # Format code
+make lint              # Run golangci-lint
+make deps              # Download and tidy dependencies
+make sqlc              # Regenerate sqlc code
+make docker-build      # Build Docker image
+make docker-up         # Start with Docker Compose (app + PostgreSQL 18 + Redis 8)
+make docker-down       # Stop Docker Compose
+make clean             # Remove build artifacts
 ```
+
+## Testing
+
+```bash
+make test           # Run all tests (unit + integration, ~15s)
+make test-short     # Run unit tests only (skip integration, <2s)
+make test-race      # Run with race detector
+make test-coverage  # Generate coverage report
+```
+
+**TDD workflow:**
+- Use `make test-short` for rapid feedback during development (<2s, no Docker)
+- Run `make test` before committing (full suite with testcontainers)
+- CI runs full suite on every push
 
 ## Usage
 
@@ -139,8 +151,11 @@ make clean          # Remove build artifacts
 2. Configure your sentiment triggers:
    - **For Trigger**: Word/phrase viewers type to vote "for" (e.g., "yes", "agree")
    - **Against Trigger**: Word/phrase to vote "against" (e.g., "no", "disagree")
-   - **Left/Right Labels**: Display labels for each side
+   - **Labels**: Display labels for each side
    - **Decay Speed**: How quickly the bar returns to center (0.1 = slow, 2.0 = fast)
+   - **Overdrive**: How much the bar can "stick" at the edge (1.0x = none, 2.0x = max)
+   - **Vote Delta**: How much each vote moves the bar (1-50)
+   - **Display Mode**: Combined (tug-of-war) or Split (two bars)
 3. Click "Save Configuration"
 
 ### 2. Add to OBS
@@ -157,39 +172,44 @@ make clean          # Remove build artifacts
 
 ## Environment Variables
 
-See `.env.example` for all variables.
+See `.env.example` for all variables with comments.
 
 **Required**:
 - `DATABASE_URL` — PostgreSQL connection string
+- `REDIS_URL` — Redis connection string (e.g., `redis://localhost:6379`)
 - `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` — Twitch app credentials
 - `TWITCH_REDIRECT_URI` — OAuth callback URL
 - `SESSION_SECRET` — Secret for session cookies
-
-**Webhook** (all three required together):
+- `TOKEN_ENCRYPTION_KEY` — 64 hex chars for AES-256-GCM token encryption (generate: `openssl rand -hex 32`)
 - `WEBHOOK_CALLBACK_URL` — Public HTTPS URL for EventSub webhook delivery
 - `WEBHOOK_SECRET` — HMAC secret for webhook verification (10-100 chars)
 - `BOT_USER_ID` — Twitch user ID of the bot account
 
 **Optional**:
-- `TOKEN_ENCRYPTION_KEY` — 64 hex chars for AES-256-GCM token encryption at rest
-- `REDIS_URL` — Enables multi-instance mode (e.g., `redis://localhost:6379`)
+- `APP_ENV` — `development` (default) or `production` (controls secure cookies)
+- `PORT` — Server port (default: `8080`)
+- `LOG_LEVEL` — `debug`, `info`, `warn`, `error` (default: `info`)
+- `LOG_FORMAT` — `text` (default) or `json` (recommended for production)
+- `MAX_WEBSOCKET_CONNECTIONS` — File descriptor limit check (default: `10000`)
+- `SESSION_MAX_AGE` — Cookie expiry (default: `168h` / 7 days)
 
 ## How It Works
 
 - **Bot Account**: A single bot account reads chat in all connected channels via EventSub webhooks
 - **Webhooks + Conduits**: Chat messages arrive via Twitch EventSub webhooks transported through a Conduit, verified with HMAC-SHA256
-- **Vote Processing**: Messages containing trigger words are counted as votes (case-insensitive substring match, "for" takes priority)
+- **Vote Processing**: Messages matching trigger words exactly (case-insensitive) are counted as votes
 - **Debouncing**: Each viewer can vote once per second to prevent spam
-- **Decay**: The sentiment bar gradually returns to center (50ms tick interval)
-- **Real-time Broadcast**: Updates are pushed to overlay clients via WebSocket
+- **Atomic Updates**: Votes are applied atomically via Redis Lua functions (dual-counter with independent exponential decay)
+- **Real-time Broadcast**: Updates are pushed to overlay clients via Centrifuge WebSocket with Redis broker for cross-instance delivery
+- **Client-side Decay**: The overlay uses `requestAnimationFrame` (60fps) for smooth visual decay with zero server cost
 
 ## Architecture
 
 - **Backend**: Single Go binary (Echo v4) serving HTTP, WebSocket, and webhook endpoints
-- **Database**: PostgreSQL 18+ with auto-migrations for users, configs, and EventSub subscriptions
-- **Scaling**: Single-instance (in-memory) or multi-instance (Redis with Lua scripts for atomic operations and Pub/Sub for cross-instance broadcasting)
-- **Concurrency**: Actor pattern for the Sentiment Engine and WebSocket Hub — no mutexes on actor-owned state
-- **Frontend**: Minimal HTML/CSS/JS with no external dependencies
+- **Database**: PostgreSQL 18+ with auto-migrations (tern) for streamers, configs, and EventSub subscriptions
+- **Caching**: 3-layer read-through cache (in-memory 10s → Redis 1h → PostgreSQL) with pub/sub invalidation
+- **Scaling**: Multi-instance via Redis (Lua functions for atomic operations, pub/sub for broadcasting, Centrifuge Redis broker for WebSocket fan-out)
+- **Frontend**: Minimal HTML/CSS/JS with no external dependencies, embedded via `go:embed`
 
 ## Production Deployment
 
@@ -202,7 +222,7 @@ See `.env.example` for all variables.
    TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
    ```
 4. Set `APP_ENV=production` for secure cookies
-5. Optionally set `REDIS_URL` for multi-instance scaling
+5. Set `LOG_FORMAT=json` for structured logging
 6. Configure PostgreSQL backups
 
 ## Troubleshooting

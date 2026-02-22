@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatPulse — Real-time Chat Sentiment</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --void: #08080f;
+            --surface: #0f0f1a;
+            --card: rgba(14, 14, 28, 0.8);
+            --card-border: rgba(255, 255, 255, 0.06);
+            --cyan: #00d4ff;
+            --magenta: #ff2d78;
+            --purple: #9147ff;
+            --text: #dcdce8;
+            --text-dim: #9a9ab8;
+            --text-muted: #62627e;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--void);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 48px 20px;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(ellipse at 15% 50%, rgba(0, 212, 255, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 85% 20%, rgba(145, 71, 255, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 85%, rgba(255, 45, 120, 0.04) 0%, transparent 50%);
+            pointer-events: none;
+        }
+
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+            background-size: 28px 28px;
+            pointer-events: none;
+        }
+
+        .page {
+            position: relative;
+            z-index: 1;
+            max-width: 600px;
+            width: 100%;
+            text-align: center;
+        }
+
+        /* Staggered entrance */
+        .fade-up {
+            opacity: 0;
+            transform: translateY(24px);
+            animation: fadeUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .fade-up:nth-child(2) { animation-delay: 0.08s; }
+        .fade-up:nth-child(3) { animation-delay: 0.16s; }
+        .fade-up:nth-child(4) { animation-delay: 0.24s; }
+        .fade-up:nth-child(5) { animation-delay: 0.32s; }
+        .fade-up:nth-child(6) { animation-delay: 0.40s; }
+
+        @keyframes fadeUp {
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .brand {
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+            color: var(--cyan);
+            margin-bottom: 28px;
+        }
+
+        h1 {
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 46px;
+            font-weight: 700;
+            line-height: 1.1;
+            margin-bottom: 16px;
+            background: linear-gradient(160deg, #fff 20%, var(--text-dim) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            font-size: 17px;
+            color: var(--text-dim);
+            line-height: 1.7;
+            margin-bottom: 44px;
+            font-weight: 300;
+        }
+
+        /* ── Demo bar ── */
+        .demo {
+            background: var(--card);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--card-border);
+            border-radius: 40px;
+            height: 68px;
+            position: relative;
+            margin-bottom: 48px;
+            overflow: hidden;
+            box-shadow:
+                0 4px 32px rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.03);
+            animation: borderShift 5s ease-in-out infinite;
+        }
+
+        @keyframes borderShift {
+            0%, 100% { border-color: rgba(0, 212, 255, 0.12); }
+            50% { border-color: rgba(145, 71, 255, 0.18); }
+        }
+
+        .demo-track {
+            position: absolute;
+            top: 50%;
+            left: 12%;
+            right: 12%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            transform: translateY(-50%);
+        }
+
+        .demo-center {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 1px;
+            height: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            transform: translate(-50%, -50%);
+        }
+
+        .demo-dot {
+            position: absolute;
+            top: 50%;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--cyan), var(--purple));
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 24px rgba(0, 212, 255, 0.5);
+            animation: drift 8s ease-in-out infinite;
+        }
+
+        .demo-label {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+        }
+        .demo-label-l { left: 22px; }
+        .demo-label-r { right: 22px; }
+
+        @keyframes drift {
+            0%    { left: 50%; }
+            14%   { left: 58%; }
+            30%   { left: 42%; }
+            48%   { left: 63%; }
+            65%   { left: 46%; }
+            80%   { left: 56%; }
+            100%  { left: 50%; }
+        }
+
+        /* ── Features ── */
+        .features {
+            text-align: left;
+            margin-bottom: 44px;
+        }
+
+        .feature {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+            padding: 16px 18px;
+            margin-bottom: 6px;
+            border-radius: 14px;
+            border: 1px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .feature:hover {
+            background: rgba(255, 255, 255, 0.025);
+            border-color: var(--card-border);
+        }
+
+        .feature-n {
+            flex-shrink: 0;
+            width: 32px;
+            height: 32px;
+            border-radius: 9px;
+            background: rgba(0, 212, 255, 0.08);
+            border: 1px solid rgba(0, 212, 255, 0.18);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Chakra Petch', sans-serif;
+            font-weight: 700;
+            font-size: 13px;
+            color: var(--cyan);
+        }
+
+        .feature span {
+            font-size: 15px;
+            line-height: 1.6;
+            color: var(--text-dim);
+            padding-top: 4px;
+        }
+
+        /* ── CTA ── */
+        .cta {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--purple);
+            color: #fff;
+            padding: 16px 38px;
+            border-radius: 12px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 16px;
+            font-weight: 600;
+            text-decoration: none;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+            overflow: hidden;
+        }
+
+        .cta::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background: linear-gradient(105deg, transparent 38%, rgba(255,255,255,0.12) 44%, rgba(255,255,255,0.16) 50%, rgba(255,255,255,0.12) 56%, transparent 62%);
+            background-size: 250% 100%;
+            animation: shimmer 4s ease-in-out infinite;
+        }
+
+        @keyframes shimmer {
+            0%   { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .cta:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 32px rgba(145, 71, 255, 0.4);
+            background: #a064ff;
+        }
+
+        .cta:active { transform: translateY(0); }
+
+        .cta svg { width: 20px; height: 20px; position: relative; z-index: 1; }
+        .cta span { position: relative; z-index: 1; }
+
+        @media (max-width: 520px) {
+            h1 { font-size: 32px; }
+            .subtitle { font-size: 15px; }
+            .demo { height: 56px; }
+            .demo-dot { width: 24px; height: 24px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <p class="brand fade-up">ChatPulse</p>
+
+        <h1 class="fade-up">Real-time chat sentiment for your stream</h1>
+
+        <p class="subtitle fade-up">Add a live sentiment overlay to your Twitch stream.<br>Your chat votes — the bar moves.</p>
+
+        <div class="demo fade-up">
+            <div class="demo-track"></div>
+            <div class="demo-center"></div>
+            <div class="demo-dot"></div>
+            <div class="demo-label demo-label-l">Nay</div>
+            <div class="demo-label demo-label-r">Yay</div>
+        </div>
+
+        <div class="features">
+            <div class="feature fade-up">
+                <div class="feature-n">1</div>
+                <span>Add a live sentiment bar as an OBS browser source overlay</span>
+            </div>
+            <div class="feature fade-up">
+                <div class="feature-n">2</div>
+                <span>Chat votes with trigger words to push the bar positive or negative</span>
+            </div>
+            <div class="feature fade-up">
+                <div class="feature-n">3</div>
+                <span>Customize triggers, labels, decay speed, and display mode</span>
+            </div>
+        </div>
+
+        <a href="/auth/login" class="cta fade-up">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714z"/></svg>
+            <span>Login with Twitch</span>
+        </a>
+    </div>
+</body>
+</html>

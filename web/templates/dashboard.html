@@ -3,273 +3,685 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChatPulse - Dashboard</title>
+    <title>ChatPulse — Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --void: #0e0e18;
+            --surface: #141424;
+            --card: rgba(18, 18, 34, 0.8);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --input-bg: rgba(10, 10, 22, 0.9);
+            --input-border: rgba(255, 255, 255, 0.12);
+            --input-focus: rgba(0, 212, 255, 0.4);
+            --cyan: #00d4ff;
+            --magenta: #ff2d78;
+            --purple: #9147ff;
+            --text: #dcdce8;
+            --text-dim: #9a9ab8;
+            --text-muted: #62627e;
         }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Outfit', sans-serif;
+            background: var(--void);
+            color: var(--text);
             min-height: 100vh;
-            padding: 20px;
         }
 
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(ellipse at 15% 50%, rgba(0, 212, 255, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 85% 20%, rgba(145, 71, 255, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 85%, rgba(255, 45, 120, 0.03) 0%, transparent 50%);
+            pointer-events: none;
         }
 
-        .header {
-            background: #6441a5;
-            color: white;
-            padding: 30px;
-            text-align: center;
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 28px 28px;
+            pointer-events: none;
         }
 
-        .header h1 {
-            font-size: 28px;
-            margin-bottom: 10px;
+        /* ── Nav ── */
+        .nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 28px;
+            background: rgba(14, 14, 24, 0.85);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--card-border);
         }
 
-        .header p {
-            opacity: 0.9;
+        .nav-brand {
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0.25em;
+            text-transform: uppercase;
+            color: var(--cyan);
         }
 
-        .header-actions {
-            margin-top: 12px;
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
         }
 
-        .button-logout {
+        .nav-user {
+            font-size: 15px;
+            color: var(--text-dim);
+            font-weight: 400;
+        }
+
+        .nav-user strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .btn-logout {
             background: transparent;
-            border: 1px solid rgba(255, 255, 255, 0.6);
-            color: white;
-            padding: 6px 16px;
-            border-radius: 6px;
-            font-size: 13px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-dim);
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all 0.2s;
         }
 
-        .button-logout:hover {
-            background: rgba(255, 255, 255, 0.15);
-            border-color: white;
+        .btn-logout:hover {
+            border-color: rgba(255, 255, 255, 0.2);
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.04);
         }
 
-        .content {
-            padding: 30px;
+        /* ── Layout ── */
+        .main {
+            position: relative;
+            z-index: 1;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 36px 20px 60px;
         }
 
+        .dashboard-grid {
+            display: flex;
+            flex-direction: column;
+        }
+
+        @media (min-width: 1100px) {
+            .main {
+                max-width: 1200px;
+            }
+
+            .dashboard-grid {
+                flex-direction: row;
+                gap: 24px;
+                align-items: flex-start;
+            }
+
+            .col-left {
+                flex: 1;
+                min-width: 0;
+            }
+
+            .col-right {
+                width: 440px;
+                flex-shrink: 0;
+            }
+
+            .col-right .section {
+                margin-bottom: 20px;
+            }
+        }
+
+        /* ── Section cards ── */
         .section {
-            margin-bottom: 30px;
+            background: var(--card);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 28px 28px 32px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+            position: relative;
+        }
+
+        .section::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 16px;
+            padding: 1px;
+            background: linear-gradient(160deg, rgba(255, 255, 255, 0.06), transparent 40%);
+            -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+            pointer-events: none;
         }
 
         .section-title {
-            font-size: 18px;
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 16px;
             font-weight: 600;
-            color: #333;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #f0f0f0;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            margin-bottom: 24px;
         }
 
-        .form-group {
+        /* ── Form ── */
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
             margin-bottom: 20px;
         }
 
+        .form-group { margin-bottom: 20px; }
+        .form-group:last-child { margin-bottom: 0; }
+
         label {
             display: block;
+            font-size: 14px;
             font-weight: 500;
-            color: #555;
+            color: var(--text-dim);
             margin-bottom: 8px;
+            letter-spacing: 0.02em;
         }
 
         input[type="text"],
         input[type="number"] {
             width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: border-color 0.3s;
+            padding: 12px 14px;
+            background: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 10px;
+            color: var(--text);
+            font-family: 'Outfit', sans-serif;
+            font-size: 15px;
+            transition: all 0.2s;
         }
 
         input[type="text"]:focus,
         input[type="number"]:focus {
             outline: none;
-            border-color: #6441a5;
+            border-color: var(--input-focus);
+            box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
         }
 
+        /* ── Range sliders ── */
+        .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .slider-row input[type="range"] { flex: 1; }
+
         input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
             width: 100%;
             height: 6px;
+            background: rgba(255, 255, 255, 0.1);
             border-radius: 3px;
-            background: #e0e0e0;
             outline: none;
         }
 
-        .slider-value {
-            display: inline-block;
-            margin-left: 10px;
-            font-weight: 600;
-            color: #6441a5;
-        }
-
-        .button {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: var(--cyan);
             cursor: pointer;
-            transition: all 0.3s;
+            box-shadow: 0 0 12px rgba(0, 212, 255, 0.4);
+            border: 2px solid rgba(255, 255, 255, 0.9);
+            transition: box-shadow 0.2s;
         }
 
-        .button-primary {
-            background: #6441a5;
-            color: white;
+        input[type="range"]::-webkit-slider-thumb:hover {
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.6);
         }
 
-        .button-primary:hover {
-            background: #7d5bbe;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(100, 65, 165, 0.4);
+        input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: var(--cyan);
+            cursor: pointer;
+            box-shadow: 0 0 12px rgba(0, 212, 255, 0.4);
+            border: 2px solid rgba(255, 255, 255, 0.9);
         }
 
-        .button-secondary {
-            background: #e0e0e0;
-            color: #333;
+        .slider-val {
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--cyan);
+            min-width: 40px;
+            text-align: right;
         }
 
-        .button-secondary:hover {
-            background: #d0d0d0;
+        .slider-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
         }
 
-        .overlay-box {
-            background: #f8f9fa;
-            border: 2px dashed #6441a5;
-            border-radius: 8px;
-            padding: 20px;
-            margin-top: 10px;
+        /* ── Radio group ── */
+        .radio-group {
+            display: flex;
+            gap: 4px;
+            background: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 10px;
+            padding: 4px;
         }
 
-        .overlay-url {
+        .radio-option {
+            flex: 1;
+            position: relative;
+        }
+
+        .radio-option input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .radio-option label {
             display: flex;
             align-items: center;
-            gap: 10px;
-            margin-bottom: 10px;
+            justify-content: center;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 0;
         }
 
-        .overlay-url input {
+        .radio-option input[type="radio"]:checked + label {
+            background: rgba(0, 212, 255, 0.1);
+            color: var(--cyan);
+            border: 1px solid rgba(0, 212, 255, 0.2);
+        }
+
+        .radio-option input[type="radio"]:not(:checked) + label {
+            border: 1px solid transparent;
+        }
+
+        .radio-option input[type="radio"]:not(:checked) + label:hover {
+            color: var(--text-dim);
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--cyan);
+            color: #08080f;
+        }
+
+        .btn-primary:hover {
+            background: #33dfff;
+            box-shadow: 0 4px 20px rgba(0, 212, 255, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .btn-ghost {
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-dim);
+            border: 1px solid var(--input-border);
+        }
+
+        .btn-ghost:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .btn-danger {
+            background: rgba(255, 45, 120, 0.08);
+            color: var(--magenta);
+            border: 1px solid rgba(255, 45, 120, 0.15);
+        }
+
+        .btn-danger:hover {
+            background: rgba(255, 45, 120, 0.15);
+            border-color: rgba(255, 45, 120, 0.3);
+        }
+
+        /* ── Overlay status ── */
+        .overlay-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
+            color: var(--text-dim);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            flex-shrink: 0;
+            transition: background 0.3s;
+        }
+
+        .status-dot.connected {
+            background: #00c853;
+            box-shadow: 0 0 8px rgba(0, 200, 83, 0.4);
+        }
+
+        .btn-refresh {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 2px;
+            display: inline-flex;
+            align-items: center;
+            transition: color 0.2s, transform 0.3s;
+        }
+
+        .btn-refresh:hover {
+            color: var(--text-dim);
+        }
+
+        .btn-refresh.spinning svg {
+            animation: spin 0.6s ease-in-out;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ── Overlay URL box ── */
+        .url-box {
+            background: var(--input-bg);
+            border: 1px dashed rgba(0, 212, 255, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .url-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .url-row input {
             flex: 1;
-            font-family: monospace;
-            background: white;
+            font-family: 'Chakra Petch', monospace;
+            font-size: 13px;
+            background: rgba(0, 0, 0, 0.3);
+            letter-spacing: 0.01em;
         }
 
         .instructions {
-            font-size: 13px;
-            color: #666;
-            line-height: 1.6;
+            font-size: 14px;
+            color: var(--text-muted);
+            line-height: 1.8;
         }
 
-        .button-group {
-            display: flex;
-            gap: 10px;
-            margin-top: 20px;
+        .instructions strong {
+            color: var(--text-dim);
         }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 16px;
+        }
+
+        /* ── Toasts ── */
+        .toast {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%) translateY(16px);
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 15px;
+            font-weight: 500;
+            opacity: 0;
+            transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 1000;
+            pointer-events: none;
+            backdrop-filter: blur(12px);
+        }
+
+        .toast.visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .toast-ok {
+            background: rgba(0, 212, 255, 0.12);
+            border: 1px solid rgba(0, 212, 255, 0.25);
+            color: var(--cyan);
+        }
+
+        .toast-err {
+            background: rgba(255, 45, 120, 0.12);
+            border: 1px solid rgba(255, 45, 120, 0.25);
+            color: var(--magenta);
+        }
+
+        /* ── Animation ── */
+        .fade-up {
+            opacity: 0;
+            transform: translateY(16px);
+            animation: fadeUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .col-right .fade-up:nth-child(1) { animation-delay: 0.06s; }
+        .col-right .fade-up:nth-child(2) { animation-delay: 0.12s; }
+
+        @keyframes fadeUp {
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (max-width: 560px) {
+            .form-grid { grid-template-columns: 1fr; }
+            .nav { padding: 14px 16px; }
+            .main { padding: 24px 12px 48px; }
+            .section { padding: 20px 18px 24px; }
+            .url-row { flex-direction: column; }
+            .url-row .btn { width: 100%; justify-content: center; }
+            .radio-group { flex-direction: column; }
+        }
+
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>ChatPulse</h1>
-            <p>Welcome, {{.Username}}!</p>
-            <div class="header-actions">
-                <form method="POST" action="/auth/logout" style="display:inline">
-                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                    <button type="submit" class="button-logout">Logout</button>
-                </form>
-            </div>
+    <nav class="nav">
+        <div class="nav-brand">ChatPulse</div>
+        <div class="nav-right">
+            <span class="nav-user">Signed in as <strong>{{.Username}}</strong></span>
+            <form method="POST" action="/auth/logout" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <button type="submit" class="btn-logout">Logout</button>
+            </form>
         </div>
+    </nav>
 
-        <div class="content">
-            <!-- Configuration Section -->
-            <div class="section">
-                <h2 class="section-title">Configuration</h2>
-                <form method="POST" action="/dashboard/config">
-                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                    <div class="form-group">
-                        <label for="for_trigger">For Trigger Word:</label>
-                        <input type="text" id="for_trigger" name="for_trigger" value="{{.ForTrigger}}" required>
-                    </div>
+    <div class="main">
+        <div class="dashboard-grid">
+            <!-- Left column: Configuration -->
+            <div class="col-left">
+                <div class="section fade-up">
+                    <h2 class="section-title">Configuration</h2>
+                    <form method="POST" action="/dashboard/config">
+                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
-                    <div class="form-group">
-                        <label for="against_trigger">Against Trigger Word:</label>
-                        <input type="text" id="against_trigger" name="against_trigger" value="{{.AgainstTrigger}}" required>
-                    </div>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="for_trigger">Positive Trigger</label>
+                                <input type="text" id="for_trigger" name="for_trigger" value="{{.ForTrigger}}" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="against_trigger">Negative Trigger</label>
+                                <input type="text" id="against_trigger" name="against_trigger" value="{{.AgainstTrigger}}" required>
+                            </div>
+                        </div>
 
-                    <div class="form-group">
-                        <label for="left_label">Left Label (Against):</label>
-                        <input type="text" id="left_label" name="left_label" value="{{.LeftLabel}}" required>
-                    </div>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="for_label">Positive Label</label>
+                                <input type="text" id="for_label" name="for_label" value="{{.ForLabel}}" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="against_label">Negative Label</label>
+                                <input type="text" id="against_label" name="against_label" value="{{.AgainstLabel}}" required>
+                            </div>
+                        </div>
 
-                    <div class="form-group">
-                        <label for="right_label">Right Label (For):</label>
-                        <input type="text" id="right_label" name="right_label" value="{{.RightLabel}}" required>
-                    </div>
+                        <div class="form-group">
+                            <label>Display Mode</label>
+                            <div class="radio-group">
+                                <div class="radio-option">
+                                    <input type="radio" name="display_mode" id="mode_combined" value="combined" {{if eq .DisplayMode "combined"}}checked{{end}}>
+                                    <label for="mode_combined">Combined (tug-of-war)</label>
+                                </div>
+                                <div class="radio-option">
+                                    <input type="radio" name="display_mode" id="mode_split" value="split" {{if eq .DisplayMode "split"}}checked{{end}}>
+                                    <label for="mode_split">Split (two bars)</label>
+                                </div>
+                            </div>
+                        </div>
 
-                    <div class="form-group">
-                        <label for="decay_speed">
-                            Decay Speed: <span class="slider-value" id="decay_value">{{.DecaySpeed}}</span>
-                        </label>
-                        <input type="range" id="decay_speed" name="decay_speed" min="0.1" max="2.0" step="0.1" value="{{.DecaySpeed}}"
-                               oninput="document.getElementById('decay_value').textContent = this.value">
-                    </div>
+                        <div class="form-group">
+                            <label for="memory_seconds">Memory</label>
+                            <div class="slider-row">
+                                <input type="range" id="memory_seconds" name="memory_seconds" min="5" max="125" step="5"
+                                       value="{{if ge .MemorySeconds 43200}}125{{else}}{{.MemorySeconds}}{{end}}"
+                                       oninput="document.getElementById('memory_val').textContent = this.value >= 125 ? '\u221E' : this.value + 's';">
+                                <span class="slider-val" id="memory_val">{{if ge .MemorySeconds 43200}}&infin;{{else}}{{.MemorySeconds}}s{{end}}</span>
+                            </div>
+                            <div class="slider-labels">
+                                <span>Short Memory</span>
+                                <span>Infinite</span>
+                            </div>
+                        </div>
 
-                    <button type="submit" class="button button-primary">Save Configuration</button>
-                </form>
-            </div>
-
-            <!-- Overlay URL Section -->
-            <div class="section">
-                <h2 class="section-title">Overlay URL</h2>
-                <div class="overlay-box">
-                    <div class="overlay-url">
-                        <input type="text" id="overlay_url" value="{{.OverlayURL}}" readonly>
-                        <button class="button button-secondary" onclick="copyURL()">Copy</button>
-                        <button class="button button-secondary" onclick="rotateURL()">Rotate URL</button>
-                    </div>
-                    <div class="instructions">
-                        <strong>How to use:</strong><br>
-                        1. Copy the URL above<br>
-                        2. In OBS, add a Browser Source<br>
-                        3. Paste the URL and set dimensions (e.g., 800x100)<br>
-                        4. Done! The overlay will show live sentiment
-                    </div>
+                        <button type="button" class="btn btn-primary" onclick="saveConfig(this)">Save Configuration</button>
+                    </form>
                 </div>
             </div>
 
-            <!-- Reset Section -->
-            <div class="section">
-                <h2 class="section-title">Reset Overlay</h2>
-                <button class="button button-secondary" onclick="resetOverlay()">Reset to Center</button>
+            <!-- Right column: Overlay URL + Actions -->
+            <div class="col-right">
+                <div class="section fade-up">
+                    <h2 class="section-title">Overlay URL</h2>
+                    <div class="overlay-status">
+                        <span class="status-dot" id="status_dot"></span>
+                        <span id="status_text">Checking...</span>
+                        <button type="button" class="btn-refresh" id="refresh_btn" onclick="refreshOverlayStatus()" title="Check connection status">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21.5 2v6h-6"/><path d="M2.5 22v-6h6"/>
+                                <path d="M2.8 10a10 10 0 0 1 16.5-4.3L21.5 8"/>
+                                <path d="M21.2 14a10 10 0 0 1-16.5 4.3L2.5 16"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="url-box">
+                        <div class="url-row">
+                            <input type="text" id="overlay_url" value="{{.OverlayURL}}" readonly>
+                            <button type="button" class="btn btn-ghost" onclick="copyURL()">Copy</button>
+                        </div>
+                        <div class="instructions">
+                            <strong>Setup:</strong><br>
+                            1. Copy the URL above<br>
+                            2. In OBS, add a Browser Source<br>
+                            3. Paste the URL — set size to 800 &times; 100 (combined) or 800 &times; 160 (split)<br>
+                            4. Done! The overlay shows live sentiment
+                        </div>
+                        <div class="btn-group">
+                            <button type="button" class="btn btn-danger" onclick="rotateURL()">Rotate URL</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section fade-up">
+                    <h2 class="section-title">Actions</h2>
+                    <button type="button" class="btn btn-ghost" onclick="resetOverlay()">Reset Overlay</button>
+                </div>
             </div>
         </div>
+
     </div>
 
     <script>
+        function showToast(msg, type) {
+            var t = document.createElement('div');
+            t.className = 'toast toast-' + (type === 'error' ? 'err' : 'ok');
+            t.textContent = msg;
+            document.body.appendChild(t);
+            requestAnimationFrame(function() {
+                requestAnimationFrame(function() { t.classList.add('visible'); });
+            });
+            setTimeout(function() {
+                t.classList.remove('visible');
+                setTimeout(function() { t.remove(); }, 350);
+            }, 2800);
+        }
+
         function copyURL() {
-            const urlInput = document.getElementById('overlay_url');
-            urlInput.select();
-            document.execCommand('copy');
-            alert('Overlay URL copied to clipboard!');
+            var url = document.getElementById('overlay_url').value;
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(url).then(function() {
+                    showToast('Copied to clipboard');
+                }).catch(function() {
+                    showToast('Failed to copy', 'error');
+                });
+            } else {
+                var el = document.getElementById('overlay_url');
+                el.select();
+                document.execCommand('copy');
+                showToast('Copied to clipboard');
+            }
         }
 
         async function rotateURL() {
@@ -277,39 +689,87 @@
                 return;
             }
             try {
-                const response = await fetch('/api/rotate-overlay-uuid', {
+                var response = await fetch('/api/rotate-overlay-uuid', {
                     method: 'POST',
-                    headers: {
-                        'X-CSRF-Token': '{{.CSRFToken}}'
-                    }
+                    headers: { 'X-CSRF-Token': '{{.CSRFToken}}' }
                 });
                 if (response.ok) {
                     window.location.reload();
                 } else {
-                    alert('Failed to rotate overlay URL');
+                    showToast('Failed to rotate URL', 'error');
                 }
             } catch (error) {
-                alert('Error: ' + error.message);
+                showToast('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function saveConfig(btn) {
+            var form = btn.closest('form');
+            var formData = new FormData(form);
+            if (formData.get('memory_seconds') === '125') {
+                formData.set('memory_seconds', '43200');
+            }
+            try {
+                var response = await fetch(form.action, {
+                    method: 'POST',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body: formData
+                });
+                if (response.ok) {
+                    showToast('Configuration saved');
+                } else {
+                    var text = await response.text();
+                    showToast(text || 'Failed to save configuration', 'error');
+                }
+            } catch (error) {
+                showToast('Error: ' + error.message, 'error');
             }
         }
 
         async function resetOverlay() {
             try {
-                const response = await fetch('/api/reset/{{.OverlayUUID}}', {
+                var response = await fetch('/api/reset/{{.OverlayUUID}}', {
                     method: 'POST',
-                    headers: {
-                        'X-CSRF-Token': '{{.CSRFToken}}'
-                    }
+                    headers: { 'X-CSRF-Token': '{{.CSRFToken}}' }
                 });
                 if (response.ok) {
-                    alert('Overlay reset successfully!');
+                    showToast('Overlay reset');
                 } else {
-                    alert('Failed to reset overlay');
+                    showToast('Failed to reset overlay', 'error');
                 }
             } catch (error) {
-                alert('Error: ' + error.message);
+                showToast('Error: ' + error.message, 'error');
             }
         }
+
+        async function refreshOverlayStatus() {
+            var dot = document.getElementById('status_dot');
+            var text = document.getElementById('status_text');
+            var btn = document.getElementById('refresh_btn');
+            btn.classList.add('spinning');
+            try {
+                var response = await fetch('/api/overlay-status', {
+                    headers: { 'X-CSRF-Token': '{{.CSRFToken}}' }
+                });
+                if (response.ok) {
+                    var data = await response.json();
+                    var n = data.viewers;
+                    if (n > 0) {
+                        dot.classList.add('connected');
+                        text.textContent = n === 1 ? '1 viewer connected' : n + ' viewers connected';
+                    } else {
+                        dot.classList.remove('connected');
+                        text.textContent = 'No viewers connected';
+                    }
+                }
+            } catch (e) {
+                dot.classList.remove('connected');
+                text.textContent = 'Failed to check';
+            }
+            setTimeout(function() { btn.classList.remove('spinning'); }, 600);
+        }
+
+        refreshOverlayStatus();
     </script>
 </body>
 </html>

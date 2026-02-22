@@ -2,166 +2,121 @@ package app
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
 	"time"
 
-	"github.com/jonboulle/clockwork"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // --- Mock implementations ---
 
-type mockUserRepo struct {
-	getByIDFn                   func(ctx context.Context, userID uuid.UUID) (*domain.User, error)
-	getByOverlayUUIDFn          func(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error)
-	upsertFn                    func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error)
-	updateTokensFn              func(ctx context.Context, userID uuid.UUID, accessToken, refreshToken string, tokenExpiry time.Time) error
-	rotateOverlayUUIDFn         func(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
-	listUsersWithLegacyTokensFn func(ctx context.Context, currentVersion string, limit int) ([]*domain.User, error)
+type mockStreamerRepo struct {
+	getByIDFn           func(ctx context.Context, streamerID uuid.UUID) (*domain.Streamer, error)
+	getByOverlayUUIDFn  func(ctx context.Context, overlayUUID uuid.UUID) (*domain.Streamer, error)
+	upsertFn            func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error)
+	rotateOverlayUUIDFn func(ctx context.Context, streamerID uuid.UUID) (uuid.UUID, error)
 }
 
-func (m *mockUserRepo) GetByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
+func (m *mockStreamerRepo) GetByID(ctx context.Context, streamerID uuid.UUID) (*domain.Streamer, error) {
 	if m.getByIDFn != nil {
-		return m.getByIDFn(ctx, userID)
+		return m.getByIDFn(ctx, streamerID)
 	}
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 
-func (m *mockUserRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*domain.User, error) {
+func (m *mockStreamerRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*domain.Streamer, error) {
 	if m.getByOverlayUUIDFn != nil {
 		return m.getByOverlayUUIDFn(ctx, overlayUUID)
 	}
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 
-func (m *mockUserRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.User, error) {
+func (m *mockStreamerRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error) {
 	if m.upsertFn != nil {
 		return m.upsertFn(ctx, twitchUserID, twitchUsername, accessToken, refreshToken, tokenExpiry)
 	}
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 
-func (m *mockUserRepo) UpdateTokens(ctx context.Context, userID uuid.UUID, accessToken, refreshToken string, tokenExpiry time.Time) error {
-	if m.updateTokensFn != nil {
-		return m.updateTokensFn(ctx, userID, accessToken, refreshToken, tokenExpiry)
-	}
-	return nil
-}
-
-func (m *mockUserRepo) RotateOverlayUUID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+func (m *mockStreamerRepo) RotateOverlayUUID(ctx context.Context, streamerID uuid.UUID) (uuid.UUID, error) {
 	if m.rotateOverlayUUIDFn != nil {
-		return m.rotateOverlayUUIDFn(ctx, userID)
+		return m.rotateOverlayUUIDFn(ctx, streamerID)
 	}
 	return uuid.NewV4(), nil
 }
 
-func (m *mockUserRepo) ListUsersWithLegacyTokens(ctx context.Context, currentVersion string, limit int) ([]*domain.User, error) {
-	if m.listUsersWithLegacyTokensFn != nil {
-		return m.listUsersWithLegacyTokensFn(ctx, currentVersion, limit)
-	}
-	return nil, fmt.Errorf("not implemented")
-}
-
 type mockConfigRepo struct {
-	getByUserIDFn        func(ctx context.Context, userID uuid.UUID) (*domain.Config, error)
-	getByBroadcasterIDFn func(ctx context.Context, broadcasterID string) (*domain.Config, error)
-	updateFn             func(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, version int) error
+	getByStreamerIDFn    func(ctx context.Context, streamerID uuid.UUID) (*domain.OverlayConfigWithVersion, error)
+	getByBroadcasterIDFn func(ctx context.Context, broadcasterID string) (*domain.OverlayConfigWithVersion, error)
+	updateFn             func(ctx context.Context, streamerID uuid.UUID, config domain.OverlayConfig, version int) error
 }
 
-func (m *mockConfigRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain.Config, error) {
-	if m.getByUserIDFn != nil {
-		return m.getByUserIDFn(ctx, userID)
+func (m *mockConfigRepo) GetByStreamerID(ctx context.Context, streamerID uuid.UUID) (*domain.OverlayConfigWithVersion, error) {
+	if m.getByStreamerIDFn != nil {
+		return m.getByStreamerIDFn(ctx, streamerID)
 	}
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 
-func (m *mockConfigRepo) GetByBroadcasterID(ctx context.Context, broadcasterID string) (*domain.Config, error) {
+func (m *mockConfigRepo) GetByBroadcasterID(ctx context.Context, broadcasterID string) (*domain.OverlayConfigWithVersion, error) {
 	if m.getByBroadcasterIDFn != nil {
 		return m.getByBroadcasterIDFn(ctx, broadcasterID)
 	}
 	return nil, domain.ErrConfigNotFound
 }
 
-func (m *mockConfigRepo) Update(ctx context.Context, userID uuid.UUID, forTrigger, againstTrigger, leftLabel, rightLabel string, decaySpeed float64, version int) error {
+func (m *mockConfigRepo) Update(ctx context.Context, streamerID uuid.UUID, config domain.OverlayConfig, version int) error {
 	if m.updateFn != nil {
-		return m.updateFn(ctx, userID, forTrigger, againstTrigger, leftLabel, rightLabel, decaySpeed, version)
+		return m.updateFn(ctx, streamerID, config, version)
 	}
 	return nil
 }
 
-type mockSessionRepo struct {
-	getSessionByBroadFn func(ctx context.Context, broadcasterUserID string) (uuid.UUID, bool, error)
-	getSessionConfigFn  func(ctx context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error)
+type mockOverlay struct {
+	resetFn func(ctx context.Context, broadcasterID string) error
 }
 
-func (m *mockSessionRepo) GetSessionByBroadcaster(ctx context.Context, broadcasterUserID string) (uuid.UUID, bool, error) {
-	if m.getSessionByBroadFn != nil {
-		return m.getSessionByBroadFn(ctx, broadcasterUserID)
-	}
-	return uuid.Nil, false, nil
+func (m *mockOverlay) ProcessMessage(context.Context, string, string, string) (*domain.WindowSnapshot, domain.VoteResult, error) {
+	return nil, domain.VoteNoMatch, nil
 }
 
-func (m *mockSessionRepo) GetBroadcasterID(_ context.Context, _ uuid.UUID) (string, error) {
-	return "broadcaster-1", nil
-}
-
-func (m *mockSessionRepo) GetSessionConfig(ctx context.Context, sessionUUID uuid.UUID) (*domain.ConfigSnapshot, error) {
-	if m.getSessionConfigFn != nil {
-		return m.getSessionConfigFn(ctx, sessionUUID)
-	}
-	return nil, fmt.Errorf("not implemented")
-}
-
-type mockEngine struct {
-	resetSentimentFn func(ctx context.Context, broadcasterID string) error
-}
-
-func (m *mockEngine) GetBroadcastData(context.Context, string) (*domain.BroadcastData, error) {
-	return nil, nil
-}
-func (m *mockEngine) ProcessVote(context.Context, string, string, string) (float64, domain.VoteResult, error) {
-	return 0, domain.VoteNoMatch, nil
-}
-
-func (m *mockEngine) ResetSentiment(ctx context.Context, broadcasterID string) error {
-	if m.resetSentimentFn != nil {
-		return m.resetSentimentFn(ctx, broadcasterID)
+func (m *mockOverlay) Reset(ctx context.Context, broadcasterID string) error {
+	if m.resetFn != nil {
+		return m.resetFn(ctx, broadcasterID)
 	}
 	return nil
 }
 
-type mockConfigCacheInvalidator struct {
-	invalidateCacheFn func(ctx context.Context, broadcasterID string) error
+type mockEventPublisher struct {
+	publishSentimentUpdatedFn func(ctx context.Context, broadcasterID string, snapshot *domain.WindowSnapshot) error
+	publishConfigChangedFn    func(ctx context.Context, broadcasterID string) error
 }
 
-func (m *mockConfigCacheInvalidator) InvalidateCache(ctx context.Context, broadcasterID string) error {
-	if m.invalidateCacheFn != nil {
-		return m.invalidateCacheFn(ctx, broadcasterID)
+func (m *mockEventPublisher) PublishSentimentUpdated(ctx context.Context, broadcasterID string, snapshot *domain.WindowSnapshot) error {
+	if m.publishSentimentUpdatedFn != nil {
+		return m.publishSentimentUpdatedFn(ctx, broadcasterID, snapshot)
+	}
+	return nil
+}
+
+func (m *mockEventPublisher) PublishConfigChanged(ctx context.Context, broadcasterID string) error {
+	if m.publishConfigChangedFn != nil {
+		return m.publishConfigChangedFn(ctx, broadcasterID)
 	}
 	return nil
 }
 
 // newTestService creates a Service for testing.
-func newTestService(users domain.UserRepository, configs domain.ConfigRepository, store *mockSessionRepo, engine domain.Engine, clock clockwork.Clock) *Service {
-	// Create a mock Redis client that won't actually connect
-	// The Publish call in SaveConfig will fail gracefully (just logs a warning)
-	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
-
+func newTestService(users domain.StreamerRepository, configs domain.ConfigRepository, overlay domain.Overlay) *Service {
 	return &Service{
-		users:                  users,
-		configs:                configs,
-		store:                  store,
-		engine:                 engine,
-		configCacheInvalidator: &mockConfigCacheInvalidator{},
-		redis:                  rdb,
-		clock:                  clock,
+		users:     users,
+		configs:   configs,
+		overlay:   overlay,
+		publisher: &mockEventPublisher{},
 	}
 }
 
@@ -171,15 +126,20 @@ func TestResetSentiment(t *testing.T) {
 	overlayUUID := uuid.NewV4()
 	var called bool
 
-	engine := &mockEngine{
-		resetSentimentFn: func(_ context.Context, _ string) error {
+	users := &mockStreamerRepo{
+		getByOverlayUUIDFn: func(_ context.Context, _ uuid.UUID) (*domain.Streamer, error) {
+			return &domain.Streamer{TwitchUserID: "broadcaster-1"}, nil
+		},
+	}
+	ovl := &mockOverlay{
+		resetFn: func(_ context.Context, broadcasterID string) error {
+			assert.Equal(t, "broadcaster-1", broadcasterID)
 			called = true
 			return nil
 		},
 	}
 
-	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, &mockSessionRepo{}, engine, clock)
+	svc := newTestService(users, &mockConfigRepo{}, ovl)
 
 	err := svc.ResetSentiment(context.Background(), overlayUUID)
 	require.NoError(t, err)
@@ -187,14 +147,18 @@ func TestResetSentiment(t *testing.T) {
 }
 
 func TestResetSentiment_Error(t *testing.T) {
-	engine := &mockEngine{
-		resetSentimentFn: func(_ context.Context, _ string) error {
-			return fmt.Errorf("engine error")
+	users := &mockStreamerRepo{
+		getByOverlayUUIDFn: func(_ context.Context, _ uuid.UUID) (*domain.Streamer, error) {
+			return &domain.Streamer{TwitchUserID: "broadcaster-1"}, nil
+		},
+	}
+	ovl := &mockOverlay{
+		resetFn: func(_ context.Context, _ string) error {
+			return errors.New("overlay error")
 		},
 	}
 
-	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, &mockConfigRepo{}, &mockSessionRepo{}, engine, clock)
+	svc := newTestService(users, &mockConfigRepo{}, ovl)
 
 	err := svc.ResetSentiment(context.Background(), uuid.NewV4())
 	assert.Error(t, err)
@@ -207,30 +171,31 @@ func TestSaveConfig_Success(t *testing.T) {
 	var configUpdated bool
 
 	configs := &mockConfigRepo{
-		getByUserIDFn: func(_ context.Context, id uuid.UUID) (*domain.Config, error) {
-			return &domain.Config{UserID: id, Version: 3}, nil
+		getByStreamerIDFn: func(_ context.Context, _ uuid.UUID) (*domain.OverlayConfigWithVersion, error) {
+			return &domain.OverlayConfigWithVersion{Version: 3}, nil
 		},
-		updateFn: func(_ context.Context, id uuid.UUID, forT, againstT, leftL, rightL string, decay float64, version int) error {
+		updateFn: func(_ context.Context, id uuid.UUID, config domain.OverlayConfig, version int) error {
 			configUpdated = true
 			assert.Equal(t, userID, id)
-			assert.Equal(t, "yes", forT)
-			assert.Equal(t, "no", againstT)
-			assert.Equal(t, 1.5, decay)
+			assert.Equal(t, "yes", config.ForTrigger)
+			assert.Equal(t, "no", config.AgainstTrigger)
+			assert.Equal(t, 30, config.MemorySeconds)
+			assert.Equal(t, domain.DisplayModeCombined, config.DisplayMode)
 			assert.Equal(t, 4, version)
 			return nil
 		},
 	}
 
-	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, configs, &mockSessionRepo{}, &mockEngine{}, clock)
+	svc := newTestService(&mockStreamerRepo{}, configs, &mockOverlay{})
 
-	err := svc.SaveConfig(context.Background(), domain.SaveConfigRequest{
-		UserID:         userID,
+	err := svc.SaveConfig(context.Background(), SaveConfigRequest{
+		StreamerID:     userID,
 		ForTrigger:     "yes",
 		AgainstTrigger: "no",
-		LeftLabel:      "Left",
-		RightLabel:     "Right",
-		DecaySpeed:     1.5,
+		AgainstLabel:   "Left",
+		ForLabel:       "Right",
+		MemorySeconds:  30,
+		DisplayMode:    "combined",
 		BroadcasterID:  "broadcaster-1",
 	})
 	require.NoError(t, err)
@@ -239,24 +204,24 @@ func TestSaveConfig_Success(t *testing.T) {
 
 func TestSaveConfig_DBError(t *testing.T) {
 	configs := &mockConfigRepo{
-		getByUserIDFn: func(_ context.Context, id uuid.UUID) (*domain.Config, error) {
-			return &domain.Config{UserID: id, Version: 1}, nil
+		getByStreamerIDFn: func(_ context.Context, _ uuid.UUID) (*domain.OverlayConfigWithVersion, error) {
+			return &domain.OverlayConfigWithVersion{Version: 1}, nil
 		},
-		updateFn: func(_ context.Context, _ uuid.UUID, _, _, _, _ string, _ float64, _ int) error {
-			return fmt.Errorf("db error")
+		updateFn: func(_ context.Context, _ uuid.UUID, _ domain.OverlayConfig, _ int) error {
+			return errors.New("db error")
 		},
 	}
 
-	clock := clockwork.NewFakeClock()
-	svc := newTestService(&mockUserRepo{}, configs, &mockSessionRepo{}, &mockEngine{}, clock)
+	svc := newTestService(&mockStreamerRepo{}, configs, &mockOverlay{})
 
-	err := svc.SaveConfig(context.Background(), domain.SaveConfigRequest{
-		UserID:         uuid.NewV4(),
+	err := svc.SaveConfig(context.Background(), SaveConfigRequest{
+		StreamerID:     uuid.NewV4(),
 		ForTrigger:     "yes",
 		AgainstTrigger: "no",
-		LeftLabel:      "L",
-		RightLabel:     "R",
-		DecaySpeed:     1.0,
+		AgainstLabel:   "L",
+		ForLabel:       "R",
+		MemorySeconds:  30,
+		DisplayMode:    "combined",
 		BroadcasterID:  "broadcaster-1",
 	})
 	assert.Error(t, err)
@@ -268,15 +233,14 @@ func TestRotateOverlayUUID(t *testing.T) {
 	userID := uuid.NewV4()
 	newUUID := uuid.NewV4()
 
-	users := &mockUserRepo{
+	users := &mockStreamerRepo{
 		rotateOverlayUUIDFn: func(_ context.Context, id uuid.UUID) (uuid.UUID, error) {
 			assert.Equal(t, userID, id)
 			return newUUID, nil
 		},
 	}
 
-	clock := clockwork.NewFakeClock()
-	svc := newTestService(users, &mockConfigRepo{}, &mockSessionRepo{}, &mockEngine{}, clock)
+	svc := newTestService(users, &mockConfigRepo{}, &mockOverlay{})
 
 	got, err := svc.RotateOverlayUUID(context.Background(), userID)
 	require.NoError(t, err)

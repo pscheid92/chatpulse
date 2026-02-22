@@ -4,8 +4,15 @@ import (
 	"context"
 )
 
+// WindowSnapshot holds the computed ratios from the sliding-window vote store.
+type WindowSnapshot struct {
+	ForRatio     float64 // 0.0–1.0
+	AgainstRatio float64 // 0.0–1.0
+	TotalVotes   int
+}
+
 type SentimentStore interface {
-	ApplyVote(ctx context.Context, broadcasterID string, delta, decayRate float64, nowMs int64) (float64, error)
-	GetRawSentiment(ctx context.Context, broadcasterID string) (value float64, lastUpdateMs int64, err error)
+	RecordVote(ctx context.Context, broadcasterID string, target VoteTarget, windowSeconds int) (*WindowSnapshot, error)
+	GetSnapshot(ctx context.Context, broadcasterID string, windowSeconds int) (*WindowSnapshot, error)
 	ResetSentiment(ctx context.Context, broadcasterID string) error
 }

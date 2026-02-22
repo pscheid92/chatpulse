@@ -9,54 +9,165 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
-	"github.com/jonboulle/clockwork"
+	"github.com/centrifugal/centrifuge"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pscheid92/chatpulse/internal/adapter/eventpublisher"
+	"github.com/pscheid92/chatpulse/internal/adapter/httpserver"
+	"github.com/pscheid92/chatpulse/internal/adapter/postgres"
+	"github.com/pscheid92/chatpulse/internal/adapter/redis"
+	"github.com/pscheid92/chatpulse/internal/adapter/twitch"
+	"github.com/pscheid92/chatpulse/internal/adapter/websocket"
 	"github.com/pscheid92/chatpulse/internal/app"
-	"github.com/pscheid92/chatpulse/internal/broadcast"
-	"github.com/pscheid92/chatpulse/internal/config"
-	"github.com/pscheid92/chatpulse/internal/coordination"
-	"github.com/pscheid92/chatpulse/internal/crypto"
-	"github.com/pscheid92/chatpulse/internal/database"
 	"github.com/pscheid92/chatpulse/internal/domain"
-	"github.com/pscheid92/chatpulse/internal/logging"
+	"github.com/pscheid92/chatpulse/internal/platform/config"
+	"github.com/pscheid92/chatpulse/internal/platform/crypto"
+	"github.com/pscheid92/chatpulse/internal/platform/logging"
+	"github.com/pscheid92/chatpulse/internal/platform/version"
 	goredis "github.com/redis/go-redis/v9"
-
-	"github.com/pscheid92/chatpulse/internal/metrics"
-	"github.com/pscheid92/chatpulse/internal/redis"
-	"github.com/pscheid92/chatpulse/internal/sentiment"
-	"github.com/pscheid92/chatpulse/internal/server"
-	"github.com/pscheid92/chatpulse/internal/twitch"
-	"github.com/pscheid92/chatpulse/internal/version"
 )
 
-type webhookResult struct {
-	eventsubManager *twitch.EventSubManager
-	webhookHandler  *twitch.WebhookHandler
+const (
+	dbConnectTimeout     = 30 * time.Second
+	migrationTimeout     = 60 * time.Second
+	eventsubSetupTimeout = 30 * time.Second
+	shutdownTimeout      = 10 * time.Second
+	configCacheTTL       = 10 * time.Second
+	configEvictInterval  = 1 * time.Minute
+)
+
+type database struct {
+	pool         *pgxpool.Pool
+	streamerRepo *postgres.StreamerRepo
+	configRepo   *postgres.ConfigRepo
+	eventSubRepo *postgres.EventSubRepo
+	healthChecks []httpserver.HealthCheck
 }
 
-func initWebhooks(cfg *config.Config, engine domain.Engine, eventSubRepo domain.EventSubRepository, hasViewers func(string) bool) (webhookResult, error) {
-	eventsubManager, err := twitch.NewEventSubManager(cfg.TwitchClientID, cfg.TwitchClientSecret, eventSubRepo, cfg.WebhookCallbackURL, cfg.WebhookSecret, cfg.BotUserID)
+func setupDatabase(cfg *config.Config) (database, error) {
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), dbConnectTimeout)
+	defer dbCancel()
+
+	pool, err := postgres.Connect(dbCtx, cfg.DatabaseURL)
 	if err != nil {
-		return webhookResult{}, fmt.Errorf("failed to create EventSub manager: %w", err)
+		return database{}, fmt.Errorf("connect to database: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := eventsubManager.Setup(ctx); err != nil {
-		return webhookResult{}, fmt.Errorf("failed to setup webhook conduit: %w", err)
+	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), migrationTimeout)
+	defer migrationCancel()
+	if err := postgres.RunMigrationsWithLock(migrationCtx, pool); err != nil {
+		pool.Close()
+		return database{}, fmt.Errorf("run migrations: %w", err)
 	}
 
-	webhookHandler := twitch.NewWebhookHandler(cfg.WebhookSecret, engine, hasViewers)
+	cryptoSvc, err := crypto.NewAesGcmCryptoService(cfg.TokenEncryptionKey)
+	if err != nil {
+		pool.Close()
+		return database{}, fmt.Errorf("create crypto service: %w", err)
+	}
 
-	return webhookResult{
-		eventsubManager: eventsubManager,
-		webhookHandler:  webhookHandler,
+	return database{
+		pool:         pool,
+		streamerRepo: postgres.NewStreamerRepo(pool, cryptoSvc),
+		configRepo:   postgres.NewConfigRepo(pool),
+		eventSubRepo: postgres.NewEventSubRepo(pool),
+		healthChecks: []httpserver.HealthCheck{
+			{Name: "postgres", Check: pool.Ping},
+		},
 	}, nil
 }
 
-func runGracefulShutdown(srv *server.Server, broadcaster *broadcast.Broadcaster, conduitMgr *twitch.EventSubManager) <-chan struct{} {
+type redisInfra struct {
+	client       *goredis.Client
+	sentiment    *redis.SentimentStore
+	debouncer    *redis.Debouncer
+	configCache  *redis.ConfigCacheRepo
+	stopEviction func()
+	cancelPubsub context.CancelFunc
+	healthChecks []httpserver.HealthCheck
+}
+
+func setupRedis(cfg *config.Config, configRepo domain.ConfigRepository) (redisInfra, error) {
+	client, err := redis.NewClient(context.Background(), cfg.RedisURL)
+	if err != nil {
+		return redisInfra{}, fmt.Errorf("connect to Redis: %w", err)
+	}
+
+	configCache := redis.NewConfigCacheRepo(client, configRepo, configCacheTTL)
+	stopEviction := configCache.StartEvictionTimer(configEvictInterval)
+
+	invalidator := redis.NewConfigInvalidationSubscriber(client, configCache)
+	pubsubCtx, cancelPubsub := context.WithCancel(context.Background())
+	go invalidator.Start(pubsubCtx)
+	slog.Info("Config invalidation subscriber started")
+
+	return redisInfra{
+		client:       client,
+		sentiment:    redis.NewSentimentStore(client),
+		debouncer:    redis.NewDebouncer(client),
+		configCache:  configCache,
+		stopEviction: stopEviction,
+		cancelPubsub: cancelPubsub,
+		healthChecks: []httpserver.HealthCheck{
+			{Name: "redis", Check: func(ctx context.Context) error {
+				return client.Ping(ctx).Err()
+			}},
+		},
+	}, nil
+}
+
+type realtimeInfra struct {
+	node      *centrifuge.Node
+	publisher *websocket.Publisher
+	presence  *websocket.PresenceChecker
+}
+
+func setupWebSocket(streamerRepo domain.StreamerRepository, redisAddr string, configCache domain.ConfigSource) (realtimeInfra, error) {
+	node, err := websocket.NewNode(streamerRepo)
+	if err != nil {
+		return realtimeInfra{}, fmt.Errorf("create Centrifuge node: %w", err)
+	}
+
+	if err := websocket.SetupRedis(node, redisAddr); err != nil {
+		return realtimeInfra{}, fmt.Errorf("setup Centrifuge Redis: %w", err)
+	}
+	if err := node.Run(); err != nil {
+		return realtimeInfra{}, fmt.Errorf("start Centrifuge node: %w", err)
+	}
+
+	slog.Info("Centrifuge node started")
+
+	return realtimeInfra{
+		node:      node,
+		publisher: websocket.NewPublisher(node, configCache),
+		presence:  websocket.NewPresenceChecker(node),
+	}, nil
+}
+
+func initEventSubManager(cfg *config.Config, eventSubRepo *postgres.EventSubRepo) (*twitch.EventSubManager, error) {
+	mgr, err := twitch.NewEventSubManager(cfg.TwitchClientID, cfg.TwitchClientSecret, eventSubRepo, cfg.WebhookCallbackURL, cfg.WebhookSecret, cfg.BotUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create EventSub manager: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), eventsubSetupTimeout)
+	defer cancel()
+
+	if err := mgr.Setup(ctx); err != nil {
+		return nil, fmt.Errorf("failed to setup webhook conduit: %w", err)
+	}
+
+	return mgr, nil
+}
+
+func initWebhookHandler(cfg *config.Config, ovl *app.Overlay, presence twitch.ViewerPresence, publisher domain.EventPublisher, onVoteApplied func(string)) *twitch.WebhookHandler {
+	return twitch.NewWebhookHandler(cfg.WebhookSecret, ovl, presence, publisher, onVoteApplied)
+}
+
+func runGracefulShutdown(srv *httpserver.Server, node *centrifuge.Node, conduitMgr *twitch.EventSubManager) <-chan struct{} {
 	done := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -65,20 +176,17 @@ func runGracefulShutdown(srv *server.Server, broadcaster *broadcast.Broadcaster,
 		<-sigChan
 		slog.Info("Shutdown signal received, cleaning up...")
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
+
+		if err := srv.Shutdown(ctx); err != nil {
 			slog.Error("Server shutdown error", "error", err)
 		}
-
-		broadcaster.Stop()
-
-		if conduitMgr != nil {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := conduitMgr.Cleanup(shutdownCtx); err != nil {
-				slog.Error("Failed to clean up conduit", "error", err)
-			}
+		if err := node.Shutdown(ctx); err != nil {
+			slog.Error("Centrifuge node shutdown error", "error", err)
+		}
+		if err := conduitMgr.Cleanup(ctx); err != nil {
+			slog.Error("Failed to clean up conduit", "error", err)
 		}
 
 		close(done)
@@ -90,226 +198,79 @@ func runGracefulShutdown(srv *server.Server, broadcaster *broadcast.Broadcaster,
 func setupConfig() *config.Config {
 	cfg, err := config.Load()
 	if err != nil {
-		// Use log before slog is initialized
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	return cfg
 }
 
-func setupRedis(ctx context.Context, cfg *config.Config) *goredis.Client {
-	client, err := redis.NewClient(ctx, cfg.RedisURL)
-	if err != nil {
-		slog.Error("Failed to connect to Redis", "error", err)
-		os.Exit(1)
-	}
-	return client
-}
-
-// checkUlimit verifies file descriptor limits are sufficient for WebSocket connections.
-// Logs a warning if the limit is below recommended threshold.
-func checkUlimit(maxConnections int) {
-	var rlimit syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err != nil {
-		slog.Warn("Failed to check file descriptor limit", "error", err)
-		return
-	}
-
-	// Each WebSocket connection uses 1 FD, plus overhead for DB, Redis, HTTP, logs, etc.
-	// Recommend 2x the max connections to ensure headroom
-	recommended := uint64(maxConnections * 2)
-
-	if rlimit.Cur < recommended {
-		slog.Warn("File descriptor limit may be too low for WebSocket connections",
-			"current", rlimit.Cur,
-			"recommended", recommended,
-			"max_connections", maxConnections,
-			"note", "Consider running 'ulimit -n "+string(rune(recommended))+"' or updating system limits")
-	} else {
-		slog.Info("File descriptor limit check passed",
-			"current", rlimit.Cur,
-			"max_connections", maxConnections)
-	}
+func logStartup(cfg *config.Config) {
+	buildInfo := version.Get()
+	slog.Info("Application starting", "env", cfg.AppEnv, "port", cfg.Port, "version", buildInfo.Version, "commit", buildInfo.Commit, "build_time", buildInfo.BuildTime)
 }
 
 func main() {
-	clock := clockwork.NewRealClock()
-
 	cfg := setupConfig()
-
-	// Initialize structured logging
 	logging.InitLogger(cfg.LogLevel, cfg.LogFormat)
+	logStartup(cfg)
 
-	// Register build information metric
-	buildInfo := version.Get()
-	metrics.BuildInfo.WithLabelValues(
-		buildInfo.Version,
-		buildInfo.Commit,
-		buildInfo.BuildTime,
-		buildInfo.GoVersion,
-	).Set(1)
-
-	slog.Info("Application starting",
-		"env", cfg.AppEnv,
-		"port", cfg.Port,
-		"version", buildInfo.Version,
-		"commit", buildInfo.Commit,
-		"build_time", buildInfo.BuildTime)
-
-	// Check file descriptor limits for WebSocket connections
-	checkUlimit(cfg.MaxWebSocketConnections)
-
-	// Connect to database
-	dbCtx, dbCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer dbCancel()
-	pool, err := database.Connect(dbCtx, cfg.DatabaseURL)
+	db, err := setupDatabase(cfg)
 	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
+		slog.Error("Database setup failed", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	defer db.pool.Close()
 
-	// Run migrations with advisory lock (prevents concurrent execution)
-	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer migrationCancel()
-	if err := database.RunMigrationsWithLock(migrationCtx, pool); err != nil {
-		slog.Error("failed to run migrations", "error", err)
+	rc, err := setupRedis(cfg, db.configRepo)
+	if err != nil {
+		slog.Error("Redis setup failed", "error", err)
+		os.Exit(1)
+	}
+	defer func() { _ = rc.client.Close() }()
+	defer rc.stopEviction()
+	defer rc.cancelPubsub()
+
+	ovl := app.NewOverlay(rc.configCache, rc.sentiment, rc.debouncer)
+
+	ws, err := setupWebSocket(db.streamerRepo, rc.client.Options().Addr, rc.configCache)
+	if err != nil {
+		slog.Error("WebSocket setup failed", "error", err)
 		os.Exit(1)
 	}
 
-	// Start pool stats exporter (updates Prometheus metrics every 10s)
-	stopPoolExporter := database.StartPoolStatsExporter(pool)
-	defer stopPoolExporter()
+	publisher := eventpublisher.New(ws.publisher, rc.configCache, rc.client)
 
-	redisClient := setupRedis(context.Background(), cfg)
-	defer func() { _ = redisClient.Close() }()
+	ticker := app.NewSnapshotTicker(rc.sentiment, rc.configCache, publisher)
+	tickerCtx, cancelTicker := context.WithCancel(context.Background())
+	go ticker.Run(tickerCtx)
+	defer cancelTicker()
+	slog.Info("Snapshot ticker started")
 
-	store := redis.NewSessionRepo(redisClient, clock)
-	sentimentStore := redis.NewSentimentStore(redisClient)
-	debouncer := redis.NewDebouncer(redisClient)
-
-	// Create config cache with 10-second TTL
-	configCache := sentiment.NewConfigCache(10*time.Second, clock)
-	stopEviction := configCache.StartEvictionTimer(1 * time.Minute)
-	defer stopEviction()
-
-	// Start instance registry (heartbeat every 30s)
-	instanceID := fmt.Sprintf("%s-%d", func() string {
-		hostname, err := os.Hostname()
-		if err != nil {
-			return "unknown"
-		}
-		return hostname
-	}(), os.Getpid())
-	registry := coordination.NewInstanceRegistry(redisClient, instanceID, 30*time.Second, buildInfo.Commit)
-	registryCtx, cancelRegistry := context.WithCancel(context.Background())
-	defer cancelRegistry()
-	go func() {
-		registry.Start(registryCtx)
-	}()
-	slog.Info("Instance registry started", "instance_id", instanceID)
-
-	// Update registry size metric periodically
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				active, err := registry.GetActiveInstances(registryCtx)
-				if err == nil {
-					metrics.InstanceRegistrySize.Set(float64(len(active)))
-				}
-			case <-registryCtx.Done():
-				return
-			}
-		}
-	}()
-
-	// Construct repositories
-	var cryptoSvc crypto.Service = crypto.NoopService{}
-	if cfg.TokenEncryptionKey != "" {
-		var err error
-		cryptoSvc, err = crypto.NewAesGcmCryptoService(cfg.TokenEncryptionKey)
-		if err != nil {
-			slog.Error("Failed to create crypto service", "error", err)
-			os.Exit(1)
-		}
+	eventsubMgr, err := initEventSubManager(cfg, db.eventSubRepo)
+	if err != nil {
+		slog.Error("EventSub setup failed", "error", err)
+		os.Exit(1)
 	}
+	slog.Info("EventSub configured", "callback_url", cfg.WebhookCallbackURL)
 
-	userRepo := database.NewUserRepo(pool, cryptoSvc)
-	configRepo := database.NewConfigRepo(pool)
-	eventSubRepo := database.NewEventSubRepo(pool)
+	webhookHdlr := initWebhookHandler(cfg, ovl, ws.presence, publisher, ticker.Track)
+	appSvc := app.NewService(db.streamerRepo, db.configRepo, ovl, eventsubMgr, publisher)
 
-	configCacheRepo := redis.NewConfigCacheRepo(redisClient, configRepo)
-	engine := sentiment.NewEngine(configCacheRepo, sentimentStore, debouncer, clock, configCache)
+	healthChecks := slices.Concat(db.healthChecks, rc.healthChecks)
 
-	// Start config invalidation subscriber
-	// On pub/sub message: evict local in-memory cache + DEL Redis config cache key
-	configInvalidator := coordination.NewConfigInvalidator(redisClient, func(broadcasterID string) {
-		configCache.Invalidate(broadcasterID)
-		if err := configCacheRepo.InvalidateCache(context.Background(), broadcasterID); err != nil {
-			slog.Warn("Failed to invalidate Redis config cache via pub/sub",
-				"broadcaster_id", broadcasterID, "error", err)
-		}
+	wsHandler := centrifuge.NewWebsocketHandler(ws.node, centrifuge.WebsocketConfig{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // OBS browser sources use obs:// origins
+		},
 	})
-	pubsubCtx, cancelPubsub := context.WithCancel(context.Background())
-	defer cancelPubsub()
-	go func() {
-		configInvalidator.Start(pubsubCtx)
-	}()
-	slog.Info("Config invalidation subscriber started")
 
-	// Set up webhooks if configured (all three env vars required together)
-	// Lazy reference: broadcaster is created after webhooks, but the closure
-	// won't be called until the server starts receiving EventSub notifications.
-	var broadcasterRef *broadcast.Broadcaster
-	hasViewers := func(broadcasterID string) bool {
-		if broadcasterRef == nil {
-			return true // fail-open during startup
-		}
-		return broadcasterRef.HasClients(broadcasterID)
-	}
-
-	var twitchSvc domain.TwitchService
-	var eventsubMgr *twitch.EventSubManager
-	var webhookHdlr *twitch.WebhookHandler
-	wh, err := initWebhooks(cfg, engine, eventSubRepo, hasViewers)
+	srv, err := httpserver.NewServer(cfg, appSvc, ws.presence, wsHandler, http.HandlerFunc(webhookHdlr.HandleEventSub), eventsubMgr, healthChecks)
 	if err != nil {
-		// EventSub setup failed - continue without webhooks (graceful degradation)
-		slog.Warn("EventSub setup failed, continuing without webhooks",
-			"error", err,
-			"impact", "votes will not be processed until EventSub recovers")
-		metrics.EventSubSetupFailuresTotal.Inc()
-	} else {
-		eventsubMgr = wh.eventsubManager
-		webhookHdlr = wh.webhookHandler
-		twitchSvc = eventsubMgr
-		slog.Info("EventSub configured", "callback_url", cfg.WebhookCallbackURL)
-	}
-
-	appSvc := app.NewService(userRepo, configRepo, store, engine, twitchSvc, configCacheRepo, clock, redisClient)
-
-	broadcaster := broadcast.NewBroadcaster(engine, redisClient, clock, 50, 5*time.Second)
-	broadcasterRef = broadcaster // resolve lazy reference for webhook hasViewers check
-
-	// Create and start the HTTP server (pass nil explicitly to avoid typed-nil interface)
-	var (
-		srv    *server.Server
-		srvErr error
-	)
-	if webhookHdlr != nil {
-		srv, srvErr = server.NewServer(cfg, appSvc, appSvc, broadcaster, webhookHdlr, twitchSvc, pool, redisClient)
-	} else {
-		srv, srvErr = server.NewServer(cfg, appSvc, appSvc, broadcaster, nil, nil, pool, redisClient)
-	}
-	if srvErr != nil {
-		slog.Error("Failed to create server", "error", srvErr)
+		slog.Error("Failed to create server", "error", err)
 		os.Exit(1)
 	}
 
-	done := runGracefulShutdown(srv, broadcaster, eventsubMgr)
+	done := runGracefulShutdown(srv, ws.node, eventsubMgr)
 
-	slog.Info("Server starting", "port", cfg.Port)
 	if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("Server error", "error", err)
 		os.Exit(1)

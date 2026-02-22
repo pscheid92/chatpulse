@@ -1,38 +1,10 @@
 {
-  "hooks": {
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "command": "bd prime",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "command": "bd prime",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      }
-    ]
-  },
   "permissions": {
     "allow": [
-      "Read",
-      "Edit",
-      "Write",
-      "Glob",
-      "Grep",
       "Bash",
       "WebSearch",
-      "WebFetch"
+      "WebFetch",
+      "Search"
     ]
   }
 }

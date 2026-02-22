@@ -4,20 +4,30 @@ linters:
   default: standard
   enable:
     - bodyclose
+    - copyloopvar    # Flag unnecessary loop variable copies (Go 1.22+)
     - durationcheck
-    - errname       # Sentinel errors must be named Err*
-    - errorlint     # Check error wrapping (use %w, not %v)
+    - errname        # Sentinel errors must be named Err*
+    - errorlint      # Check error wrapping (use %w, not %v)
     - fatcontext
     - goconst
     - gocritic
+    - gosec          # Security checks (auth, crypto, SQL, web)
+    - mirror         # Correct bytes/strings usage patterns
     - misspell
+    - modernize      # Suggest modern Go idioms
+    - nilnesserr     # Catch nil-ness error patterns nilerr misses
     - nilerr
     - noctx
-    - prealloc
+    - perfsprint     # Faster alternatives to fmt.Sprintf
+    - promlinter     # Prometheus metric naming conventions
+    - recvcheck      # Receiver type consistency
+    - sloglint       # Consistent slog usage
+    - sqlclosecheck  # Ensure SQL rows/stmts are closed
     - unconvert
     - unparam
+    - usestdlibvars  # Use stdlib constants (http.StatusOK, etc.)
     - wastedassign
-    - wrapcheck     # Check errors are wrapped at appropriate layers
+    - wrapcheck      # Check errors are wrapped at appropriate layers
   settings:
     goconst:
       min-len: 3
@@ -30,6 +40,10 @@ linters:
         - hugeParam        # structs passed by value are fine for our sizes
         - rangeValCopy     # copying small structs in range is fine
         - exitAfterDefer   # standard pattern in main() and TestMain()
+    gosec:
+      excludes:
+        - G101  # False positives on URL constants containing "token"/"secret"
+        - G115  # Integer overflow conversion — too noisy, safe in context
     unparam:
       check-exported: false
     errcheck:
@@ -42,7 +56,7 @@ linters:
         - (*github.com/gorilla/websocket.Conn).SetReadDeadline
   exclusions:
     paths:
-      - internal/database/sqlcgen
+      - internal/adapter/postgres/sqlcgen
     rules:
       # bodyclose false positive on WebSocket Dial in tests
       - linters: [bodyclose]

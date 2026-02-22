@@ -1,12 +1,12 @@
 version: "2"
 sql:
   - engine: "postgresql"
-    queries: "internal/database/sqlc/queries"
-    schema: "internal/database/sqlc/schemas"
+    queries: "internal/adapter/postgres/sqlc/queries"
+    schema: "internal/adapter/postgres/sqlc/schemas"
     gen:
       go:
         package: "sqlcgen"
-        out: "internal/database/sqlcgen"
+        out: "internal/adapter/postgres/sqlcgen"
         sql_package: "pgx/v5"
         emit_empty_slices: true
         rename:

@@ -1,4 +1,4 @@
-.PHONY: build run docker-build docker-up docker-down clean test test-short test-coverage test-race sqlc
+.PHONY: build run docker-build docker-up docker-down docker-redeploy clean test test-short test-coverage test-race sqlc
 
 # Version information
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -6,9 +6,9 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 # Build flags
-LDFLAGS = -X github.com/pscheid92/chatpulse/internal/version.Version=$(VERSION) \
-          -X github.com/pscheid92/chatpulse/internal/version.Commit=$(COMMIT) \
-          -X github.com/pscheid92/chatpulse/internal/version.BuildTime=$(BUILD_TIME)
+LDFLAGS = -X github.com/pscheid92/chatpulse/internal/platform/version.Version=$(VERSION) \
+          -X github.com/pscheid92/chatpulse/internal/platform/version.Commit=$(COMMIT) \
+          -X github.com/pscheid92/chatpulse/internal/platform/version.BuildTime=$(BUILD_TIME)
 
 # Build the Go binary
 build:
@@ -20,7 +20,10 @@ run: build
 
 # Build Docker image
 docker-build:
-	docker build -t chatpulse .
+	docker build -t chatpulse \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) .
 
 # Start with Docker Compose
 docker-up:
@@ -29,6 +32,11 @@ docker-up:
 # Stop Docker Compose
 docker-down:
 	docker compose down
+
+# Rebuild and redeploy the app container (no cache)
+docker-redeploy:
+	docker compose build --no-cache app
+	docker compose up -d app
 
 # Clean build artifacts
 clean:

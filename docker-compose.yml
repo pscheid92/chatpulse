@@ -14,6 +14,7 @@ services:
       - WEBHOOK_CALLBACK_URL=${WEBHOOK_CALLBACK_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - BOT_USER_ID=${BOT_USER_ID}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
       - REDIS_URL=redis://redis:6379
     depends_on:
       db:
@@ -39,8 +40,6 @@ services:
 
   redis:
     image: redis:8-alpine
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

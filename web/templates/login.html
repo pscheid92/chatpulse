@@ -3,17 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChatPulse - Login</title>
+    <title>ChatPulse — Login</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --void: #08080f;
+            --card: rgba(14, 14, 28, 0.8);
+            --card-border: rgba(255, 255, 255, 0.06);
+            --cyan: #00d4ff;
+            --purple: #9147ff;
+            --text: #dcdce8;
+            --text-dim: #9a9ab8;
         }
 
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Outfit', sans-serif;
+            background: var(--void);
+            color: var(--text);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -21,70 +31,149 @@
             padding: 20px;
         }
 
-        .container {
-            max-width: 480px;
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(ellipse at 30% 40%, rgba(145, 71, 255, 0.07) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 60%, rgba(0, 212, 255, 0.05) 0%, transparent 50%);
+            pointer-events: none;
+        }
+
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+            background-size: 28px 28px;
+            pointer-events: none;
+        }
+
+        .card {
+            position: relative;
+            z-index: 1;
+            max-width: 420px;
             width: 100%;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
+            background: var(--card);
+            backdrop-filter: blur(24px);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 52px 40px 48px;
             text-align: center;
+            box-shadow: 0 8px 48px rgba(0, 0, 0, 0.5);
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }
 
-        .header {
-            background: #6441a5;
-            color: white;
-            padding: 30px;
+        /* Gradient border accent */
+        .card::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 20px;
+            padding: 1px;
+            background: linear-gradient(160deg, rgba(0, 212, 255, 0.2), transparent 40%, transparent 60%, rgba(145, 71, 255, 0.15));
+            -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+            pointer-events: none;
         }
 
-        .header h1 {
+        @keyframes fadeUp {
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .brand {
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+            color: var(--cyan);
+            margin-bottom: 28px;
+        }
+
+        h1 {
+            font-family: 'Chakra Petch', sans-serif;
             font-size: 28px;
-            margin-bottom: 10px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            background: linear-gradient(160deg, #fff 20%, var(--text-dim) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
 
-        .header p {
-            opacity: 0.9;
+        .desc {
+            font-size: 15px;
+            color: var(--text-dim);
+            line-height: 1.7;
+            margin-bottom: 36px;
+            font-weight: 300;
         }
 
-        .content {
-            padding: 40px 30px;
-        }
-
-        .content p {
-            color: #555;
-            margin-bottom: 24px;
-            line-height: 1.6;
-        }
-
-        .button-twitch {
-            display: inline-block;
-            background: #6441a5;
-            color: white;
-            padding: 14px 32px;
-            border-radius: 8px;
+        .cta {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--purple);
+            color: #fff;
+            padding: 15px 34px;
+            border-radius: 12px;
+            font-family: 'Outfit', sans-serif;
             font-size: 16px;
             font-weight: 600;
             text-decoration: none;
-            transition: all 0.3s;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+            overflow: hidden;
         }
 
-        .button-twitch:hover {
-            background: #7d5bbe;
+        .cta::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background: linear-gradient(105deg, transparent 38%, rgba(255,255,255,0.12) 44%, rgba(255,255,255,0.16) 50%, rgba(255,255,255,0.12) 56%, transparent 62%);
+            background-size: 250% 100%;
+            animation: shimmer 4s ease-in-out infinite;
+        }
+
+        @keyframes shimmer {
+            0%   { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .cta:hover {
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(100, 65, 165, 0.4);
+            box-shadow: 0 8px 32px rgba(145, 71, 255, 0.4);
+            background: #a064ff;
+        }
+
+        .cta:active { transform: translateY(0); }
+
+        .cta svg { width: 20px; height: 20px; position: relative; z-index: 1; }
+        .cta span { position: relative; z-index: 1; }
+
+        @media (max-width: 480px) {
+            .card { padding: 40px 28px 36px; }
+            h1 { font-size: 24px; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>ChatPulse</h1>
-            <p>Real-time chat sentiment for your stream</p>
-        </div>
-        <div class="content">
-            <p>Connect your Twitch account to set up a live sentiment overlay for your stream.</p>
-            <a href="{{.TwitchAuthURL}}" class="button-twitch">Login with Twitch</a>
-        </div>
+    <div class="card">
+        <p class="brand">ChatPulse</p>
+        <h1>Welcome back</h1>
+        <p class="desc">Connect your Twitch account to set up a live sentiment overlay for your stream.</p>
+        <a href="{{.TwitchAuthURL}}" class="cta">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714z"/></svg>
+            <span>Login with Twitch</span>
+        </a>
     </div>
 </body>
 </html>
