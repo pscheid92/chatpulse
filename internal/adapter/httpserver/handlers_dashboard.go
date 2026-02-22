@@ -22,9 +22,9 @@ const (
 	infiniteMemorySeconds = 43200 // 12 hours — used when slider is set to "infinite"
 )
 
-func (s *Server) registerDashboardRoutes(csrfMiddleware echo.MiddlewareFunc) {
-	s.echo.GET("/dashboard", s.handleDashboard, s.requireAuth, csrfMiddleware)
-	s.echo.POST("/dashboard/config", s.handleSaveConfig, s.requireAuth, csrfMiddleware)
+func (s *Server) registerDashboardRoutes(csrfMiddleware, rateLimiter echo.MiddlewareFunc) {
+	s.echo.GET("/dashboard", s.handleDashboard, rateLimiter, s.requireAuth, csrfMiddleware)
+	s.echo.POST("/dashboard/config", s.handleSaveConfig, rateLimiter, s.requireAuth, csrfMiddleware)
 }
 
 func validateConfig(forTrigger, forLabel, againstTrigger, againstLabel string, memorySeconds int, displayMode string) error {
