@@ -12,10 +12,10 @@ import (
 	"github.com/pscheid92/uuid"
 )
 
-func (s *Server) registerAPIRoutes(csrfMiddleware echo.MiddlewareFunc) {
-	s.echo.POST("/api/reset/:uuid", s.handleResetSentiment, s.requireAuth, csrfMiddleware)
-	s.echo.POST("/api/rotate-overlay-uuid", s.handleRotateOverlayUUID, s.requireAuth, csrfMiddleware)
-	s.echo.GET("/api/overlay-status", s.handleOverlayStatus, s.requireAuth, csrfMiddleware)
+func (s *Server) registerAPIRoutes(csrfMiddleware, rateLimiter echo.MiddlewareFunc) {
+	s.echo.POST("/api/reset/:uuid", s.handleResetSentiment, rateLimiter, s.requireAuth, csrfMiddleware)
+	s.echo.POST("/api/rotate-overlay-uuid", s.handleRotateOverlayUUID, rateLimiter, s.requireAuth, csrfMiddleware)
+	s.echo.GET("/api/overlay-status", s.handleOverlayStatus, rateLimiter, s.requireAuth, csrfMiddleware)
 }
 
 func (s *Server) handleResetSentiment(c echo.Context) error {

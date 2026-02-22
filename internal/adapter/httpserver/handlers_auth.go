@@ -21,10 +21,10 @@ const (
 	oauthTimeout   = 10 * time.Second
 )
 
-func (s *Server) registerAuthRoutes(csrfMiddleware echo.MiddlewareFunc) {
-	s.echo.GET("/auth/login", s.handleLoginPage)
-	s.echo.GET("/auth/callback", s.handleOAuthCallback)
-	s.echo.POST("/auth/logout", s.handleLogout, s.requireAuth, csrfMiddleware)
+func (s *Server) registerAuthRoutes(csrfMiddleware, rateLimiter echo.MiddlewareFunc) {
+	s.echo.GET("/auth/login", s.handleLoginPage, rateLimiter)
+	s.echo.GET("/auth/callback", s.handleOAuthCallback, rateLimiter)
+	s.echo.POST("/auth/logout", s.handleLogout, rateLimiter, s.requireAuth, csrfMiddleware)
 }
 
 func (s *Server) handleLanding(c echo.Context) error {

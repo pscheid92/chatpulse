@@ -28,15 +28,20 @@ func (s *Server) registerRoutes() {
 
 	csrfMiddleware := s.setupCSRFMiddleware()
 
+	authRL := newRateLimiter(0.17, 5)      // ~10 req/min, burst 5
+	dashboardRL := newRateLimiter(0.5, 10) // ~30 req/min, burst 10
+	apiRL := newRateLimiter(0.5, 10)       // ~30 req/min, burst 10
+	webhookRL := newRateLimiter(3.33, 50)  // ~200 req/min, burst 50
+
 	s.echo.GET("/", s.handleLanding)
 
 	s.registerHealthRoutes()
-	s.registerAuthRoutes(csrfMiddleware)
-	s.registerDashboardRoutes(csrfMiddleware)
-	s.registerAPIRoutes(csrfMiddleware)
+	s.registerAuthRoutes(csrfMiddleware, authRL)
+	s.registerDashboardRoutes(csrfMiddleware, dashboardRL)
+	s.registerAPIRoutes(csrfMiddleware, apiRL)
 	s.registerOverlayRoutes()
 
-	s.echo.POST("/webhooks/eventsub", echo.WrapHandler(s.webhookHandler))
+	s.echo.POST("/webhooks/eventsub", echo.WrapHandler(s.webhookHandler), webhookRL)
 }
 
 func (s *Server) setupRequestLoggerMiddleware() echo.MiddlewareFunc {
