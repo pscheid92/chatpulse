@@ -19,6 +19,11 @@ A dedicated bot account reads chat on behalf of all streamers, making this a mul
 - **Overlay URL rotation** to invalidate old URLs
 - **Per-user debouncing** (1s) to prevent spam
 - **Zero-cost idle** — skips processing when no overlay viewers are connected
+- **Prometheus metrics** for HTTP, vote processing, cache, and WebSocket
+- **Correlation IDs** for end-to-end request tracing
+- **Audit logging** for sensitive operations (login, config changes, UUID rotation)
+- **Per-IP rate limiting** on all route groups
+- **Security headers** (HSTS, CSP, X-Frame-Options, etc.)
 
 ## Prerequisites
 
@@ -187,6 +192,7 @@ See `.env.example` for all variables with comments.
 - `LOG_FORMAT` — `text` (default) or `json` (recommended for production)
 - `MAX_WEBSOCKET_CONNECTIONS` — File descriptor limit check (default: `10000`)
 - `SESSION_MAX_AGE` — Cookie expiry (default: `168h` / 7 days)
+- `SHUTDOWN_TIMEOUT` — Graceful shutdown deadline (default: `10s`)
 
 ## How It Works
 
@@ -197,6 +203,9 @@ See `.env.example` for all variables with comments.
 - **Sliding-window Counting**: Votes are recorded in Redis Streams; sentiment is computed over a configurable time window (old votes naturally expire)
 - **Real-time Broadcast**: Updates are pushed to overlay clients via Centrifuge WebSocket with Redis broker for cross-instance delivery
 - **Client-side Lerp**: The overlay uses `requestAnimationFrame` for smooth animation toward server ratios with zero server cost
+- **Rate Limiting**: Per-IP rate limits on auth, dashboard/API, and webhook routes
+- **Correlation IDs**: Every request gets a unique ID propagated through logs for tracing
+- **Audit Logging**: Sensitive operations (login, logout, config save, reset, URL rotation) emit structured audit logs
 
 ## Architecture
 
@@ -204,6 +213,8 @@ See `.env.example` for all variables with comments.
 - **Database**: PostgreSQL 18+ with auto-migrations (tern) for streamers, configs, and EventSub subscriptions
 - **Caching**: 3-layer read-through cache (in-memory 10s → Redis 1h → PostgreSQL) with pub/sub invalidation
 - **Scaling**: Multi-instance via Redis (Streams for vote counting, pub/sub for broadcasting, Centrifuge Redis broker for WebSocket fan-out)
+- **Observability**: Structured logging (slog) with correlation IDs, audit logs, Prometheus metrics (`/metrics` endpoint)
+- **Security**: Per-IP rate limiting, security headers (HSTS, CSP), WebSocket origin validation, production SSL enforcement
 - **Frontend**: Minimal HTML/CSS/JS with no external dependencies, embedded via `go:embed`
 
 ## Production Deployment
@@ -216,9 +227,10 @@ See `.env.example` for all variables with comments.
    WEBHOOK_SECRET=$(openssl rand -hex 16)
    TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
    ```
-4. Set `APP_ENV=production` for secure cookies
+4. Set `APP_ENV=production` for secure cookies (also enforces `DATABASE_URL` SSL — rejects `sslmode=disable/allow`)
 5. Set `LOG_FORMAT=json` for structured logging
 6. Configure PostgreSQL backups
+7. Prometheus metrics are available at `/metrics` for monitoring
 
 ## Troubleshooting
 

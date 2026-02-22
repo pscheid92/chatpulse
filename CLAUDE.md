@@ -63,8 +63,9 @@ internal/
       webhook.go                WebhookHandler: HMAC verification, timestamp freshness, viewer presence check, vote processing
     httpserver/                 HTTP adapter (Echo v4)
       server.go                 Echo server setup, session store, template parsing, lifecycle
-      routes.go                 Route registration
-      middleware.go             Request logging, error handling, CSRF protection
+      routes.go                 Route registration (rate limiters, security headers, metrics middleware)
+      middleware.go             Correlation IDs, request logging, error handling, CSRF protection
+      ratelimit.go              Per-IP rate limiting (Echo middleware with in-memory store)
       handlers_auth.go          Login, OAuth callback (exchange + upsert + EventSub subscribe), logout
       handlers_dashboard.go     Dashboard page, save config with validation
       handlers_api.go           Reset sentiment, rotate overlay UUID, overlay viewer status
@@ -73,11 +74,19 @@ internal/
       oauth_client.go           twitchOAuthClient interface + HTTP implementation
     websocket/                  WebSocket adapter (Centrifuge)
       node.go                   Centrifuge node setup, Redis broker/presence, overlay UUID → channel subscription
+      origin.go                 WebSocket origin validation (prevents cross-site hijacking)
       publisher.go              Sentiment update publisher (forRatio, againstRatio, totalVotes, displayMode)
+    metrics/                    Prometheus metrics adapter
+      metrics.go                Registry setup (Go runtime + process collectors)
+      http.go                   HTTP metrics middleware (request counts, latency, in-flight)
+      vote.go                   Vote processing metrics (processed total, duration, by target)
+      cache.go                  Config cache metrics (hits/misses by layer, invalidations)
+      websocket.go              WebSocket metrics (active connections, messages published)
     eventpublisher/             Event publisher (composes WebSocket + Redis cache invalidation)
       publisher.go              Implements domain.EventPublisher
   platform/                     Cross-cutting infrastructure (stdlib only)
-    config/config.go            Struct-tag-based env loading, validation (all required fields enforced)
+    config/config.go            Struct-tag-based env loading, validation (all required fields enforced, production SSL check)
+    correlation/correlation.go  Correlation ID generation (8-char hex), context propagation, slog handler wrapper
     crypto/crypto.go            crypto.Service interface, AesGcmCryptoService (AES-256-GCM)
     crypto/cryptotest/noop.go   NoopCryptoService for testing
     errors/errors.go            Structured error types (validation, not_found, conflict, internal, external), HTTP status mapping
@@ -97,6 +106,7 @@ web/
 
 ```
 GET  /                          Landing page (redirects to /dashboard if authenticated)
+GET  /metrics                   Prometheus metrics endpoint (optional, when metrics enabled)
 GET  /health/startup            Startup probe (2s timeout)
 GET  /health/live               Liveness probe (uptime)
 GET  /health/ready              Readiness probe (Redis, PostgreSQL, 5s timeout)
@@ -136,6 +146,7 @@ See `.env.example` for all variables with comments.
 - `LOG_FORMAT` — `text` or `json` (default: `text`)
 - `MAX_WEBSOCKET_CONNECTIONS` — File descriptor limit check at startup (default: `10000`)
 - `SESSION_MAX_AGE` — Cookie expiry duration (default: `168h` / 7 days)
+- `SHUTDOWN_TIMEOUT` — Graceful shutdown deadline (default: `10s`)
 
 ## Architecture
 
@@ -192,7 +203,16 @@ Display modes:
 - Auto-subscribe to `sentiment:{twitchUserID}` channel on connect
 - Presence stats via Centrifuge PresenceManager (used for viewer count / hasViewers check)
 - Redis broker for cross-instance message delivery
+- Origin validation: allows empty, `obs://`, app origin, localhost (dev only)
 - Publishes: `{forRatio, againstRatio, totalVotes, displayMode, status}`
+
+### Security
+
+- **Rate limiting**: Per-IP via Echo middleware — auth ~10 req/min (burst 5), dashboard/API ~30 req/min (burst 10), webhooks ~200 req/min (burst 50)
+- **Security headers**: X-Frame-Options: DENY, HSTS (2y, preload), Content-Security-Policy, X-Content-Type-Options: nosniff, Referrer-Policy: strict-origin-when-cross-origin
+- **WebSocket origin validation**: Prevents cross-site WebSocket hijacking (`websocket/origin.go`)
+- **Production SSL enforcement**: Config validation rejects `sslmode=disable` or `sslmode=allow` in `DATABASE_URL` when `APP_ENV=production`
+- **Non-root Docker**: Dockerfile uses dedicated non-root user
 
 ## Dependency Rules
 
@@ -229,7 +249,15 @@ export TESTCONTAINERS_RYUK_DISABLED=true
 
 ## Observability
 
-Structured logging via `slog` (configurable level and format via `LOG_LEVEL` / `LOG_FORMAT`). Build info via `GET /version` endpoint (ldflags-injected version, commit, build time).
+**Structured logging** via `slog` (configurable level and format via `LOG_LEVEL` / `LOG_FORMAT`). Centrifuge WebSocket logging also respects `LOG_LEVEL`.
+
+**Correlation IDs**: Every HTTP request gets an 8-char hex correlation ID (`platform/correlation/`). The correlation slog handler automatically injects `correlation_id` into all log entries for request tracing.
+
+**Audit logging**: Sensitive operations emit `slog.InfoContext` audit logs: login, logout, config save, sentiment reset, overlay UUID rotation.
+
+**Prometheus metrics** (`GET /metrics`): HTTP request counts/latency/in-flight, vote processing (totals, duration, by target), config cache hits/misses/invalidations, WebSocket active connections/messages published. Skips `/metrics` and `/health/*` from HTTP metrics.
+
+**Build info** via `GET /version` endpoint (ldflags-injected version, commit, build time).
 
 ## Linting
 
@@ -241,4 +269,4 @@ golangci-lint v2 via `.golangci.yml`. Run with `make lint`. Generated code (`sql
 
 **Requires PostgreSQL 18+** (uses `uuidv7()` for time-ordered UUIDs).
 
-**Key deps**: echo/v4, centrifuge (WebSocket), gorilla/sessions, kappopher (Twitch Helix), pgx/v5, tern/v2, go-redis/v9, testcontainers-go, go-simpler/env
+**Key deps**: echo/v4, centrifuge (WebSocket), gorilla/sessions, kappopher (Twitch Helix), pgx/v5, tern/v2, go-redis/v9, prometheus/client_golang, testcontainers-go, go-simpler/env
