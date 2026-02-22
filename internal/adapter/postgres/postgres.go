@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +24,8 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("failed to parse database URL: %w", err)
 	}
 
+	slog.Info("Database SSL mode", "sslmode", extractSSLMode(databaseURL))
+
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
@@ -34,6 +38,18 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 
 	slog.Info("Database connected", "min_conns", poolCfg.MinConns, "max_conns", poolCfg.MaxConns)
 	return pool, nil
+}
+
+func extractSSLMode(databaseURL string) string {
+	u, err := url.Parse(databaseURL)
+	if err != nil {
+		return "unknown"
+	}
+	mode := strings.ToLower(u.Query().Get("sslmode"))
+	if mode == "" {
+		return "prefer (default)"
+	}
+	return mode
 }
 
 const (

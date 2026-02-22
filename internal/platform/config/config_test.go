@@ -117,3 +117,60 @@ func TestLoad_InvalidEncryptionKey(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_ProductionRejectsInsecureSSL(t *testing.T) {
+	tests := []struct {
+		name        string
+		databaseURL string
+		wantErr     string
+	}{
+		{"sslmode=disable", "postgres://user:pass@host:5432/db?sslmode=disable", "sslmode=disable which is not allowed in production"},
+		{"sslmode=allow", "postgres://user:pass@host:5432/db?sslmode=allow", "sslmode=allow which is not allowed in production"},
+		{"sslmode=DISABLE (case insensitive)", "postgres://user:pass@host:5432/db?sslmode=DISABLE", "sslmode=disable which is not allowed in production"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("APP_ENV", "production")
+			t.Setenv("DATABASE_URL", tt.databaseURL)
+
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestLoad_ProductionAllowsSecureSSL(t *testing.T) {
+	tests := []struct {
+		name        string
+		databaseURL string
+	}{
+		{"sslmode=require", "postgres://user:pass@host:5432/db?sslmode=require"},
+		{"sslmode=verify-ca", "postgres://user:pass@host:5432/db?sslmode=verify-ca"},
+		{"sslmode=verify-full", "postgres://user:pass@host:5432/db?sslmode=verify-full"},
+		{"sslmode=prefer", "postgres://user:pass@host:5432/db?sslmode=prefer"},
+		{"no sslmode (defaults to prefer)", "postgres://user:pass@host:5432/db"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("APP_ENV", "production")
+			t.Setenv("DATABASE_URL", tt.databaseURL)
+
+			_, err := Load()
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestLoad_DevelopmentAllowsInsecureSSL(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@host:5432/db?sslmode=disable")
+
+	_, err := Load()
+	require.NoError(t, err)
+}
