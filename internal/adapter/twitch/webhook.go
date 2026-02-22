@@ -10,6 +10,7 @@ import (
 	"github.com/Its-donkey/kappopher/helix"
 	"github.com/pscheid92/chatpulse/internal/adapter/metrics"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/platform/correlation"
 )
 
 const webhookProcessingTimeout = 5 * time.Second
@@ -54,25 +55,27 @@ func NewWebhookHandler(secret string, overlay domain.Overlay, presence ViewerPre
 }
 
 func (wh *WebhookHandler) handleNotification(msg *helix.EventSubWebhookMessage) {
+	ctx := correlation.WithID(context.Background(), correlation.NewID())
+
 	if msg.SubscriptionType != helix.EventSubTypeChannelChatMessage {
 		return
 	}
 
 	event, err := helix.ParseEventSubEvent[helix.ChannelChatMessageEvent](msg)
 	if err != nil {
-		slog.Error("Failed to parse chat message event", "error", err)
+		slog.ErrorContext(ctx, "Failed to parse chat message event", "error", err)
 		return
 	}
 
 	if !wh.presence.HasViewers(event.BroadcasterUserID) {
-		slog.Debug("Skipping vote: no viewers", "broadcaster", event.BroadcasterUserID)
+		slog.DebugContext(ctx, "Skipping vote: no viewers", "broadcaster", event.BroadcasterUserID)
 		if wh.voteMetrics != nil {
 			wh.voteMetrics.VotesProcessed.WithLabelValues("no_viewers").Inc()
 		}
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), webhookProcessingTimeout)
+	ctx, cancel := context.WithTimeout(ctx, webhookProcessingTimeout)
 	defer cancel()
 
 	start := time.Now()
@@ -82,14 +85,14 @@ func (wh *WebhookHandler) handleNotification(msg *helix.EventSubWebhookMessage) 
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
-		slog.Warn("ProcessMessage timed out", "broadcaster", event.BroadcasterUserID, "timeout", webhookProcessingTimeout)
+		slog.WarnContext(ctx, "ProcessMessage timed out", "broadcaster", event.BroadcasterUserID, "timeout", webhookProcessingTimeout)
 		if wh.voteMetrics != nil {
 			wh.voteMetrics.VotesProcessed.WithLabelValues("timeout").Inc()
 		}
 		return
 	}
 	if err != nil {
-		slog.Error("ProcessMessage failed", "broadcaster", event.BroadcasterUserID, "error", err)
+		slog.ErrorContext(ctx, "ProcessMessage failed", "broadcaster", event.BroadcasterUserID, "error", err)
 		if wh.voteMetrics != nil {
 			wh.voteMetrics.VotesProcessed.WithLabelValues("error").Inc()
 		}
@@ -117,13 +120,13 @@ func (wh *WebhookHandler) handleNotification(msg *helix.EventSubWebhookMessage) 
 		wh.onVoteApplied(event.BroadcasterUserID)
 	}
 
-	slog.Info("Vote processed via webhook", "user", event.ChatterUserID, "forRatio", snapshot.ForRatio, "againstRatio", snapshot.AgainstRatio, "totalVotes", snapshot.TotalVotes)
+	slog.InfoContext(ctx, "Vote processed via webhook", "user", event.ChatterUserID, "forRatio", snapshot.ForRatio, "againstRatio", snapshot.AgainstRatio, "totalVotes", snapshot.TotalVotes)
 	if wh.publisher == nil {
 		return
 	}
 
 	if pubErr := wh.publisher.PublishSentimentUpdated(ctx, event.BroadcasterUserID, snapshot); pubErr != nil {
-		slog.Error("Failed to publish sentiment update", "broadcaster", event.BroadcasterUserID, "error", pubErr)
+		slog.ErrorContext(ctx, "Failed to publish sentiment update", "broadcaster", event.BroadcasterUserID, "error", pubErr)
 	}
 }
 

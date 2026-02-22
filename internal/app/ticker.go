@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/platform/correlation"
 )
 
 const defaultTickInterval = 2 * time.Second
@@ -63,25 +64,27 @@ func (t *SnapshotTicker) refresh(ctx context.Context) {
 	t.mu.Unlock()
 
 	for _, id := range ids {
-		cfg, err := t.configs.GetConfigByBroadcaster(ctx, id)
+		tickCtx := correlation.WithID(ctx, correlation.NewID())
+
+		cfg, err := t.configs.GetConfigByBroadcaster(tickCtx, id)
 		if err != nil {
-			slog.Debug("Ticker: config lookup failed, removing broadcaster", "broadcaster", id, "error", err)
+			slog.DebugContext(tickCtx, "Ticker: config lookup failed, removing broadcaster", "broadcaster", id, "error", err)
 			t.untrack(id)
 			continue
 		}
 
-		snap, err := t.store.GetSnapshot(ctx, id, cfg.MemorySeconds)
+		snap, err := t.store.GetSnapshot(tickCtx, id, cfg.MemorySeconds)
 		if err != nil {
-			slog.Warn("Ticker: snapshot failed", "broadcaster", id, "error", err)
+			slog.WarnContext(tickCtx, "Ticker: snapshot failed", "broadcaster", id, "error", err)
 			continue
 		}
 
-		if err := t.publisher.PublishSentimentUpdated(ctx, id, snap); err != nil {
-			slog.Warn("Ticker: publish failed", "broadcaster", id, "error", err)
+		if err := t.publisher.PublishSentimentUpdated(tickCtx, id, snap); err != nil {
+			slog.WarnContext(tickCtx, "Ticker: publish failed", "broadcaster", id, "error", err)
 			continue
 		}
 
-		slog.Debug("Ticker: refreshed snapshot", "broadcaster", id, "forRatio", snap.ForRatio, "againstRatio", snap.AgainstRatio, "totalVotes", snap.TotalVotes)
+		slog.DebugContext(tickCtx, "Ticker: refreshed snapshot", "broadcaster", id, "forRatio", snap.ForRatio, "againstRatio", snap.AgainstRatio, "totalVotes", snap.TotalVotes)
 
 		if snap.TotalVotes == 0 {
 			t.untrack(id)

@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,8 +19,15 @@ import (
 	"github.com/Its-donkey/kappopher/helix"
 	"github.com/pscheid92/chatpulse/internal/app"
 	"github.com/pscheid92/chatpulse/internal/domain"
+	"github.com/pscheid92/chatpulse/internal/platform/correlation"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestMain(m *testing.M) {
+	handler := correlation.NewHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(slog.New(handler))
+	os.Exit(m.Run())
+}
 
 const (
 	testWebhookSecret = "test-webhook-secret-1234567890"
@@ -582,6 +591,10 @@ func TestWebhook_ProcessMessageContextHasTimeout(t *testing.T) {
 	assert.True(t, hasDeadline, "Context passed to ProcessMessage should have a deadline")
 	assert.WithinDuration(t, time.Now().Add(webhookProcessingTimeout), deadline, 2*time.Second,
 		"Context deadline should be approximately webhookProcessingTimeout from now")
+
+	corrID, hasCorrID := correlation.ID(ctx)
+	assert.True(t, hasCorrID, "Context should carry a correlation ID")
+	assert.Len(t, corrID, 8, "Correlation ID should be 8 hex chars")
 }
 
 // TestWebhook_NoViewersSkipsProcessMessage verifies that votes are skipped when no viewers are watching.

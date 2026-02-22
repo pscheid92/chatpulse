@@ -27,7 +27,7 @@ func overlaySecurityHeaders() echo.MiddlewareFunc {
 					"script-src 'self' 'unsafe-inline' https://unpkg.com; "+
 					"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
 					"font-src 'self' https://fonts.gstatic.com; "+
-					"connect-src 'self' wss: ws:; "+
+					"connect-src 'self' wss: ws: https://unpkg.com; "+
 					"frame-ancestors *")
 			return next(c)
 		}

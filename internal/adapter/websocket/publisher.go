@@ -40,7 +40,7 @@ func (p *Publisher) PublishSentiment(ctx context.Context, broadcasterID string, 
 
 	config, err := p.configSource.GetConfigByBroadcaster(ctx, broadcasterID)
 	if err != nil {
-		slog.Warn("Failed to get config for publish, using defaults", "broadcaster_id", broadcasterID, "error", err)
+		slog.WarnContext(ctx, "Failed to get config for publish, using defaults", "broadcaster_id", broadcasterID, "error", err)
 		displayMode = string(domain.DisplayModeCombined)
 	} else {
 		displayMode = string(config.DisplayMode)
