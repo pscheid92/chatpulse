@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pscheid92/chatpulse/internal/adapter/eventpublisher"
 	"github.com/pscheid92/chatpulse/internal/adapter/httpserver"
+	"github.com/pscheid92/chatpulse/internal/adapter/metrics"
 	"github.com/pscheid92/chatpulse/internal/adapter/postgres"
 	"github.com/pscheid92/chatpulse/internal/adapter/redis"
 	"github.com/pscheid92/chatpulse/internal/adapter/twitch"
@@ -125,8 +126,8 @@ type realtimeInfra struct {
 	presence  *websocket.PresenceChecker
 }
 
-func setupWebSocket(streamerRepo domain.StreamerRepository, redisAddr string, configCache domain.ConfigSource) (realtimeInfra, error) {
-	node, err := websocket.NewNode(streamerRepo)
+func setupWebSocket(streamerRepo domain.StreamerRepository, redisAddr string, configCache domain.ConfigSource, wsMetrics *metrics.WebSocketMetrics) (realtimeInfra, error) {
+	node, err := websocket.NewNode(streamerRepo, wsMetrics)
 	if err != nil {
 		return realtimeInfra{}, fmt.Errorf("create Centrifuge node: %w", err)
 	}
@@ -142,7 +143,7 @@ func setupWebSocket(streamerRepo domain.StreamerRepository, redisAddr string, co
 
 	return realtimeInfra{
 		node:      node,
-		publisher: websocket.NewPublisher(node, configCache),
+		publisher: websocket.NewPublisher(node, configCache, wsMetrics),
 		presence:  websocket.NewPresenceChecker(node),
 	}, nil
 }
@@ -163,8 +164,8 @@ func initEventSubManager(cfg *config.Config, eventSubRepo *postgres.EventSubRepo
 	return mgr, nil
 }
 
-func initWebhookHandler(cfg *config.Config, ovl *app.Overlay, presence twitch.ViewerPresence, publisher domain.EventPublisher, onVoteApplied func(string)) *twitch.WebhookHandler {
-	return twitch.NewWebhookHandler(cfg.WebhookSecret, ovl, presence, publisher, onVoteApplied)
+func initWebhookHandler(cfg *config.Config, ovl *app.Overlay, presence twitch.ViewerPresence, publisher domain.EventPublisher, onVoteApplied func(string), voteMetrics *metrics.VoteMetrics) *twitch.WebhookHandler {
+	return twitch.NewWebhookHandler(cfg.WebhookSecret, ovl, presence, publisher, onVoteApplied, voteMetrics)
 }
 
 func runGracefulShutdown(srv *httpserver.Server, node *centrifuge.Node, conduitMgr *twitch.EventSubManager) <-chan struct{} {
@@ -229,9 +230,17 @@ func main() {
 	defer rc.stopEviction()
 	defer rc.cancelPubsub()
 
+	// Metrics setup
+	reg := metrics.NewRegistry()
+	httpMetrics := metrics.NewHTTPMetrics(reg)
+	voteMetrics := metrics.NewVoteMetrics(reg)
+	cacheMetrics := metrics.NewCacheMetrics(reg)
+	wsMetrics := metrics.NewWebSocketMetrics(reg)
+	rc.configCache.SetCacheMetrics(cacheMetrics)
+
 	ovl := app.NewOverlay(rc.configCache, rc.sentiment, rc.debouncer)
 
-	ws, err := setupWebSocket(db.streamerRepo, rc.client.Options().Addr, rc.configCache)
+	ws, err := setupWebSocket(db.streamerRepo, rc.client.Options().Addr, rc.configCache, wsMetrics)
 	if err != nil {
 		slog.Error("WebSocket setup failed", "error", err)
 		os.Exit(1)
@@ -252,7 +261,7 @@ func main() {
 	}
 	slog.Info("EventSub configured", "callback_url", cfg.WebhookCallbackURL)
 
-	webhookHdlr := initWebhookHandler(cfg, ovl, ws.presence, publisher, ticker.Track)
+	webhookHdlr := initWebhookHandler(cfg, ovl, ws.presence, publisher, ticker.Track, voteMetrics)
 	appSvc := app.NewService(db.streamerRepo, db.configRepo, ovl, eventsubMgr, publisher)
 
 	healthChecks := slices.Concat(db.healthChecks, rc.healthChecks)
@@ -261,7 +270,7 @@ func main() {
 		CheckOrigin: websocket.NewCheckOrigin(cfg.WebhookCallbackURL, cfg.AppEnv == "development"),
 	})
 
-	srv, err := httpserver.NewServer(cfg, appSvc, ws.presence, wsHandler, http.HandlerFunc(webhookHdlr.HandleEventSub), eventsubMgr, healthChecks)
+	srv, err := httpserver.NewServer(cfg, appSvc, ws.presence, wsHandler, http.HandlerFunc(webhookHdlr.HandleEventSub), eventsubMgr, healthChecks, httpMetrics, metrics.Handler(reg))
 	if err != nil {
 		slog.Error("Failed to create server", "error", err)
 		os.Exit(1)

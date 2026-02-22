@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/pscheid92/chatpulse/internal/adapter/metrics"
 	"github.com/pscheid92/chatpulse/internal/domain"
 )
 
@@ -24,10 +25,11 @@ type sessionUpdate struct {
 type Publisher struct {
 	node         *centrifuge.Node
 	configSource domain.ConfigSource
+	wsMetrics    *metrics.WebSocketMetrics
 }
 
-func NewPublisher(node *centrifuge.Node, configSource domain.ConfigSource) *Publisher {
-	return &Publisher{node: node, configSource: configSource}
+func NewPublisher(node *centrifuge.Node, configSource domain.ConfigSource, wsMetrics *metrics.WebSocketMetrics) *Publisher {
+	return &Publisher{node: node, configSource: configSource, wsMetrics: wsMetrics}
 }
 
 func (p *Publisher) PublishSentiment(ctx context.Context, broadcasterID string, snapshot *domain.WindowSnapshot) error {
@@ -60,6 +62,10 @@ func (p *Publisher) PublishSentiment(ctx context.Context, broadcasterID string, 
 	_, err = p.node.Publish(channel, data)
 	if err != nil {
 		return fmt.Errorf("publish to channel %s: %w", channel, err)
+	}
+
+	if p.wsMetrics != nil {
+		p.wsMetrics.MessagesPublished.Inc()
 	}
 
 	return nil

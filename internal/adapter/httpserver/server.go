@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/sessions"
 	"github.com/labstack/echo/v4"
+	"github.com/pscheid92/chatpulse/internal/adapter/metrics"
 	"github.com/pscheid92/chatpulse/internal/adapter/twitch"
 	"github.com/pscheid92/chatpulse/internal/app"
 	"github.com/pscheid92/chatpulse/internal/domain"
@@ -42,13 +43,15 @@ type Server struct {
 
 	templates *template.Template
 
-	oauthClient  twitchOAuthClient
-	sessionStore *sessions.CookieStore
-	healthChecks []HealthCheck
-	startTime    time.Time
+	oauthClient    twitchOAuthClient
+	sessionStore   *sessions.CookieStore
+	healthChecks   []HealthCheck
+	startTime      time.Time
+	httpMetrics    *metrics.HTTPMetrics
+	metricsHandler http.Handler
 }
 
-func NewServer(cfg *config.Config, app appService, presence twitch.ViewerPresence, websocketHandler http.Handler, webhookHandler http.Handler, twitchService domain.EventSubService, healthChecks []HealthCheck) (*Server, error) {
+func NewServer(cfg *config.Config, app appService, presence twitch.ViewerPresence, websocketHandler http.Handler, webhookHandler http.Handler, twitchService domain.EventSubService, healthChecks []HealthCheck, httpMetrics *metrics.HTTPMetrics, metricsHandler http.Handler) (*Server, error) {
 	templates, err := template.ParseFS(web.TemplateFiles, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse templates: %w", err)
@@ -73,6 +76,8 @@ func NewServer(cfg *config.Config, app appService, presence twitch.ViewerPresenc
 		templates:        templates,
 		healthChecks:     healthChecks,
 		startTime:        time.Now(),
+		httpMetrics:      httpMetrics,
+		metricsHandler:   metricsHandler,
 	}
 
 	srv.registerRoutes()
