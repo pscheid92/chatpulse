@@ -44,6 +44,9 @@ linters:
       excludes:
         - G101  # False positives on URL constants containing "token"/"secret"
         - G115  # Integer overflow conversion — too noisy, safe in context
+        - G117  # False positives on domain structs that must hold token fields
+        - G704  # SSRF false positives — OAuth client only hits known Twitch endpoints
+        - G706  # Log injection false positives — slog structured logging is safe
     unparam:
       check-exported: false
     errcheck:
