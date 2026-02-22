@@ -24,18 +24,18 @@ func NewOverlay(configSource domain.ConfigSource, sentiment domain.SentimentStor
 	}
 }
 
-func (o *Overlay) ProcessMessage(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (*domain.WindowSnapshot, domain.VoteResult, error) {
+func (o *Overlay) ProcessMessage(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (*domain.WindowSnapshot, domain.VoteResult, domain.VoteTarget, error) {
 	config, err := o.getConfig(ctx, broadcasterUserID)
 	if errors.Is(err, domain.ErrConfigNotFound) {
-		return nil, domain.VoteNoMatch, nil
+		return nil, domain.VoteNoMatch, domain.VoteTargetNone, nil
 	}
 	if err != nil {
-		return nil, domain.VoteNoMatch, fmt.Errorf("config lookup failed: %w", err)
+		return nil, domain.VoteNoMatch, domain.VoteTargetNone, fmt.Errorf("config lookup failed: %w", err)
 	}
 
 	target := matchTrigger(messageText, config)
 	if target == domain.VoteTargetNone {
-		return nil, domain.VoteNoMatch, nil
+		return nil, domain.VoteNoMatch, domain.VoteTargetNone, nil
 	}
 
 	debounced, err := o.debounce.IsDebounced(ctx, broadcasterUserID, chatterUserID)
@@ -44,16 +44,16 @@ func (o *Overlay) ProcessMessage(ctx context.Context, broadcasterUserID, chatter
 		slog.Warn("Debounce check failed, allowing vote", "broadcaster", broadcasterUserID, "chatter", chatterUserID, "error", err)
 	}
 	if debounced {
-		return nil, domain.VoteDebounced, nil
+		return nil, domain.VoteDebounced, target, nil
 	}
 
 	snapshot, err := o.sentiment.RecordVote(ctx, broadcasterUserID, target, config.MemorySeconds)
 	if err != nil {
 		slog.Error("RecordVote error", "error", err)
-		return nil, domain.VoteNoMatch, fmt.Errorf("record vote failed: %w", err)
+		return nil, domain.VoteNoMatch, target, fmt.Errorf("record vote failed: %w", err)
 	}
 
-	return snapshot, domain.VoteApplied, nil
+	return snapshot, domain.VoteApplied, target, nil
 }
 
 func (o *Overlay) Reset(ctx context.Context, broadcasterID string) error {

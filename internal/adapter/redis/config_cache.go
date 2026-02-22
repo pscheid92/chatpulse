@@ -11,15 +11,17 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/pscheid92/chatpulse/internal/adapter/metrics"
 	"github.com/pscheid92/chatpulse/internal/domain"
 )
 
 const configCacheTTL = 1 * time.Hour
 
 type ConfigCacheRepo struct {
-	rdb     goredis.Cmdable
-	configs domain.ConfigRepository
-	mem     *memoryCache
+	rdb          goredis.Cmdable
+	configs      domain.ConfigRepository
+	mem          *memoryCache
+	cacheMetrics *metrics.CacheMetrics
 }
 
 func NewConfigCacheRepo(rdb goredis.Cmdable, configs domain.ConfigRepository, memCacheTTL time.Duration) *ConfigCacheRepo {
@@ -57,16 +59,33 @@ func (r *ConfigCacheRepo) StartEvictionTimer(interval time.Duration) func() {
 	}
 }
 
+// SetCacheMetrics configures cache metrics for observability.
+func (r *ConfigCacheRepo) SetCacheMetrics(m *metrics.CacheMetrics) {
+	r.cacheMetrics = m
+}
+
 func (r *ConfigCacheRepo) GetConfigByBroadcaster(ctx context.Context, broadcasterID string) (domain.OverlayConfig, error) {
 	// Layer 1: in-memory cache
 	if config, ok := r.mem.get(broadcasterID); ok {
+		if r.cacheMetrics != nil {
+			r.cacheMetrics.Hits.WithLabelValues("memory").Inc()
+		}
 		return config, nil
+	}
+	if r.cacheMetrics != nil {
+		r.cacheMetrics.Misses.WithLabelValues("memory").Inc()
 	}
 
 	// Layer 2: Redis cache
 	if config, ok := r.getCached(ctx, broadcasterID); ok {
+		if r.cacheMetrics != nil {
+			r.cacheMetrics.Hits.WithLabelValues("redis").Inc()
+		}
 		r.mem.set(broadcasterID, config)
 		return config, nil
+	}
+	if r.cacheMetrics != nil {
+		r.cacheMetrics.Misses.WithLabelValues("redis").Inc()
 	}
 
 	// Layer 3: PostgreSQL
@@ -83,6 +102,10 @@ func (r *ConfigCacheRepo) GetConfigByBroadcaster(ctx context.Context, broadcaste
 // InvalidateCache evicts the config from both the in-memory cache and Redis cache.
 func (r *ConfigCacheRepo) InvalidateCache(ctx context.Context, broadcasterID string) error {
 	r.mem.invalidate(broadcasterID)
+
+	if r.cacheMetrics != nil {
+		r.cacheMetrics.Invalidations.Inc()
+	}
 
 	ck := configCacheKey(broadcasterID)
 	if err := r.rdb.Del(ctx, ck).Err(); err != nil {

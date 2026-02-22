@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Its-donkey/kappopher/helix"
+	"github.com/pscheid92/chatpulse/internal/adapter/metrics"
 	"github.com/pscheid92/chatpulse/internal/domain"
 )
 
@@ -25,14 +26,16 @@ type WebhookHandler struct {
 	presence      ViewerPresence
 	publisher     domain.EventPublisher
 	onVoteApplied func(broadcasterID string)
+	voteMetrics   *metrics.VoteMetrics
 }
 
-func NewWebhookHandler(secret string, overlay domain.Overlay, presence ViewerPresence, publisher domain.EventPublisher, onVoteApplied func(string)) *WebhookHandler {
+func NewWebhookHandler(secret string, overlay domain.Overlay, presence ViewerPresence, publisher domain.EventPublisher, onVoteApplied func(string), voteMetrics *metrics.VoteMetrics) *WebhookHandler {
 	wh := &WebhookHandler{
 		overlay:       overlay,
 		presence:      presence,
 		publisher:     publisher,
 		onVoteApplied: onVoteApplied,
+		voteMetrics:   voteMetrics,
 	}
 
 	wh.handler = helix.NewEventSubWebhookHandler(
@@ -63,24 +66,51 @@ func (wh *WebhookHandler) handleNotification(msg *helix.EventSubWebhookMessage) 
 
 	if !wh.presence.HasViewers(event.BroadcasterUserID) {
 		slog.Debug("Skipping vote: no viewers", "broadcaster", event.BroadcasterUserID)
+		if wh.voteMetrics != nil {
+			wh.voteMetrics.VotesProcessed.WithLabelValues("no_viewers").Inc()
+		}
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), webhookProcessingTimeout)
 	defer cancel()
 
-	snapshot, result, err := wh.overlay.ProcessMessage(ctx, event.BroadcasterUserID, event.ChatterUserID, event.Message.Text)
+	start := time.Now()
+	snapshot, result, target, err := wh.overlay.ProcessMessage(ctx, event.BroadcasterUserID, event.ChatterUserID, event.Message.Text)
+	if wh.voteMetrics != nil {
+		wh.voteMetrics.ProcessingDuration.Observe(time.Since(start).Seconds())
+	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
 		slog.Warn("ProcessMessage timed out", "broadcaster", event.BroadcasterUserID, "timeout", webhookProcessingTimeout)
+		if wh.voteMetrics != nil {
+			wh.voteMetrics.VotesProcessed.WithLabelValues("timeout").Inc()
+		}
 		return
 	}
 	if err != nil {
 		slog.Error("ProcessMessage failed", "broadcaster", event.BroadcasterUserID, "error", err)
+		if wh.voteMetrics != nil {
+			wh.voteMetrics.VotesProcessed.WithLabelValues("error").Inc()
+		}
 		return
+	}
+
+	if wh.voteMetrics != nil {
+		wh.voteMetrics.VotesProcessed.WithLabelValues(result.String()).Inc()
 	}
 
 	if result != domain.VoteApplied {
 		return
+	}
+
+	if wh.voteMetrics != nil {
+		switch target {
+		case domain.VoteTargetPositive:
+			wh.voteMetrics.VotesByTarget.WithLabelValues("for").Inc()
+		case domain.VoteTargetNegative:
+			wh.voteMetrics.VotesByTarget.WithLabelValues("against").Inc()
+		}
 	}
 
 	if wh.onVoteApplied != nil {

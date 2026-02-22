@@ -80,8 +80,8 @@ type mockOverlay struct {
 	resetFn func(ctx context.Context, broadcasterID string) error
 }
 
-func (m *mockOverlay) ProcessMessage(context.Context, string, string, string) (*domain.WindowSnapshot, domain.VoteResult, error) {
-	return nil, domain.VoteNoMatch, nil
+func (m *mockOverlay) ProcessMessage(context.Context, string, string, string) (*domain.WindowSnapshot, domain.VoteResult, domain.VoteTarget, error) {
+	return nil, domain.VoteNoMatch, domain.VoteTargetNone, nil
 }
 
 func (m *mockOverlay) Reset(ctx context.Context, broadcasterID string) error {

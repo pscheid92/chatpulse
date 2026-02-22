@@ -6,11 +6,12 @@ import (
 	"log/slog"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/pscheid92/chatpulse/internal/adapter/metrics"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/uuid"
 )
 
-func NewNode(userRepo domain.StreamerRepository) (*centrifuge.Node, error) {
+func NewNode(userRepo domain.StreamerRepository, wsMetrics *metrics.WebSocketMetrics) (*centrifuge.Node, error) {
 	conf := centrifuge.Config{LogLevel: centrifuge.LogLevelInfo, LogHandler: slogHandler}
 	node, err := centrifuge.New(conf)
 	if err != nil {
@@ -18,7 +19,7 @@ func NewNode(userRepo domain.StreamerRepository) (*centrifuge.Node, error) {
 	}
 
 	node.OnConnecting(onConnecting(userRepo))
-	node.OnConnect(onConnect())
+	node.OnConnect(onConnect(wsMetrics))
 
 	return node, nil
 }
@@ -55,9 +56,13 @@ func onConnecting(userRepo domain.StreamerRepository) func(ctx context.Context, 
 	}
 }
 
-func onConnect() func(client *centrifuge.Client) {
+func onConnect(wsMetrics *metrics.WebSocketMetrics) func(client *centrifuge.Client) {
 	return func(client *centrifuge.Client) {
 		slog.Debug("Client connected", "client_id", client.ID(), "user_id", client.UserID())
+
+		if wsMetrics != nil {
+			wsMetrics.ActiveConnections.Inc()
+		}
 
 		client.OnSubscribe(func(e centrifuge.SubscribeEvent, cb centrifuge.SubscribeCallback) {
 			options := centrifuge.SubscribeOptions{EmitPresence: true}
@@ -66,6 +71,9 @@ func onConnect() func(client *centrifuge.Client) {
 
 		client.OnDisconnect(func(e centrifuge.DisconnectEvent) {
 			slog.Debug("Client disconnected", "client_id", client.ID(), "reason", e.Reason)
+			if wsMetrics != nil {
+				wsMetrics.ActiveConnections.Dec()
+			}
 		})
 	}
 }

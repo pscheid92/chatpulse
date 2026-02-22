@@ -241,12 +241,12 @@ func newContextCapturingOverlay() *contextCapturingOverlay {
 	return &contextCapturingOverlay{called: make(chan struct{}, 1)}
 }
 
-func (o *contextCapturingOverlay) ProcessMessage(ctx context.Context, _, _, _ string) (*domain.WindowSnapshot, domain.VoteResult, error) {
+func (o *contextCapturingOverlay) ProcessMessage(ctx context.Context, _, _, _ string) (*domain.WindowSnapshot, domain.VoteResult, domain.VoteTarget, error) {
 	o.mu.Lock()
 	o.capturedCtx = ctx
 	o.mu.Unlock()
 	o.called <- struct{}{}
-	return nil, domain.VoteNoMatch, nil
+	return nil, domain.VoteNoMatch, domain.VoteTargetNone, nil
 }
 
 func (o *contextCapturingOverlay) Reset(_ context.Context, _ string) error {
@@ -278,7 +278,7 @@ func setupWebhookTest(t *testing.T) (*WebhookHandler, *testStore, string) {
 
 	debouncer := newTestDebouncer()
 	ovl := app.NewOverlay(store, store, debouncer)
-	handler := NewWebhookHandler(testWebhookSecret, ovl, alwaysHasViewers, nil, nil)
+	handler := NewWebhookHandler(testWebhookSecret, ovl, alwaysHasViewers, nil, nil, nil)
 	return handler, store, broadcasterID
 }
 
@@ -558,7 +558,7 @@ func TestWebhook_ReplayAttack(t *testing.T) {
 // TestWebhook_ProcessMessageContextHasTimeout verifies that ProcessMessage receives a context with a deadline set.
 func TestWebhook_ProcessMessageContextHasTimeout(t *testing.T) {
 	ovl := newContextCapturingOverlay()
-	handler := NewWebhookHandler(testWebhookSecret, ovl, alwaysHasViewers, nil, nil)
+	handler := NewWebhookHandler(testWebhookSecret, ovl, alwaysHasViewers, nil, nil, nil)
 
 	body := makeChatMessageBody("broadcaster-123", "yes")
 	req := makeSignedNotification(testWebhookSecret, body)
@@ -592,7 +592,7 @@ func TestWebhook_NoViewersSkipsProcessMessage(t *testing.T) {
 	ovl := app.NewOverlay(store, store, newTestDebouncer())
 
 	// presence always returns false — no viewers connected
-	handler := NewWebhookHandler(testWebhookSecret, ovl, viewerPresenceFunc(func(_ string) bool { return false }), nil, nil)
+	handler := NewWebhookHandler(testWebhookSecret, ovl, viewerPresenceFunc(func(_ string) bool { return false }), nil, nil, nil)
 
 	body := makeChatMessageBody(broadcasterID, "yes")
 	req := makeSignedNotification(testWebhookSecret, body)

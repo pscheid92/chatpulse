@@ -52,6 +52,6 @@ func (r VoteResult) String() string {
 }
 
 type Overlay interface {
-	ProcessMessage(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (*WindowSnapshot, VoteResult, error)
+	ProcessMessage(ctx context.Context, broadcasterUserID, chatterUserID, messageText string) (*WindowSnapshot, VoteResult, VoteTarget, error)
 	Reset(ctx context.Context, broadcasterID string) error
 }

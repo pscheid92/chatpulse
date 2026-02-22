@@ -103,9 +103,10 @@ func TestProcessMessage_Success(t *testing.T) {
 	configSource, sentiment, debounce := newHappyPathMocks()
 	ovl := NewOverlay(configSource, sentiment, debounce)
 
-	snap, result, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
+	snap, result, target, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	require.NoError(t, err)
 	assert.Equal(t, domain.VoteApplied, result)
+	assert.Equal(t, domain.VoteTargetPositive, target)
 	assert.NotNil(t, snap)
 	assert.Equal(t, 1.0, snap.ForRatio)
 	assert.Equal(t, 1, snap.TotalVotes)
@@ -115,9 +116,10 @@ func TestProcessMessage_AgainstVote(t *testing.T) {
 	configSource, sentiment, debounce := newHappyPathMocks()
 	ovl := NewOverlay(configSource, sentiment, debounce)
 
-	snap, result, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "no")
+	snap, result, target, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "no")
 	require.NoError(t, err)
 	assert.Equal(t, domain.VoteApplied, result)
+	assert.Equal(t, domain.VoteTargetNegative, target)
 	assert.NotNil(t, snap)
 	assert.Equal(t, 1.0, snap.AgainstRatio)
 }
@@ -129,9 +131,10 @@ func TestProcessMessage_NoConfig(t *testing.T) {
 	}
 	ovl := NewOverlay(configSource, sentiment, debounce)
 
-	snap, result, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
+	snap, result, target, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	require.NoError(t, err)
 	assert.Equal(t, domain.VoteNoMatch, result)
+	assert.Equal(t, domain.VoteTargetNone, target)
 	assert.Nil(t, snap)
 }
 
@@ -142,9 +145,10 @@ func TestProcessMessage_ConfigLookupError(t *testing.T) {
 	}
 	ovl := NewOverlay(configSource, sentiment, debounce)
 
-	snap, result, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
+	snap, result, target, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.Error(t, err)
 	assert.Equal(t, domain.VoteNoMatch, result)
+	assert.Equal(t, domain.VoteTargetNone, target)
 	assert.Nil(t, snap)
 }
 
@@ -152,9 +156,10 @@ func TestProcessMessage_NoTriggerMatch(t *testing.T) {
 	configSource, sentiment, debounce := newHappyPathMocks()
 	ovl := NewOverlay(configSource, sentiment, debounce)
 
-	snap, result, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "hello world")
+	snap, result, target, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "hello world")
 	require.NoError(t, err)
 	assert.Equal(t, domain.VoteNoMatch, result)
+	assert.Equal(t, domain.VoteTargetNone, target)
 	assert.Nil(t, snap)
 }
 
@@ -165,9 +170,10 @@ func TestProcessMessage_Debounced(t *testing.T) {
 	}
 	ovl := NewOverlay(configSource, sentiment, debounce)
 
-	snap, result, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
+	snap, result, target, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	require.NoError(t, err)
 	assert.Equal(t, domain.VoteDebounced, result)
+	assert.Equal(t, domain.VoteTargetPositive, target)
 	assert.Nil(t, snap)
 }
 
@@ -180,9 +186,10 @@ func TestProcessMessage_RecordVoteError(t *testing.T) {
 	}
 	ovl := NewOverlay(configSource, sentiment, debounce)
 
-	snap, result, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
+	snap, result, target, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	assert.Error(t, err)
 	assert.Equal(t, domain.VoteNoMatch, result)
+	assert.Equal(t, domain.VoteTargetPositive, target)
 	assert.Nil(t, snap)
 }
 
@@ -212,7 +219,7 @@ func TestProcessMessage_PassesWindowSeconds(t *testing.T) {
 	}
 	ovl := NewOverlay(configSource, sentiment, debounce)
 
-	_, _, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
+	_, _, _, err := ovl.ProcessMessage(context.Background(), "broadcaster-1", "chatter-1", "yes")
 	require.NoError(t, err)
 	assert.Equal(t, 60, capturedWindowSeconds)
 }

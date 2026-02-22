@@ -9,6 +9,9 @@ import (
 )
 
 func (s *Server) registerRoutes() {
+	if s.httpMetrics != nil {
+		s.echo.Use(s.httpMetrics.Middleware())
+	}
 	s.echo.Use(s.setupRequestLoggerMiddleware())
 	s.echo.Use(middleware.Recover())
 	s.echo.Use(ErrorHandlingMiddleware())
@@ -34,6 +37,10 @@ func (s *Server) registerRoutes() {
 	webhookRL := newRateLimiter(3.33, 50)  // ~200 req/min, burst 50
 
 	s.echo.GET("/", s.handleLanding)
+
+	if s.metricsHandler != nil {
+		s.echo.GET("/metrics", echo.WrapHandler(s.metricsHandler))
+	}
 
 	s.registerHealthRoutes()
 	s.registerAuthRoutes(csrfMiddleware, authRL)
