@@ -258,9 +258,7 @@ func main() {
 	healthChecks := slices.Concat(db.healthChecks, rc.healthChecks)
 
 	wsHandler := centrifuge.NewWebsocketHandler(ws.node, centrifuge.WebsocketConfig{
-		CheckOrigin: func(r *http.Request) bool {
-			return true // OBS browser sources use obs:// origins
-		},
+		CheckOrigin: websocket.NewCheckOrigin(cfg.WebhookCallbackURL, cfg.AppEnv == "development"),
 	})
 
 	srv, err := httpserver.NewServer(cfg, appSvc, ws.presence, wsHandler, http.HandlerFunc(webhookHdlr.HandleEventSub), eventsubMgr, healthChecks)
