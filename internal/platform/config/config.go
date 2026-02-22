@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -78,6 +80,31 @@ func validate(cfg *Config) error {
 	}
 	if len(keyBytes) != 32 {
 		return fmt.Errorf("TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes), got %d bytes", len(keyBytes))
+	}
+
+	if cfg.AppEnv == "production" {
+		if err := validateDatabaseSSL(cfg.DatabaseURL); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateDatabaseSSL rejects insecure sslmode values (disable, allow) in the DATABASE_URL.
+// Assumes URI-format connection strings (postgres://...).
+func validateDatabaseSSL(databaseURL string) error {
+	u, err := url.Parse(databaseURL)
+	if err != nil {
+		return fmt.Errorf("DATABASE_URL is not a valid URL: %w", err)
+	}
+
+	sslmode := strings.ToLower(u.Query().Get("sslmode"))
+	if sslmode == "disable" || sslmode == "allow" {
+		return fmt.Errorf(
+			"DATABASE_URL has sslmode=%s which is not allowed in production (use require, verify-ca, or verify-full)",
+			sslmode,
+		)
 	}
 
 	return nil
