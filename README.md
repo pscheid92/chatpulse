@@ -1,7 +1,6 @@
 # ChatPulse
 
 [![Tests](https://github.com/pscheid92/chatpulse/actions/workflows/test.yml/badge.svg)](https://github.com/pscheid92/chatpulse/actions/workflows/test.yml)
-[![Coverage](https://codecov.io/gh/pscheid92/chatpulse/branch/main/graph/badge.svg)](https://codecov.io/gh/pscheid92/chatpulse)
 [![Go Report Card](https://goreportcard.com/badge/github.com/pscheid92/chatpulse)](https://goreportcard.com/report/github.com/pscheid92/chatpulse)
 
 A real-time chat sentiment tracking overlay for Twitch streamers. Monitor your chat's mood during polls, debates, or Q&A sessions with a glassmorphism overlay for OBS.
@@ -13,9 +12,7 @@ A dedicated bot account reads chat on behalf of all streamers, making this a mul
 - **Real-time sentiment tracking** from Twitch chat messages via EventSub webhooks
 - **Two display modes**: combined tug-of-war bar or split positive/negative bars
 - **Customizable triggers** and labels for "for" and "against" votes
-- **Configurable decay speed** to smoothly return the bar to center
-- **Overdrive mode** lets the bar "stick" at the edge before decaying (1.0x-2.0x multiplier)
-- **Configurable vote delta** (1-50 per vote) for fine-tuned sensitivity
+- **Sliding-window memory** (5-120s) controls how long votes count
 - **Multi-instance scaling** with Redis for horizontal deployment
 - **Bot account architecture** — streamers only grant `channel:bot` scope; a single bot reads all channels
 - **Token encryption at rest** with AES-256-GCM
@@ -35,7 +32,7 @@ A dedicated bot account reads chat on behalf of all streamers, making this a mul
 
 3. **PostgreSQL**: Version 18 or higher (required for `uuidv7()`)
 
-4. **Redis**: Version 7+ (required for Redis Functions)
+4. **Redis**: Version 7+
 
 5. **Public HTTPS URL**: Required for EventSub webhook delivery (use [ngrok](https://ngrok.com/) for local development)
 
@@ -152,9 +149,7 @@ make test-coverage  # Generate coverage report
    - **For Trigger**: Word/phrase viewers type to vote "for" (e.g., "yes", "agree")
    - **Against Trigger**: Word/phrase to vote "against" (e.g., "no", "disagree")
    - **Labels**: Display labels for each side
-   - **Decay Speed**: How quickly the bar returns to center (0.1 = slow, 2.0 = fast)
-   - **Overdrive**: How much the bar can "stick" at the edge (1.0x = none, 2.0x = max)
-   - **Vote Delta**: How much each vote moves the bar (1-50)
+   - **Memory**: How long votes count in the sliding window (5-120s, or infinite)
    - **Display Mode**: Combined (tug-of-war) or Split (two bars)
 3. Click "Save Configuration"
 
@@ -199,16 +194,16 @@ See `.env.example` for all variables with comments.
 - **Webhooks + Conduits**: Chat messages arrive via Twitch EventSub webhooks transported through a Conduit, verified with HMAC-SHA256
 - **Vote Processing**: Messages matching trigger words exactly (case-insensitive) are counted as votes
 - **Debouncing**: Each viewer can vote once per second to prevent spam
-- **Atomic Updates**: Votes are applied atomically via Redis Lua functions (dual-counter with independent exponential decay)
+- **Sliding-window Counting**: Votes are recorded in Redis Streams; sentiment is computed over a configurable time window (old votes naturally expire)
 - **Real-time Broadcast**: Updates are pushed to overlay clients via Centrifuge WebSocket with Redis broker for cross-instance delivery
-- **Client-side Decay**: The overlay uses `requestAnimationFrame` (60fps) for smooth visual decay with zero server cost
+- **Client-side Lerp**: The overlay uses `requestAnimationFrame` for smooth animation toward server ratios with zero server cost
 
 ## Architecture
 
 - **Backend**: Single Go binary (Echo v4) serving HTTP, WebSocket, and webhook endpoints
 - **Database**: PostgreSQL 18+ with auto-migrations (tern) for streamers, configs, and EventSub subscriptions
 - **Caching**: 3-layer read-through cache (in-memory 10s → Redis 1h → PostgreSQL) with pub/sub invalidation
-- **Scaling**: Multi-instance via Redis (Lua functions for atomic operations, pub/sub for broadcasting, Centrifuge Redis broker for WebSocket fan-out)
+- **Scaling**: Multi-instance via Redis (Streams for vote counting, pub/sub for broadcasting, Centrifuge Redis broker for WebSocket fan-out)
 - **Frontend**: Minimal HTML/CSS/JS with no external dependencies, embedded via `go:embed`
 
 ## Production Deployment

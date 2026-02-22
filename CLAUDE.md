@@ -42,6 +42,7 @@ internal/
   app/                          Business logic (application layer)
     service.go                  Service: orchestration (streamer CRUD, config save, sentiment reset, overlay UUID rotation)
     overlay.go                  Overlay: vote pipeline (trigger match → VoteTarget → debounce → RecordVote → WindowSnapshot)
+    ticker.go                   SnapshotTicker: periodic sentiment refresh so old votes visually expire from sliding window
   adapter/
     postgres/                   PostgreSQL adapter
       postgres.go               Connection (pgxpool), tern migrations with advisory lock
@@ -49,7 +50,7 @@ internal/
       config_repository.go      ConfigRepo: read/update with optimistic locking (version field)
       eventsub_repository.go    EventSubRepo: EventSub subscription CRUD
       sqlc/schemas/             Tern migration DDL (streamers, configs, eventsub_subscriptions tables)
-      sqlc/queries/             SQL query definitions for sqlc (12 named queries)
+      sqlc/queries/             SQL query definitions for sqlc (13 named queries)
       sqlcgen/                  Generated Go code from sqlc
     redis/                      Redis adapter
       client.go                 NewClient: connection + ping
@@ -66,7 +67,7 @@ internal/
       middleware.go             Request logging, error handling, CSRF protection
       handlers_auth.go          Login, OAuth callback (exchange + upsert + EventSub subscribe), logout
       handlers_dashboard.go     Dashboard page, save config with validation
-      handlers_api.go           Reset sentiment, rotate overlay UUID
+      handlers_api.go           Reset sentiment, rotate overlay UUID, overlay viewer status
       handlers_overlay.go       Serve overlay page, Centrifuge auth middleware
       handlers_health.go        Health probes (startup, liveness, readiness), version endpoint
       oauth_client.go           twitchOAuthClient interface + HTTP implementation
@@ -86,6 +87,7 @@ internal/
 web/
   templates.go                  Embedded templates (embed.FS)
   templates/
+    landing.html                Marketing landing page with animated demo bar
     login.html                  Login page with Twitch OAuth button
     dashboard.html              Streamer config UI
     overlay.html                OBS overlay (lerp-based rendering, combined tug-of-war + split bars)
@@ -94,7 +96,7 @@ web/
 ## Key Routes
 
 ```
-GET  /                          Redirect to /dashboard
+GET  /                          Landing page (redirects to /dashboard if authenticated)
 GET  /health/startup            Startup probe (2s timeout)
 GET  /health/live               Liveness probe (uptime)
 GET  /health/ready              Readiness probe (Redis, PostgreSQL, 5s timeout)
@@ -106,6 +108,7 @@ GET  /dashboard                 Streamer config page (auth + CSRF)
 POST /dashboard/config          Save config (auth + CSRF)
 POST /api/reset/:uuid           Reset sentiment bar (auth + CSRF)
 POST /api/rotate-overlay-uuid   Generate new overlay URL (auth + CSRF)
+GET  /api/overlay-status        Get overlay viewer count (auth + CSRF)
 GET  /overlay/:uuid             Serve overlay page (public)
 GET  /connection/websocket      Centrifuge WebSocket endpoint (public, auth via overlay UUID query param)
 POST /webhooks/eventsub         Twitch EventSub webhook receiver (HMAC verified)
