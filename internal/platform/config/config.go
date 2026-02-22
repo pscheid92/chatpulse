@@ -31,7 +31,8 @@ type Config struct {
 
 	MaxWebSocketConnections int `env:"MAX_WEBSOCKET_CONNECTIONS" default:"10000"`
 
-	SessionMaxAge time.Duration `env:"SESSION_MAX_AGE" default:"168h"` // 7 days
+	SessionMaxAge   time.Duration `env:"SESSION_MAX_AGE" default:"168h"` // 7 days
+	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" default:"10s"` // Graceful shutdown deadline
 }
 
 func Load() (*Config, error) {
