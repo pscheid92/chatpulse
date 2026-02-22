@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,12 @@ import (
 	"github.com/pscheid92/chatpulse/internal/platform/correlation"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestMain(m *testing.M) {
+	handler := correlation.NewHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(slog.New(handler))
+	os.Exit(m.Run())
+}
 
 const (
 	testWebhookSecret = "test-webhook-secret-1234567890"
