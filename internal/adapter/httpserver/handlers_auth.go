@@ -173,6 +173,8 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 		return apperrors.InternalError("failed to save session", err)
 	}
 
+	slog.InfoContext(ctx, "Streamer logged in", "streamer_id", streamer.ID, "broadcaster_id", result.UserID, "twitch_username", result.Username)
+
 	if err := c.Redirect(http.StatusFound, "/dashboard"); err != nil {
 		return fmt.Errorf("failed to redirect: %w", err)
 	}
@@ -180,6 +182,9 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 }
 
 func (s *Server) handleLogout(c echo.Context) error {
+	ctx := c.Request().Context()
+	streamerID, _ := c.Get("userID").(uuid.UUID)
+
 	session, err := s.sessionStore.Get(c.Request(), sessionName)
 	if err != nil {
 		slog.Error("Failed to get session during logout", "error", err)
@@ -193,6 +198,8 @@ func (s *Server) handleLogout(c echo.Context) error {
 	if err := session.Save(c.Request(), c.Response().Writer); err != nil {
 		return apperrors.InternalError("failed to save logout session", err)
 	}
+
+	slog.InfoContext(ctx, "Streamer logged out", "streamer_id", streamerID)
 
 	if err := c.Redirect(http.StatusFound, "/auth/login"); err != nil {
 		return fmt.Errorf("failed to redirect: %w", err)

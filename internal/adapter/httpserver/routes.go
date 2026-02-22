@@ -9,6 +9,7 @@ import (
 )
 
 func (s *Server) registerRoutes() {
+	s.echo.Use(correlationMiddleware)
 	if s.httpMetrics != nil {
 		s.echo.Use(s.httpMetrics.Middleware())
 	}
