@@ -41,7 +41,7 @@ func (o *Overlay) ProcessMessage(ctx context.Context, broadcasterUserID, chatter
 	debounced, err := o.debounce.IsDebounced(ctx, broadcasterUserID, chatterUserID)
 	if err != nil {
 		// Fail-open: let votes through on debounce errors rather than silently dropping them
-		slog.Warn("Debounce check failed, allowing vote", "broadcaster", broadcasterUserID, "chatter", chatterUserID, "error", err)
+		slog.WarnContext(ctx, "Debounce check failed, allowing vote", "broadcaster", broadcasterUserID, "chatter", chatterUserID, "error", err)
 	}
 	if debounced {
 		return nil, domain.VoteDebounced, target, nil
@@ -49,7 +49,7 @@ func (o *Overlay) ProcessMessage(ctx context.Context, broadcasterUserID, chatter
 
 	snapshot, err := o.sentiment.RecordVote(ctx, broadcasterUserID, target, config.MemorySeconds)
 	if err != nil {
-		slog.Error("RecordVote error", "error", err)
+		slog.ErrorContext(ctx, "RecordVote error", "error", err)
 		return nil, domain.VoteNoMatch, target, fmt.Errorf("record vote failed: %w", err)
 	}
 

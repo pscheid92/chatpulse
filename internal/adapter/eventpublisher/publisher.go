@@ -36,10 +36,10 @@ func (ep *EventPublisher) PublishSentimentUpdated(ctx context.Context, broadcast
 
 func (ep *EventPublisher) PublishConfigChanged(ctx context.Context, broadcasterID string) error {
 	if err := ep.configCache.InvalidateCache(ctx, broadcasterID); err != nil {
-		slog.Warn("Failed to invalidate Redis config cache", "broadcaster_id", broadcasterID, "error", err)
+		slog.WarnContext(ctx, "Failed to invalidate Redis config cache", "broadcaster_id", broadcasterID, "error", err)
 	}
 	if err := redis.PublishConfigInvalidation(ctx, ep.redisClient, broadcasterID); err != nil {
-		slog.Warn("Failed to publish config invalidation", "broadcaster_id", broadcasterID, "error", err)
+		slog.WarnContext(ctx, "Failed to publish config invalidation", "broadcaster_id", broadcasterID, "error", err)
 	}
 	return nil
 }

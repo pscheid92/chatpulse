@@ -3,6 +3,8 @@ package logging
 import (
 	"log/slog"
 	"os"
+
+	"github.com/pscheid92/chatpulse/internal/platform/correlation"
 )
 
 // Logger is the application-wide structured logger instance.
@@ -38,6 +40,8 @@ func InitLogger(level, format string) {
 	} else {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
+
+	handler = correlation.NewHandler(handler)
 
 	Logger = slog.New(handler)
 	slog.SetDefault(Logger)
