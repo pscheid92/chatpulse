@@ -125,8 +125,8 @@ type realtimeInfra struct {
 	presence  *websocket.PresenceChecker
 }
 
-func setupWebSocket(streamerRepo domain.StreamerRepository, redisAddr string, configCache domain.ConfigSource, wsMetrics *metrics.WebSocketMetrics) (realtimeInfra, error) {
-	node, err := websocket.NewNode(streamerRepo, wsMetrics)
+func setupWebSocket(streamerRepo domain.StreamerRepository, redisAddr string, configCache domain.ConfigSource, wsMetrics *metrics.WebSocketMetrics, logLevel string) (realtimeInfra, error) {
+	node, err := websocket.NewNode(streamerRepo, wsMetrics, logLevel)
 	if err != nil {
 		return realtimeInfra{}, fmt.Errorf("create Centrifuge node: %w", err)
 	}
@@ -236,7 +236,7 @@ func main() {
 
 	ovl := app.NewOverlay(rc.configCache, rc.sentiment, rc.debouncer)
 
-	ws, err := setupWebSocket(db.streamerRepo, rc.client.Options().Addr, rc.configCache, wsMetrics)
+	ws, err := setupWebSocket(db.streamerRepo, rc.client.Options().Addr, rc.configCache, wsMetrics, cfg.LogLevel)
 	if err != nil {
 		slog.Error("WebSocket setup failed", "error", err)
 		os.Exit(1)

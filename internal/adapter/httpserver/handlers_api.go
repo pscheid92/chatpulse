@@ -52,6 +52,8 @@ func (s *Server) handleResetSentiment(c echo.Context) error {
 		return apperrors.InternalError("failed to reset sentiment", err).WithField("overlay_uuid", overlayUUID.String())
 	}
 
+	slog.InfoContext(ctx, "Sentiment reset", "streamer_id", streamerID, "overlay_uuid", overlayUUID)
+
 	if err := c.JSON(http.StatusOK, map[string]string{"status": "ok"}); err != nil {
 		return fmt.Errorf("failed to send JSON response: %w", err)
 	}
@@ -96,6 +98,8 @@ func (s *Server) handleRotateOverlayUUID(c echo.Context) error {
 	if err != nil {
 		return apperrors.InternalError("failed to rotate overlay UUID", err).WithField("streamer_id", streamerID.String())
 	}
+
+	slog.InfoContext(ctx, "Overlay UUID rotated", "streamer_id", streamerID, "new_overlay_uuid", newUUID)
 
 	newURL := fmt.Sprintf("%s/overlay/%s", s.getBaseURL(c), newUUID)
 	response := map[string]string{

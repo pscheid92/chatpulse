@@ -11,8 +11,8 @@ import (
 	"github.com/pscheid92/uuid"
 )
 
-func NewNode(userRepo domain.StreamerRepository, wsMetrics *metrics.WebSocketMetrics) (*centrifuge.Node, error) {
-	conf := centrifuge.Config{LogLevel: centrifuge.LogLevelInfo, LogHandler: slogHandler}
+func NewNode(userRepo domain.StreamerRepository, wsMetrics *metrics.WebSocketMetrics, logLevel string) (*centrifuge.Node, error) {
+	conf := centrifuge.Config{LogLevel: parseCentrifugeLogLevel(logLevel), LogHandler: slogHandler}
 	node, err := centrifuge.New(conf)
 	if err != nil {
 		return nil, fmt.Errorf("create centrifuge node: %w", err)
@@ -120,6 +120,19 @@ func slogHandler(entry centrifuge.LogEntry) {
 		slog.Debug(entry.Message, attrs...)
 	case centrifuge.LogLevelNone:
 		// EMPTY
+	}
+}
+
+func parseCentrifugeLogLevel(level string) centrifuge.LogLevel {
+	switch level {
+	case "debug":
+		return centrifuge.LogLevelDebug
+	case "warn":
+		return centrifuge.LogLevelWarn
+	case "error":
+		return centrifuge.LogLevelError
+	default:
+		return centrifuge.LogLevelInfo
 	}
 }
 

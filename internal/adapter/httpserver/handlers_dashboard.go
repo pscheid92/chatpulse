@@ -3,6 +3,7 @@ package httpserver
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -169,6 +170,8 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 			WithField("streamer_id", streamerID.String()).
 			WithField("broadcaster_id", streamer.TwitchUserID)
 	}
+
+	slog.InfoContext(ctx, "Config updated", "streamer_id", streamerID, "broadcaster_id", streamer.TwitchUserID)
 
 	// AJAX requests get a 204; browser form submissions get a redirect
 	if c.Request().Header.Get("X-Requested-With") == "XMLHttpRequest" {

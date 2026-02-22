@@ -7,8 +7,17 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/pscheid92/chatpulse/internal/platform/correlation"
 	apperrors "github.com/pscheid92/chatpulse/internal/platform/errors"
 )
+
+func correlationMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		ctx := correlation.WithID(c.Request().Context(), correlation.NewID())
+		c.SetRequest(c.Request().WithContext(ctx))
+		return next(c)
+	}
+}
 
 func ErrorHandlingMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
