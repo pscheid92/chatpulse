@@ -35,7 +35,6 @@ const (
 	dbConnectTimeout     = 30 * time.Second
 	migrationTimeout     = 60 * time.Second
 	eventsubSetupTimeout = 30 * time.Second
-	shutdownTimeout      = 10 * time.Second
 	configCacheTTL       = 10 * time.Second
 	configEvictInterval  = 1 * time.Minute
 )
@@ -168,7 +167,7 @@ func initWebhookHandler(cfg *config.Config, ovl *app.Overlay, presence twitch.Vi
 	return twitch.NewWebhookHandler(cfg.WebhookSecret, ovl, presence, publisher, onVoteApplied, voteMetrics)
 }
 
-func runGracefulShutdown(srv *httpserver.Server, node *centrifuge.Node) <-chan struct{} {
+func runGracefulShutdown(srv *httpserver.Server, node *centrifuge.Node, timeout time.Duration) <-chan struct{} {
 	done := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -177,7 +176,7 @@ func runGracefulShutdown(srv *httpserver.Server, node *centrifuge.Node) <-chan s
 		<-sigChan
 		slog.Info("Shutdown signal received, cleaning up...")
 
-		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		if err := srv.Shutdown(ctx); err != nil {
@@ -273,7 +272,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	done := runGracefulShutdown(srv, ws.node)
+	done := runGracefulShutdown(srv, ws.node, cfg.ShutdownTimeout)
 
 	if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("Server error", "error", err)
