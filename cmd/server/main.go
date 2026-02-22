@@ -168,7 +168,7 @@ func initWebhookHandler(cfg *config.Config, ovl *app.Overlay, presence twitch.Vi
 	return twitch.NewWebhookHandler(cfg.WebhookSecret, ovl, presence, publisher, onVoteApplied, voteMetrics)
 }
 
-func runGracefulShutdown(srv *httpserver.Server, node *centrifuge.Node, conduitMgr *twitch.EventSubManager) <-chan struct{} {
+func runGracefulShutdown(srv *httpserver.Server, node *centrifuge.Node) <-chan struct{} {
 	done := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -185,9 +185,6 @@ func runGracefulShutdown(srv *httpserver.Server, node *centrifuge.Node, conduitM
 		}
 		if err := node.Shutdown(ctx); err != nil {
 			slog.Error("Centrifuge node shutdown error", "error", err)
-		}
-		if err := conduitMgr.Cleanup(ctx); err != nil {
-			slog.Error("Failed to clean up conduit", "error", err)
 		}
 
 		close(done)
@@ -276,7 +273,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	done := runGracefulShutdown(srv, ws.node, eventsubMgr)
+	done := runGracefulShutdown(srv, ws.node)
 
 	if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("Server error", "error", err)
