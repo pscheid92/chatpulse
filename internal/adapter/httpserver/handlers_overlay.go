@@ -12,8 +12,26 @@ import (
 )
 
 func (s *Server) registerOverlayRoutes() {
-	s.echo.GET("/overlay/:uuid", s.handleOverlay)
-	s.echo.GET("/connection/websocket", echo.WrapHandler(s.centrifugeAuthMiddleware(s.websocketHandler)))
+	overlay := s.echo.Group("", overlaySecurityHeaders())
+	overlay.GET("/overlay/:uuid", s.handleOverlay)
+	overlay.GET("/connection/websocket", echo.WrapHandler(s.centrifugeAuthMiddleware(s.websocketHandler)))
+}
+
+func overlaySecurityHeaders() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			h := c.Response().Header()
+			h.Del("X-Frame-Options")
+			h.Set("Content-Security-Policy",
+				"default-src 'self'; "+
+					"script-src 'self' 'unsafe-inline' https://unpkg.com; "+
+					"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
+					"font-src 'self' https://fonts.gstatic.com; "+
+					"connect-src 'self' wss: ws:; "+
+					"frame-ancestors *")
+			return next(c)
+		}
+	}
 }
 
 func (s *Server) handleOverlay(c echo.Context) error {

@@ -12,6 +12,19 @@ func (s *Server) registerRoutes() {
 	s.echo.Use(s.setupRequestLoggerMiddleware())
 	s.echo.Use(middleware.Recover())
 	s.echo.Use(ErrorHandlingMiddleware())
+	s.echo.Use(middleware.SecureWithConfig(middleware.SecureConfig{
+		XSSProtection:      "",
+		ContentTypeNosniff: "nosniff",
+		XFrameOptions:      "DENY",
+		HSTSMaxAge:         63072000, // 2 years; only sent over HTTPS
+		HSTSPreloadEnabled: true,
+		ContentSecurityPolicy: "default-src 'self'; " +
+			"script-src 'self' 'unsafe-inline'; " +
+			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+			"font-src 'self' https://fonts.gstatic.com; " +
+			"frame-ancestors 'none'",
+		ReferrerPolicy: "strict-origin-when-cross-origin",
+	}))
 
 	csrfMiddleware := s.setupCSRFMiddleware()
 
