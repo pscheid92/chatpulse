@@ -232,7 +232,7 @@ func (m *EventSubManager) attemptSubscribe(ctx context.Context, streamerID uuid.
 }
 
 func (m *EventSubManager) findExistingSubscription(ctx context.Context, broadcasterUserID string) (*helix.EventSubSubscription, error) {
-	params := helix.GetEventSubSubscriptionsParams{Type: "channel.chat.message", UserID: m.botUserID}
+	params := helix.GetEventSubSubscriptionsParams{Type: "channel.chat.message"}
 
 	for {
 		resp, err := m.client.GetEventSubSubscriptions(ctx, &params)
@@ -241,7 +241,7 @@ func (m *EventSubManager) findExistingSubscription(ctx context.Context, broadcas
 		}
 
 		for _, sub := range resp.Data {
-			if sub.Condition["broadcaster_user_id"] == broadcasterUserID {
+			if sub.Condition["broadcaster_user_id"] == broadcasterUserID && sub.Condition["user_id"] == m.botUserID {
 				return &sub, nil
 			}
 		}
