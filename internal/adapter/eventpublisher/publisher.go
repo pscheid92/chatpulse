@@ -14,16 +14,20 @@ import (
 // EventPublisher implements domain.EventPublisher by composing the websocket
 // publisher and Redis cache invalidation.
 type EventPublisher struct {
-	sentiment   *websocket.Publisher
-	configCache *redis.ConfigCacheRepo
-	redisClient *goredis.Client
+	sentiment      *websocket.Publisher
+	configCache    *redis.ConfigCacheRepo
+	redisClient    *goredis.Client
+	sentimentStore domain.SentimentStore
+	configSource   domain.ConfigSource
 }
 
-func New(sentiment *websocket.Publisher, configCache *redis.ConfigCacheRepo, redisClient *goredis.Client) *EventPublisher {
+func New(sentiment *websocket.Publisher, configCache *redis.ConfigCacheRepo, redisClient *goredis.Client, sentimentStore domain.SentimentStore, configSource domain.ConfigSource) *EventPublisher {
 	return &EventPublisher{
-		sentiment:   sentiment,
-		configCache: configCache,
-		redisClient: redisClient,
+		sentiment:      sentiment,
+		configCache:    configCache,
+		redisClient:    redisClient,
+		sentimentStore: sentimentStore,
+		configSource:   configSource,
 	}
 }
 
@@ -41,5 +45,21 @@ func (ep *EventPublisher) PublishConfigChanged(ctx context.Context, broadcasterI
 	if err := redis.PublishConfigInvalidation(ctx, ep.redisClient, broadcasterID); err != nil {
 		slog.WarnContext(ctx, "Failed to publish config invalidation", "broadcaster_id", broadcasterID, "error", err)
 	}
+
+	// Push current state to connected overlays so config changes appear immediately.
+	config, err := ep.configSource.GetConfigByBroadcaster(ctx, broadcasterID)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to fetch config for overlay push", "broadcaster_id", broadcasterID, "error", err)
+		return nil
+	}
+	snapshot, err := ep.sentimentStore.GetSnapshot(ctx, broadcasterID, config.MemorySeconds)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to get sentiment snapshot for overlay push", "broadcaster_id", broadcasterID, "error", err)
+		return nil
+	}
+	if err := ep.sentiment.PublishSentiment(ctx, broadcasterID, snapshot); err != nil {
+		slog.WarnContext(ctx, "Failed to push config update to overlay", "broadcaster_id", broadcasterID, "error", err)
+	}
+
 	return nil
 }

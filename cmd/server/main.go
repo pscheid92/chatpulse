@@ -235,7 +235,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	publisher := eventpublisher.New(ws.publisher, rc.configCache, rc.client)
+	publisher := eventpublisher.New(ws.publisher, rc.configCache, rc.client, rc.sentiment, rc.configCache)
 
 	ticker := app.NewSnapshotTicker(rc.sentiment, rc.configCache, publisher)
 	tickerCtx, cancelTicker := context.WithCancel(context.Background())
