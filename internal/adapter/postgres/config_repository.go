@@ -36,6 +36,7 @@ func (r *ConfigRepo) GetByStreamerID(ctx context.Context, streamerID uuid.UUID) 
 		AgainstTrigger: row.AgainstTrigger,
 		AgainstLabel:   row.AgainstLabel,
 		DisplayMode:    domain.ParseDisplayMode(row.DisplayMode),
+		Theme:          domain.ParseTheme(row.Theme),
 	}
 
 	overlayConfigWithVersion := domain.OverlayConfigWithVersion{
@@ -62,6 +63,7 @@ func (r *ConfigRepo) GetByBroadcasterID(ctx context.Context, broadcasterID strin
 		AgainstTrigger: row.AgainstTrigger,
 		AgainstLabel:   row.AgainstLabel,
 		DisplayMode:    domain.ParseDisplayMode(row.DisplayMode),
+		Theme:          domain.ParseTheme(row.Theme),
 	}
 
 	overlayConfigWithVersion := domain.OverlayConfigWithVersion{
@@ -80,6 +82,7 @@ func (r *ConfigRepo) Update(ctx context.Context, streamerID uuid.UUID, config do
 		ForLabel:       config.ForLabel,
 		MemorySeconds:  int32(config.MemorySeconds),
 		DisplayMode:    string(config.DisplayMode),
+		Theme:          string(config.Theme),
 		Version:        int32(version),
 		StreamerID:     streamerID,
 	})

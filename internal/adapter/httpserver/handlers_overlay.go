@@ -67,6 +67,7 @@ func (s *Server) handleOverlay(c echo.Context) error {
 		"ForLabel":     config.ForLabel,
 		"AgainstLabel": config.AgainstLabel,
 		"DisplayMode":  string(config.DisplayMode),
+		"Theme":        string(config.Theme),
 		"WSHost":       c.Request().Host,
 		"SessionUUID":  overlayUUIDStr,
 	}

@@ -86,6 +86,7 @@ func TestCSRFProtection_ConfigSave(t *testing.T) {
 		formData.Set("for_label", "For")
 		formData.Set("memory_seconds", "30")
 		formData.Set("display_mode", "combined")
+		formData.Set("theme", "dark")
 		formData.Set(csrfTokenCookieName, csrfCookie.Value)
 
 		postReq := httptest.NewRequest(http.MethodPost, "/dashboard/config", strings.NewReader(formData.Encode()))

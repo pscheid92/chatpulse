@@ -19,6 +19,7 @@ type sessionUpdate struct {
 	AgainstRatio float64 `json:"againstRatio"`
 	TotalVotes   int     `json:"totalVotes"`
 	DisplayMode  string  `json:"displayMode"`
+	Theme        string  `json:"theme"`
 	Status       string  `json:"status"`
 }
 
@@ -37,13 +38,16 @@ func (p *Publisher) PublishSentiment(ctx context.Context, broadcasterID string, 
 	defer cancel()
 
 	var displayMode string
+	var theme string
 
 	config, err := p.configSource.GetConfigByBroadcaster(ctx, broadcasterID)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to get config for publish, using defaults", "broadcaster_id", broadcasterID, "error", err)
 		displayMode = string(domain.DisplayModeCombined)
+		theme = string(domain.ThemeDark)
 	} else {
 		displayMode = string(config.DisplayMode)
+		theme = string(config.Theme)
 	}
 
 	update := sessionUpdate{
@@ -51,6 +55,7 @@ func (p *Publisher) PublishSentiment(ctx context.Context, broadcasterID string, 
 		AgainstRatio: snapshot.AgainstRatio,
 		TotalVotes:   snapshot.TotalVotes,
 		DisplayMode:  displayMode,
+		Theme:        theme,
 		Status:       "active",
 	}
 	data, err := json.Marshal(update)

@@ -206,6 +206,59 @@
             0%, 100% { border-color: rgba(255, 255, 255, 0.08); }
             50% { border-color: rgba(255, 180, 60, 0.35); }
         }
+
+        /* ── Light theme ── */
+        body.light-theme .bar-pill {
+            background: rgb(240, 240, 245);
+            border-color: rgba(0, 0, 0, 0.12);
+            box-shadow:
+                0 4px 20px rgba(0, 0, 0, 0.12),
+                inset 0 1px 0 rgba(255, 255, 255, 0.8);
+        }
+
+        body.light-theme .bar-pill .bar-label {
+            color: rgba(0, 0, 0, 0.85);
+            text-shadow: none;
+        }
+
+        body.light-theme .bar-pill .bar-track {
+            background: rgba(0, 0, 0, 0.1);
+        }
+
+        body.light-theme .bar-pill .bar-ball {
+            border-color: rgba(0, 0, 0, 0.25);
+            box-shadow: 0 0 12px rgba(0, 212, 255, 0.3), 0 0 6px rgba(145, 71, 255, 0.2);
+        }
+
+        body.light-theme .bar-pill.positive .bar-label { color: rgba(0, 150, 200, 0.95); }
+        body.light-theme .bar-pill.positive .bar-fill { box-shadow: 0 0 10px rgba(0, 212, 255, 0.25); }
+        body.light-theme .bar-pill.positive .bar-fill::after {
+            border-color: rgba(0, 0, 0, 0.25);
+            box-shadow: 0 0 8px rgba(0, 212, 255, 0.3);
+        }
+
+        body.light-theme .bar-pill.negative .bar-label { color: rgba(200, 30, 90, 0.95); }
+        body.light-theme .bar-pill.negative .bar-fill { box-shadow: 0 0 10px rgba(255, 45, 120, 0.25); }
+        body.light-theme .bar-pill.negative .bar-fill::after {
+            border-color: rgba(0, 0, 0, 0.25);
+            box-shadow: 0 0 8px rgba(255, 45, 120, 0.3);
+        }
+
+        body.light-theme .bar-pill.combined .bar-label-right { color: rgba(0, 150, 200, 0.95); }
+        body.light-theme .bar-pill.combined .bar-label-left { color: rgba(200, 30, 90, 0.95); }
+        body.light-theme .bar-pill.combined .bar-center-mark { background: rgba(0, 0, 0, 0.1); }
+
+        body.light-theme .status-indicator { color: rgba(0, 0, 0, 0.4); }
+
+        @keyframes borderWarnLight {
+            0%, 100% { border-color: rgba(0, 0, 0, 0.08); }
+            50% { border-color: rgba(200, 140, 40, 0.4); }
+        }
+
+        body.light-theme .bar-pill.degraded,
+        body.light-theme .split-view.degraded .bar-pill {
+            animation: borderWarnLight 2s ease-in-out infinite;
+        }
     </style>
 </head>
 <body>
@@ -251,10 +304,12 @@
         let targetForRatio = 0;
         let targetAgainstRatio = 0;
         let displayMode = '{{.DisplayMode}}' || 'combined';
+        let theme = '{{.Theme}}' || 'dark';
         let animFrameId = null;
 
-        // Set initial display mode
+        // Set initial display mode and theme
         setDisplayMode(displayMode);
+        setTheme(theme);
 
         // Build Centrifuge WebSocket URL
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -303,6 +358,10 @@
 
                 if (data.displayMode) {
                     setDisplayMode(data.displayMode);
+                }
+
+                if (data.theme) {
+                    setTheme(data.theme);
                 }
 
                 startRenderLoop();
@@ -372,6 +431,15 @@
             } else {
                 combinedView.style.display = '';
                 splitView.style.display = 'none';
+            }
+        }
+
+        function setTheme(t) {
+            theme = t;
+            if (t === 'light') {
+                document.body.classList.add('light-theme');
+            } else {
+                document.body.classList.remove('light-theme');
             }
         }
 

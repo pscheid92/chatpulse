@@ -21,6 +21,7 @@ type Config struct {
 	AgainstLabel   string
 	MemorySeconds  int32
 	DisplayMode    string
+	Theme          string
 }
 
 type EventsubSubscription struct {

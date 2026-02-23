@@ -21,6 +21,7 @@ type SaveConfigRequest struct {
 	MemorySeconds int
 
 	DisplayMode string
+	Theme       string
 }
 
 type Service struct {
@@ -98,6 +99,7 @@ func (s *Service) SaveConfig(ctx context.Context, req SaveConfigRequest) error {
 		AgainstLabel:   req.AgainstLabel,
 		MemorySeconds:  req.MemorySeconds,
 		DisplayMode:    domain.ParseDisplayMode(req.DisplayMode),
+		Theme:          domain.ParseTheme(req.Theme),
 	}
 
 	if err := s.configs.Update(ctx, req.StreamerID, overlayConfig, current.Version+1); err != nil {

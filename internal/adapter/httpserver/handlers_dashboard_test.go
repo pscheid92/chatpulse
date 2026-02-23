@@ -27,6 +27,7 @@ func TestHandleSaveConfig_BadMemorySeconds(t *testing.T) {
 	form.Set("for_label", "Right")
 	form.Set("memory_seconds", "not-a-number")
 	form.Set("display_mode", "combined")
+	form.Set("theme", "dark")
 
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -49,6 +50,7 @@ func TestHandleSaveConfig_MemorySecondsTooLow(t *testing.T) {
 	form.Set("for_label", "Right")
 	form.Set("memory_seconds", "2")
 	form.Set("display_mode", "combined")
+	form.Set("theme", "dark")
 
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -71,6 +73,7 @@ func TestHandleSaveConfig_MemorySecondsTooHigh(t *testing.T) {
 	form.Set("for_label", "Right")
 	form.Set("memory_seconds", "999")
 	form.Set("display_mode", "combined")
+	form.Set("theme", "dark")
 
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -93,6 +96,7 @@ func TestHandleSaveConfig_ValidationError(t *testing.T) {
 	form.Set("for_label", "Right")
 	form.Set("memory_seconds", "30")
 	form.Set("display_mode", "combined")
+	form.Set("theme", "dark")
 
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -115,6 +119,7 @@ func TestHandleSaveConfig_InvalidDisplayMode(t *testing.T) {
 	form.Set("for_label", "Right")
 	form.Set("memory_seconds", "30")
 	form.Set("display_mode", "invalid")
+	form.Set("theme", "dark")
 
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -146,6 +151,7 @@ func TestHandleSaveConfig_Success(t *testing.T) {
 	form.Set("for_label", "Happy")
 	form.Set("memory_seconds", "45")
 	form.Set("display_mode", "split")
+	form.Set("theme", "light")
 
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

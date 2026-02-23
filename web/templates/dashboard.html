@@ -593,6 +593,20 @@
                         </div>
 
                         <div class="form-group">
+                            <label>Theme</label>
+                            <div class="radio-group">
+                                <div class="radio-option">
+                                    <input type="radio" name="theme" id="theme_dark" value="dark" {{if eq .Theme "dark"}}checked{{end}}>
+                                    <label for="theme_dark">Dark</label>
+                                </div>
+                                <div class="radio-option">
+                                    <input type="radio" name="theme" id="theme_light" value="light" {{if eq .Theme "light"}}checked{{end}}>
+                                    <label for="theme_light">Light</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
                             <label for="memory_seconds">Memory</label>
                             <div class="slider-row">
                                 <input type="range" id="memory_seconds" name="memory_seconds" min="5" max="125" step="5"

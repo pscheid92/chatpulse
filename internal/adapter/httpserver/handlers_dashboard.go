@@ -28,7 +28,7 @@ func (s *Server) registerDashboardRoutes(csrfMiddleware, rateLimiter echo.Middle
 	s.echo.POST("/dashboard/config", s.handleSaveConfig, rateLimiter, s.requireAuth, csrfMiddleware)
 }
 
-func validateConfig(forTrigger, forLabel, againstTrigger, againstLabel string, memorySeconds int, displayMode string) error {
+func validateConfig(forTrigger, forLabel, againstTrigger, againstLabel string, memorySeconds int, displayMode, theme string) error {
 	// Trim whitespace before validation
 	forTrigger = strings.TrimSpace(forTrigger)
 	againstTrigger = strings.TrimSpace(againstTrigger)
@@ -72,6 +72,11 @@ func validateConfig(forTrigger, forLabel, againstTrigger, againstLabel string, m
 		return errors.New("display mode must be 'combined' or 'split'")
 	}
 
+	// Check theme
+	if theme != "dark" && theme != "light" {
+		return errors.New("theme must be 'dark' or 'light'")
+	}
+
 	return nil
 }
 
@@ -111,6 +116,7 @@ func (s *Server) handleDashboard(c echo.Context) error {
 		"ForLabel":       config.ForLabel,
 		"MemorySeconds":  config.MemorySeconds,
 		"DisplayMode":    string(config.DisplayMode),
+		"Theme":          string(config.Theme),
 		"CSRFToken":      c.Get("csrf"),
 	}
 
@@ -131,20 +137,22 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 	againstTrigger := strings.TrimSpace(c.FormValue("against_trigger"))
 	againstLabel := strings.TrimSpace(c.FormValue("against_label"))
 	displayMode := strings.TrimSpace(c.FormValue("display_mode"))
+	theme := strings.TrimSpace(c.FormValue("theme"))
 
 	memorySeconds, err := strconv.Atoi(c.FormValue("memory_seconds"))
 	if err != nil {
 		return apperrors.ValidationError("invalid memory seconds format").WithField("memory_seconds", c.FormValue("memory_seconds"))
 	}
 
-	if err := validateConfig(forTrigger, forLabel, againstTrigger, againstLabel, memorySeconds, displayMode); err != nil {
+	if err := validateConfig(forTrigger, forLabel, againstTrigger, againstLabel, memorySeconds, displayMode, theme); err != nil {
 		return apperrors.ValidationError(err.Error()).
 			WithField("for_trigger", forTrigger).
 			WithField("against_trigger", againstTrigger).
 			WithField("against_label", againstLabel).
 			WithField("for_label", forLabel).
 			WithField("memory_seconds", memorySeconds).
-			WithField("display_mode", displayMode)
+			WithField("display_mode", displayMode).
+			WithField("theme", theme)
 	}
 
 	streamer, err := s.app.GetStreamerByID(ctx, streamerID)
@@ -163,6 +171,7 @@ func (s *Server) handleSaveConfig(c echo.Context) error {
 		ForLabel:       forLabel,
 		MemorySeconds:  memorySeconds,
 		DisplayMode:    displayMode,
+		Theme:          theme,
 		BroadcasterID:  streamer.TwitchUserID,
 	}
 	if err := s.app.SaveConfig(ctx, request); err != nil {

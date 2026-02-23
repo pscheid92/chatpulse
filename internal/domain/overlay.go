@@ -20,6 +20,24 @@ func ParseDisplayMode(s string) DisplayMode {
 	}
 }
 
+// Theme controls the overlay's visual appearance.
+type Theme string
+
+const (
+	ThemeDark  Theme = "dark"
+	ThemeLight Theme = "light"
+)
+
+// ParseTheme converts a string to a Theme, defaulting to dark.
+func ParseTheme(s string) Theme {
+	switch s {
+	case "light":
+		return ThemeLight
+	default:
+		return ThemeDark
+	}
+}
+
 // VoteTarget indicates which counter a vote applies to.
 type VoteTarget int
 

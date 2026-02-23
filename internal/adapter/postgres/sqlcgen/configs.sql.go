@@ -22,7 +22,8 @@ SELECT c.streamer_id,
        c.against_trigger,
        c.against_label,
        c.memory_seconds,
-       c.display_mode
+       c.display_mode,
+       c.theme
 FROM configs c
 JOIN streamers s ON c.streamer_id = s.id
 WHERE s.twitch_user_id = $1
@@ -42,6 +43,7 @@ func (q *Queries) GetConfigByBroadcasterID(ctx context.Context, twitchUserID str
 		&i.AgainstLabel,
 		&i.MemorySeconds,
 		&i.DisplayMode,
+		&i.Theme,
 	)
 	return i, err
 }
@@ -56,7 +58,8 @@ SELECT streamer_id,
        against_trigger,
        against_label,
        memory_seconds,
-       display_mode
+       display_mode,
+       theme
 FROM configs
 WHERE streamer_id = $1
 `
@@ -75,6 +78,7 @@ func (q *Queries) GetConfigByStreamerID(ctx context.Context, streamerID uuid.UUI
 		&i.AgainstLabel,
 		&i.MemorySeconds,
 		&i.DisplayMode,
+		&i.Theme,
 	)
 	return i, err
 }
@@ -87,9 +91,10 @@ SET for_trigger     = $1,
     against_label   = $4,
     memory_seconds  = $5,
     display_mode    = $6,
-    version         = $7,
+    theme           = $7,
+    version         = $8,
     updated_at      = NOW()
-WHERE streamer_id = $8
+WHERE streamer_id = $9
 `
 
 type UpdateConfigParams struct {
@@ -99,6 +104,7 @@ type UpdateConfigParams struct {
 	AgainstLabel   string
 	MemorySeconds  int32
 	DisplayMode    string
+	Theme          string
 	Version        int32
 	StreamerID     uuid.UUID
 }
@@ -111,6 +117,7 @@ func (q *Queries) UpdateConfig(ctx context.Context, arg UpdateConfigParams) (pgc
 		arg.AgainstLabel,
 		arg.MemorySeconds,
 		arg.DisplayMode,
+		arg.Theme,
 		arg.Version,
 		arg.StreamerID,
 	)

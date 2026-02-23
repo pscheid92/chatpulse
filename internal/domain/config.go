@@ -15,6 +15,7 @@ type OverlayConfig struct {
 	AgainstLabel   string
 
 	DisplayMode DisplayMode
+	Theme       Theme
 }
 
 // OverlayConfigWithVersion wraps OverlayConfig with an optimistic-locking version.
