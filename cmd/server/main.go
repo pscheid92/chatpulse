@@ -25,7 +25,6 @@ import (
 	"github.com/pscheid92/chatpulse/internal/app"
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/chatpulse/internal/platform/config"
-	"github.com/pscheid92/chatpulse/internal/platform/crypto"
 	"github.com/pscheid92/chatpulse/internal/platform/logging"
 	"github.com/pscheid92/chatpulse/internal/platform/version"
 	goredis "github.com/redis/go-redis/v9"
@@ -63,15 +62,9 @@ func setupDatabase(cfg *config.Config) (database, error) {
 		return database{}, fmt.Errorf("run migrations: %w", err)
 	}
 
-	cryptoSvc, err := crypto.NewAesGcmCryptoService(cfg.TokenEncryptionKey)
-	if err != nil {
-		pool.Close()
-		return database{}, fmt.Errorf("create crypto service: %w", err)
-	}
-
 	return database{
 		pool:         pool,
-		streamerRepo: postgres.NewStreamerRepo(pool, cryptoSvc),
+		streamerRepo: postgres.NewStreamerRepo(pool),
 		configRepo:   postgres.NewConfigRepo(pool),
 		eventSubRepo: postgres.NewEventSubRepo(pool),
 		healthChecks: []httpserver.HealthCheck{

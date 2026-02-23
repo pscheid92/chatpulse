@@ -3,10 +3,8 @@ package postgres
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/pscheid92/chatpulse/internal/domain"
-	"github.com/pscheid92/chatpulse/internal/platform/crypto/cryptotest"
 	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,13 +12,12 @@ import (
 
 func TestGetConfig(t *testing.T) {
 	pool := setupTestDB(t)
-	userRepo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	userRepo := NewStreamerRepo(pool)
 	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
 	// Insert user (creates default config)
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	user, err := userRepo.Upsert(ctx, "12345", "testuser", "access", "refresh", expiry)
+	user, err := userRepo.Upsert(ctx, "12345", "testuser")
 	require.NoError(t, err)
 
 	// Get config
@@ -66,13 +63,12 @@ func TestUpdateConfig_NotFound(t *testing.T) {
 
 func TestUpdateConfig(t *testing.T) {
 	pool := setupTestDB(t)
-	userRepo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	userRepo := NewStreamerRepo(pool)
 	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
 	// Insert user
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	user, err := userRepo.Upsert(ctx, "12345", "testuser", "access", "refresh", expiry)
+	user, err := userRepo.Upsert(ctx, "12345", "testuser")
 	require.NoError(t, err)
 
 	// Update config

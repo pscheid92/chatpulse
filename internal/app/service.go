@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/uuid"
@@ -67,8 +66,8 @@ func (s *Service) GetConfig(ctx context.Context, streamerID uuid.UUID) (*domain.
 	return config, nil
 }
 
-func (s *Service) UpsertStreamer(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error) {
-	streamer, err := s.users.Upsert(ctx, twitchUserID, twitchUsername, accessToken, refreshToken, tokenExpiry)
+func (s *Service) UpsertStreamer(ctx context.Context, twitchUserID, twitchUsername string) (*domain.Streamer, error) {
+	streamer, err := s.users.Upsert(ctx, twitchUserID, twitchUsername)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert streamer: %w", err)
 	}

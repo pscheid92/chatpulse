@@ -7,7 +7,6 @@ package sqlcgen
 
 import (
 	"context"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pscheid92/uuid"
@@ -29,22 +28,9 @@ JOIN streamers s ON c.streamer_id = s.id
 WHERE s.twitch_user_id = $1
 `
 
-type GetConfigByBroadcasterIDRow struct {
-	StreamerID     uuid.UUID
-	Version        int32
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	ForTrigger     string
-	ForLabel       string
-	AgainstTrigger string
-	AgainstLabel   string
-	MemorySeconds  int32
-	DisplayMode    string
-}
-
-func (q *Queries) GetConfigByBroadcasterID(ctx context.Context, twitchUserID string) (GetConfigByBroadcasterIDRow, error) {
+func (q *Queries) GetConfigByBroadcasterID(ctx context.Context, twitchUserID string) (Config, error) {
 	row := q.db.QueryRow(ctx, getConfigByBroadcasterID, twitchUserID)
-	var i GetConfigByBroadcasterIDRow
+	var i Config
 	err := row.Scan(
 		&i.StreamerID,
 		&i.Version,
@@ -75,22 +61,9 @@ FROM configs
 WHERE streamer_id = $1
 `
 
-type GetConfigByStreamerIDRow struct {
-	StreamerID     uuid.UUID
-	Version        int32
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	ForTrigger     string
-	ForLabel       string
-	AgainstTrigger string
-	AgainstLabel   string
-	MemorySeconds  int32
-	DisplayMode    string
-}
-
-func (q *Queries) GetConfigByStreamerID(ctx context.Context, streamerID uuid.UUID) (GetConfigByStreamerIDRow, error) {
+func (q *Queries) GetConfigByStreamerID(ctx context.Context, streamerID uuid.UUID) (Config, error) {
 	row := q.db.QueryRow(ctx, getConfigByStreamerID, streamerID)
-	var i GetConfigByStreamerIDRow
+	var i Config
 	err := row.Scan(
 		&i.StreamerID,
 		&i.Version,

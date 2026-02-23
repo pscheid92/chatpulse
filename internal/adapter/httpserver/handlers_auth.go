@@ -29,7 +29,10 @@ func (s *Server) registerAuthRoutes(csrfMiddleware, rateLimiter echo.MiddlewareF
 
 func (s *Server) handleLanding(c echo.Context) error {
 	if s.isAuthenticated(c) {
-		return c.Redirect(http.StatusFound, "/dashboard")
+		if err := c.Redirect(http.StatusFound, "/dashboard"); err != nil {
+			return fmt.Errorf("failed to redirect: %w", err)
+		}
+		return nil
 	}
 	return s.renderTemplate(c, "landing.html", nil)
 }
@@ -98,7 +101,10 @@ func generateOAuthState() (string, error) {
 func (s *Server) handleLoginPage(c echo.Context) error {
 	// Redirect already-authenticated users to dashboard (avoids Twitch's redirect page).
 	if s.isAuthenticated(c) {
-		return c.Redirect(http.StatusFound, "/dashboard")
+		if err := c.Redirect(http.StatusFound, "/dashboard"); err != nil {
+			return fmt.Errorf("failed to redirect: %w", err)
+		}
+		return nil
 	}
 
 	state, err := generateOAuthState()
@@ -157,8 +163,7 @@ func (s *Server) handleOAuthCallback(c echo.Context) error {
 		return apperrors.ExternalError("failed to authenticate with Twitch", err)
 	}
 
-	tokenExpiry := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
-	streamer, err := s.app.UpsertStreamer(ctx, result.UserID, result.Username, result.AccessToken, result.RefreshToken, tokenExpiry)
+	streamer, err := s.app.UpsertStreamer(ctx, result.UserID, result.Username)
 	if err != nil {
 		return apperrors.InternalError("failed to save streamer", err).WithField("twitch_user_id", result.UserID)
 	}

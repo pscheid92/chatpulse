@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,7 +20,6 @@ type Config struct {
 	TwitchClientSecret string `env:"TWITCH_CLIENT_SECRET"`
 	TwitchRedirectURI  string `env:"TWITCH_REDIRECT_URI"`
 	SessionSecret      string `env:"SESSION_SECRET"`
-	TokenEncryptionKey string `env:"TOKEN_ENCRYPTION_KEY"`
 	WebhookCallbackURL string `env:"WEBHOOK_CALLBACK_URL"`
 	WebhookSecret      string `env:"WEBHOOK_SECRET"`
 	BotUserID          string `env:"BOT_USER_ID"`
@@ -63,7 +61,6 @@ func validate(cfg *Config) error {
 		"WEBHOOK_CALLBACK_URL": cfg.WebhookCallbackURL,
 		"WEBHOOK_SECRET":       cfg.WebhookSecret,
 		"BOT_USER_ID":          cfg.BotUserID,
-		"TOKEN_ENCRYPTION_KEY": cfg.TokenEncryptionKey,
 	}
 	for name, value := range required {
 		if value == "" {
@@ -73,14 +70,6 @@ func validate(cfg *Config) error {
 
 	if len(cfg.WebhookSecret) < 10 || len(cfg.WebhookSecret) > 100 {
 		return errors.New("WEBHOOK_SECRET must be between 10 and 100 characters")
-	}
-
-	keyBytes, err := hex.DecodeString(cfg.TokenEncryptionKey)
-	if err != nil {
-		return fmt.Errorf("TOKEN_ENCRYPTION_KEY must be valid hex: %w", err)
-	}
-	if len(keyBytes) != 32 {
-		return fmt.Errorf("TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes), got %d bytes", len(keyBytes))
 	}
 
 	if cfg.AppEnv == "production" {

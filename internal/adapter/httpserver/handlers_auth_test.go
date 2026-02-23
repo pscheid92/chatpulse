@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/pscheid92/chatpulse/internal/domain"
@@ -259,7 +258,7 @@ func setupOAuthCallbackRequest(t *testing.T, srv *Server, code, state string) (e
 func TestHandleOAuthCallback_Success(t *testing.T) {
 	userID := uuid.NewV4()
 	app := &mockAppService{
-		upsertStreamerFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.Streamer, error) {
+		upsertStreamerFn: func(_ context.Context, _, _ string) (*domain.Streamer, error) {
 			return &domain.Streamer{ID: userID, TwitchUsername: "testuser"}, nil
 		},
 	}
@@ -337,7 +336,7 @@ func TestHandleOAuthCallback_SubscribeCalledOnSuccess(t *testing.T) {
 	var subscribedBroadcasterID string
 
 	app := &mockAppService{
-		upsertStreamerFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.Streamer, error) {
+		upsertStreamerFn: func(_ context.Context, _, _ string) (*domain.Streamer, error) {
 			return &domain.Streamer{ID: userID, TwitchUsername: "testuser"}, nil
 		},
 	}
@@ -374,7 +373,7 @@ func TestHandleOAuthCallback_SubscribeFailureDoesNotBlockOAuth(t *testing.T) {
 	userID := uuid.NewV4()
 
 	app := &mockAppService{
-		upsertStreamerFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.Streamer, error) {
+		upsertStreamerFn: func(_ context.Context, _, _ string) (*domain.Streamer, error) {
 			return &domain.Streamer{ID: userID, TwitchUsername: "testuser"}, nil
 		},
 	}
@@ -408,7 +407,7 @@ func TestHandleOAuthCallback_ReloginIdempotent(t *testing.T) {
 	subscribeCallCount := 0
 
 	app := &mockAppService{
-		upsertStreamerFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.Streamer, error) {
+		upsertStreamerFn: func(_ context.Context, _, _ string) (*domain.Streamer, error) {
 			return &domain.Streamer{ID: userID, TwitchUsername: "testuser"}, nil
 		},
 	}
@@ -448,7 +447,7 @@ func TestHandleOAuthCallback_ReloginIdempotent(t *testing.T) {
 
 func TestHandleOAuthCallback_DBError(t *testing.T) {
 	app := &mockAppService{
-		upsertStreamerFn: func(_ context.Context, _, _, _, _ string, _ time.Time) (*domain.Streamer, error) {
+		upsertStreamerFn: func(_ context.Context, _, _ string) (*domain.Streamer, error) {
 			return nil, errors.New("db error")
 		},
 	}

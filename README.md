@@ -62,7 +62,6 @@ TWITCH_CLIENT_ID=your_client_id
 TWITCH_CLIENT_SECRET=your_client_secret
 TWITCH_REDIRECT_URI=http://localhost:8080/auth/callback
 SESSION_SECRET=$(openssl rand -hex 32)
-TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
 WEBHOOK_CALLBACK_URL=https://your-subdomain.ngrok-free.app/webhooks/eventsub
 WEBHOOK_SECRET=$(openssl rand -hex 16)
 BOT_USER_ID=your_bot_twitch_user_id
@@ -180,7 +179,6 @@ See `.env.example` for all variables with comments.
 - `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` — Twitch app credentials
 - `TWITCH_REDIRECT_URI` — OAuth callback URL
 - `SESSION_SECRET` — Secret for session cookies
-- `TOKEN_ENCRYPTION_KEY` — 64 hex chars for AES-256-GCM token encryption (generate: `openssl rand -hex 32`)
 - `WEBHOOK_CALLBACK_URL` — Public HTTPS URL for EventSub webhook delivery
 - `WEBHOOK_SECRET` — HMAC secret for webhook verification (10-100 chars)
 - `BOT_USER_ID` — Twitch user ID of the bot account
@@ -225,7 +223,6 @@ See `.env.example` for all variables with comments.
    ```bash
    SESSION_SECRET=$(openssl rand -hex 32)
    WEBHOOK_SECRET=$(openssl rand -hex 16)
-   TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
    ```
 4. Set `APP_ENV=production` for secure cookies (also enforces `DATABASE_URL` SSL — rejects `sslmode=disable/allow`)
 5. Set `LOG_FORMAT=json` for structured logging

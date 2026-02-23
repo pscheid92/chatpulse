@@ -4,53 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pscheid92/chatpulse/internal/adapter/postgres/sqlcgen"
 	"github.com/pscheid92/chatpulse/internal/domain"
-	"github.com/pscheid92/chatpulse/internal/platform/crypto"
 	"github.com/pscheid92/uuid"
 )
 
 type StreamerRepo struct {
-	pool   *pgxpool.Pool
-	q      *sqlcgen.Queries
-	crypto crypto.Service
+	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
-func NewStreamerRepo(pool *pgxpool.Pool, crypto crypto.Service) *StreamerRepo {
+func NewStreamerRepo(pool *pgxpool.Pool) *StreamerRepo {
 	return &StreamerRepo{
-		pool:   pool,
-		q:      sqlcgen.New(pool),
-		crypto: crypto,
+		pool: pool,
+		q:    sqlcgen.New(pool),
 	}
 }
 
-func (r *StreamerRepo) toDomainStreamer(row sqlcgen.Streamer) (*domain.Streamer, error) {
-	accessToken, err := r.crypto.Decrypt(row.AccessToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt access token: %w", err)
-	}
-
-	refreshToken, err := r.crypto.Decrypt(row.RefreshToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
-	}
-
-	streamer := domain.Streamer{
+func toDomainStreamer(row sqlcgen.Streamer) *domain.Streamer {
+	return &domain.Streamer{
 		ID:             row.ID,
 		CreatedAt:      row.CreatedAt,
 		UpdatedAt:      row.UpdatedAt,
 		OverlayUUID:    row.OverlayUUID,
 		TwitchUserID:   row.TwitchUserID,
 		TwitchUsername: row.TwitchUsername,
-		AccessToken:    accessToken,
-		RefreshToken:   refreshToken,
-		TokenExpiry:    row.TokenExpiry,
 	}
-	return &streamer, nil
 }
 
 func (r *StreamerRepo) GetByID(ctx context.Context, streamerID uuid.UUID) (*domain.Streamer, error) {
@@ -61,7 +43,7 @@ func (r *StreamerRepo) GetByID(ctx context.Context, streamerID uuid.UUID) (*doma
 	if err != nil {
 		return nil, fmt.Errorf("failed to get streamer by ID: %w", err)
 	}
-	return r.toDomainStreamer(row)
+	return toDomainStreamer(row), nil
 }
 
 func (r *StreamerRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*domain.Streamer, error) {
@@ -72,20 +54,10 @@ func (r *StreamerRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UU
 	if err != nil {
 		return nil, fmt.Errorf("failed to get streamer by overlay UUID: %w", err)
 	}
-	return r.toDomainStreamer(row)
+	return toDomainStreamer(row), nil
 }
 
-func (r *StreamerRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error) {
-	encAccessToken, err := r.crypto.Encrypt(accessToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt access token: %w", err)
-	}
-
-	encRefreshToken, err := r.crypto.Encrypt(refreshToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt refresh token: %w", err)
-	}
-
+func (r *StreamerRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername string) (*domain.Streamer, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
@@ -96,9 +68,6 @@ func (r *StreamerRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername,
 	row, err := qtx.UpsertStreamer(ctx, sqlcgen.UpsertStreamerParams{
 		TwitchUserID:   twitchUserID,
 		TwitchUsername: twitchUsername,
-		AccessToken:    encAccessToken,
-		RefreshToken:   encRefreshToken,
-		TokenExpiry:    tokenExpiry,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert streamer: %w", err)
@@ -112,7 +81,7 @@ func (r *StreamerRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername,
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	return r.toDomainStreamer(row)
+	return toDomainStreamer(row), nil
 }
 
 func (r *StreamerRepo) RotateOverlayUUID(ctx context.Context, streamerID uuid.UUID) (uuid.UUID, error) {

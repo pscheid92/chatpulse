@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gorilla/sessions"
 	"github.com/labstack/echo/v4"
@@ -23,7 +22,7 @@ import (
 type mockAppService struct {
 	getStreamerByIDFn      func(ctx context.Context, streamerID uuid.UUID) (*domain.Streamer, error)
 	getStreamerByOverlayFn func(ctx context.Context, overlayUUID uuid.UUID) (*domain.Streamer, error)
-	upsertStreamerFn       func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error)
+	upsertStreamerFn       func(ctx context.Context, twitchUserID, twitchUsername string) (*domain.Streamer, error)
 	getConfigFn            func(ctx context.Context, streamerID uuid.UUID) (*domain.OverlayConfigWithVersion, error)
 	saveConfigFn           func(ctx context.Context, req app.SaveConfigRequest) error
 	rotateOverlayUUIDFn    func(ctx context.Context, streamerID uuid.UUID) (uuid.UUID, error)
@@ -44,9 +43,9 @@ func (m *mockAppService) GetStreamerByOverlayUUID(ctx context.Context, overlayUU
 	return nil, domain.ErrStreamerNotFound
 }
 
-func (m *mockAppService) UpsertStreamer(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error) {
+func (m *mockAppService) UpsertStreamer(ctx context.Context, twitchUserID, twitchUsername string) (*domain.Streamer, error) {
 	if m.upsertStreamerFn != nil {
-		return m.upsertStreamerFn(ctx, twitchUserID, twitchUsername, accessToken, refreshToken, tokenExpiry)
+		return m.upsertStreamerFn(ctx, twitchUserID, twitchUsername)
 	}
 	return nil, errors.New("not implemented")
 }

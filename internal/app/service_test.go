@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/pscheid92/chatpulse/internal/domain"
 	"github.com/pscheid92/uuid"
@@ -17,7 +16,7 @@ import (
 type mockStreamerRepo struct {
 	getByIDFn           func(ctx context.Context, streamerID uuid.UUID) (*domain.Streamer, error)
 	getByOverlayUUIDFn  func(ctx context.Context, overlayUUID uuid.UUID) (*domain.Streamer, error)
-	upsertFn            func(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error)
+	upsertFn            func(ctx context.Context, twitchUserID, twitchUsername string) (*domain.Streamer, error)
 	rotateOverlayUUIDFn func(ctx context.Context, streamerID uuid.UUID) (uuid.UUID, error)
 }
 
@@ -35,9 +34,9 @@ func (m *mockStreamerRepo) GetByOverlayUUID(ctx context.Context, overlayUUID uui
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockStreamerRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error) {
+func (m *mockStreamerRepo) Upsert(ctx context.Context, twitchUserID, twitchUsername string) (*domain.Streamer, error) {
 	if m.upsertFn != nil {
-		return m.upsertFn(ctx, twitchUserID, twitchUsername, accessToken, refreshToken, tokenExpiry)
+		return m.upsertFn(ctx, twitchUserID, twitchUsername)
 	}
 	return nil, errors.New("not implemented")
 }

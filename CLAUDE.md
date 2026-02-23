@@ -46,7 +46,7 @@ internal/
   adapter/
     postgres/                   PostgreSQL adapter
       postgres.go               Connection (pgxpool), tern migrations with advisory lock
-      streamer_repository.go    StreamerRepo: CRUD, overlay UUID rotation, token encrypt/decrypt
+      streamer_repository.go    StreamerRepo: CRUD, overlay UUID rotation
       config_repository.go      ConfigRepo: read/update with optimistic locking (version field)
       eventsub_repository.go    EventSubRepo: EventSub subscription CRUD
       sqlc/schemas/             Tern migration DDL (streamers, configs, eventsub_subscriptions tables)
@@ -87,8 +87,6 @@ internal/
   platform/                     Cross-cutting infrastructure (stdlib only)
     config/config.go            Struct-tag-based env loading, validation (all required fields enforced, production SSL check)
     correlation/correlation.go  Correlation ID generation (8-char hex), context propagation, slog handler wrapper
-    crypto/crypto.go            crypto.Service interface, AesGcmCryptoService (AES-256-GCM)
-    crypto/cryptotest/noop.go   NoopCryptoService for testing
     errors/errors.go            Structured error types (validation, not_found, conflict, internal, external), HTTP status mapping
     logging/logger.go           Structured logging setup (slog, configurable level + format)
     retry/retry.go              Exponential backoff with jitter, classification (Stop/Retry/After)
@@ -134,7 +132,6 @@ See `.env.example` for all variables with comments.
 - `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` — Twitch app credentials
 - `TWITCH_REDIRECT_URI` — OAuth callback URL
 - `SESSION_SECRET` — HMAC secret for session cookies
-- `TOKEN_ENCRYPTION_KEY` — 64 hex chars (32 bytes) for AES-256-GCM token encryption
 - `WEBHOOK_CALLBACK_URL` — Public HTTPS URL for EventSub delivery
 - `WEBHOOK_SECRET` — HMAC secret for webhook verification (10-100 chars)
 - `BOT_USER_ID` — Twitch user ID of the dedicated bot account

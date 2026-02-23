@@ -3,11 +3,9 @@ package postgres
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pscheid92/chatpulse/internal/domain"
-	"github.com/pscheid92/chatpulse/internal/platform/crypto/cryptotest"
 	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,11 +14,10 @@ import (
 func createTestUser(t *testing.T, pool *pgxpool.Pool, twitchUserID string) *domain.Streamer {
 	t.Helper()
 
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	ctx := context.Background()
-	expiry := time.Now().UTC().Add(1 * time.Hour)
 
-	user, err := repo.Upsert(ctx, twitchUserID, "testuser_"+twitchUserID, "access_token", "refresh_token", expiry)
+	user, err := repo.Upsert(ctx, twitchUserID, "testuser_"+twitchUserID)
 	require.NoError(t, err)
 	require.NotEqual(t, uuid.Nil, user.ID)
 

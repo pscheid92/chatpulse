@@ -23,7 +23,7 @@ import (
 type appService interface {
 	GetStreamerByID(ctx context.Context, streamerID uuid.UUID) (*domain.Streamer, error)
 	GetStreamerByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*domain.Streamer, error)
-	UpsertStreamer(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*domain.Streamer, error)
+	UpsertStreamer(ctx context.Context, twitchUserID, twitchUsername string) (*domain.Streamer, error)
 	GetConfig(ctx context.Context, streamerID uuid.UUID) (*domain.OverlayConfigWithVersion, error)
 	SaveConfig(ctx context.Context, req app.SaveConfigRequest) error
 	RotateOverlayUUID(ctx context.Context, streamerID uuid.UUID) (uuid.UUID, error)

@@ -14,7 +14,6 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("TWITCH_CLIENT_SECRET", "test-client-secret")
 	t.Setenv("TWITCH_REDIRECT_URI", "http://localhost:8080/auth/callback")
 	t.Setenv("SESSION_SECRET", "test-session-secret")
-	t.Setenv("TOKEN_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	t.Setenv("REDIS_URL", "redis://localhost:6379")
 	t.Setenv("WEBHOOK_CALLBACK_URL", "https://example.com/webhooks/eventsub")
 	t.Setenv("WEBHOOK_SECRET", "test-webhook-secret-at-least-10")
@@ -49,7 +48,6 @@ func TestLoad_MissingRequired(t *testing.T) {
 		{"missing WEBHOOK_CALLBACK_URL", "WEBHOOK_CALLBACK_URL", "WEBHOOK_CALLBACK_URL is required"},
 		{"missing WEBHOOK_SECRET", "WEBHOOK_SECRET", "WEBHOOK_SECRET is required"},
 		{"missing BOT_USER_ID", "BOT_USER_ID", "BOT_USER_ID is required"},
-		{"missing TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_KEY is required"},
 	}
 
 	for _, tt := range tests {
@@ -84,38 +82,6 @@ func TestLoad_CustomPortAndEnv(t *testing.T) {
 
 	assert.Equal(t, "production", cfg.AppEnv)
 	assert.Equal(t, "9090", cfg.Port)
-}
-
-func TestLoad_ValidEncryptionKey(t *testing.T) {
-	setRequiredEnv(t)
-	// 64 hex chars = 32 bytes
-	t.Setenv("TOKEN_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-
-	cfg, err := Load()
-	require.NoError(t, err)
-	assert.Equal(t, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", cfg.TokenEncryptionKey)
-}
-
-func TestLoad_InvalidEncryptionKey(t *testing.T) {
-	tests := []struct {
-		name    string
-		key     string
-		wantErr string
-	}{
-		{"invalid hex", "not-valid-hex", "TOKEN_ENCRYPTION_KEY must be valid hex"},
-		{"too short", "0123456789abcdef", "TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			setRequiredEnv(t)
-			t.Setenv("TOKEN_ENCRYPTION_KEY", tt.key)
-
-			_, err := Load()
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.wantErr)
-		})
-	}
 }
 
 func TestLoad_ProductionRejectsInsecureSSL(t *testing.T) {

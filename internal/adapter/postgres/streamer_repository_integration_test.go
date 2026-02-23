@@ -3,11 +3,8 @@ package postgres
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/pscheid92/chatpulse/internal/domain"
-	"github.com/pscheid92/chatpulse/internal/platform/crypto"
-	"github.com/pscheid92/chatpulse/internal/platform/crypto/cryptotest"
 	"github.com/pscheid92/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,20 +12,17 @@ import (
 
 func TestUpsertUser_Insert(t *testing.T) {
 	pool := setupTestDB(t)
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	user, err := repo.Upsert(ctx, "12345", "testuser", "access_token", "refresh_token", expiry)
+	user, err := repo.Upsert(ctx, "12345", "testuser")
 
 	require.NoError(t, err)
 	assert.NotEqual(t, uuid.Nil, user.ID)
 	assert.NotEqual(t, uuid.Nil, user.OverlayUUID)
 	assert.Equal(t, "12345", user.TwitchUserID)
 	assert.Equal(t, "testuser", user.TwitchUsername)
-	// Compare times in UTC to avoid timezone issues
-	assert.WithinDuration(t, expiry, user.TokenExpiry, time.Second)
 
 	// Verify default config was created
 	config, err := configRepo.GetByStreamerID(ctx, user.ID)
@@ -42,28 +36,25 @@ func TestUpsertUser_Insert(t *testing.T) {
 
 func TestUpsertUser_Update(t *testing.T) {
 	pool := setupTestDB(t)
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	configRepo := NewConfigRepo(pool)
 	ctx := context.Background()
 
 	// Insert
-	expiry1 := time.Now().UTC().Add(1 * time.Hour)
-	user1, err := repo.Upsert(ctx, "12345", "testuser", "access1", "refresh1", expiry1)
+	user1, err := repo.Upsert(ctx, "12345", "testuser")
 	require.NoError(t, err)
 
 	originalID := user1.ID
 	originalOverlayUUID := user1.OverlayUUID
 
 	// Update with same TwitchUserID
-	expiry2 := time.Now().UTC().Add(2 * time.Hour)
-	user2, err := repo.Upsert(ctx, "12345", "testuser_renamed", "access2", "refresh2", expiry2)
+	user2, err := repo.Upsert(ctx, "12345", "testuser_renamed")
 	require.NoError(t, err)
 
 	// Should have same IDs but updated fields
 	assert.Equal(t, originalID, user2.ID)
 	assert.Equal(t, originalOverlayUUID, user2.OverlayUUID)
 	assert.Equal(t, "testuser_renamed", user2.TwitchUsername)
-	assert.WithinDuration(t, expiry2, user2.TokenExpiry, time.Second)
 
 	// Config should still exist (not duplicated)
 	config, err := configRepo.GetByStreamerID(ctx, user2.ID)
@@ -71,41 +62,13 @@ func TestUpsertUser_Update(t *testing.T) {
 	assert.NotNil(t, config)
 }
 
-func TestUpsertUser_TokenEncryption(t *testing.T) {
-	pool := setupTestDB(t)
-	ctx := context.Background()
-
-	cryptoSvc, err := crypto.NewAesGcmCryptoService(testEncryptionKey)
-	require.NoError(t, err)
-
-	repo := NewStreamerRepo(pool, cryptoSvc)
-
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	user, err := repo.Upsert(ctx, "12345", "testuser", "plaintext_access", "plaintext_refresh", expiry)
-	require.NoError(t, err)
-
-	// Query raw tokens from database
-	var rawAccess, rawRefresh string
-	err = pool.QueryRow(ctx, "SELECT access_token, refresh_token FROM streamers WHERE id = $1", user.ID).Scan(&rawAccess, &rawRefresh)
-	require.NoError(t, err)
-
-	// Tokens should be encrypted (not equal to plaintext)
-	assert.NotEqual(t, "plaintext_access", rawAccess)
-	assert.NotEqual(t, "plaintext_refresh", rawRefresh)
-
-	// User object should have decrypted tokens
-	assert.Equal(t, "plaintext_access", user.AccessToken)
-	assert.Equal(t, "plaintext_refresh", user.RefreshToken)
-}
-
 func TestGetUserByID_Success(t *testing.T) {
 	pool := setupTestDB(t)
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	ctx := context.Background()
 
 	// Insert user
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	insertedUser, err := repo.Upsert(ctx, "12345", "testuser", "access", "refresh", expiry)
+	insertedUser, err := repo.Upsert(ctx, "12345", "testuser")
 	require.NoError(t, err)
 
 	// Get user by ID
@@ -114,14 +77,11 @@ func TestGetUserByID_Success(t *testing.T) {
 	assert.Equal(t, insertedUser.ID, user.ID)
 	assert.Equal(t, insertedUser.TwitchUserID, user.TwitchUserID)
 	assert.Equal(t, insertedUser.TwitchUsername, user.TwitchUsername)
-	assert.Equal(t, "access", user.AccessToken)
-	assert.Equal(t, "refresh", user.RefreshToken)
-	assert.WithinDuration(t, expiry, user.TokenExpiry, time.Second)
 }
 
 func TestGetUserByID_NotFound(t *testing.T) {
 	pool := setupTestDB(t)
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	ctx := context.Background()
 
 	randomID := uuid.NewV4()
@@ -132,34 +92,13 @@ func TestGetUserByID_NotFound(t *testing.T) {
 	assert.Nil(t, user)
 }
 
-func TestGetUserByID_TokenDecryption(t *testing.T) {
-	pool := setupTestDB(t)
-	ctx := context.Background()
-
-	cryptoSvc, err := crypto.NewAesGcmCryptoService(testEncryptionKey)
-	require.NoError(t, err)
-
-	repo := NewStreamerRepo(pool, cryptoSvc)
-
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	insertedUser, err := repo.Upsert(ctx, "12345", "testuser", "plain_access", "plain_refresh", expiry)
-	require.NoError(t, err)
-
-	// Get user - tokens should be decrypted
-	user, err := repo.GetByID(ctx, insertedUser.ID)
-	require.NoError(t, err)
-	assert.Equal(t, "plain_access", user.AccessToken)
-	assert.Equal(t, "plain_refresh", user.RefreshToken)
-}
-
 func TestGetUserByOverlayUUID_Success(t *testing.T) {
 	pool := setupTestDB(t)
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	ctx := context.Background()
 
 	// Insert user
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	insertedUser, err := repo.Upsert(ctx, "12345", "testuser", "access", "refresh", expiry)
+	insertedUser, err := repo.Upsert(ctx, "12345", "testuser")
 	require.NoError(t, err)
 
 	// Get user by overlay UUID
@@ -172,7 +111,7 @@ func TestGetUserByOverlayUUID_Success(t *testing.T) {
 
 func TestGetUserByOverlayUUID_NotFound(t *testing.T) {
 	pool := setupTestDB(t)
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	ctx := context.Background()
 
 	randomUUID := uuid.NewV4()
@@ -185,7 +124,7 @@ func TestGetUserByOverlayUUID_NotFound(t *testing.T) {
 
 func TestRotateOverlayUUID_NotFound(t *testing.T) {
 	pool := setupTestDB(t)
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	ctx := context.Background()
 
 	randomID := uuid.NewV4()
@@ -195,38 +134,13 @@ func TestRotateOverlayUUID_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, domain.ErrStreamerNotFound)
 }
 
-func TestGetUserByID_EncryptionKeyMismatch(t *testing.T) {
-	pool := setupTestDB(t)
-	ctx := context.Background()
-
-	// Write tokens with key A
-	keyA := testEncryptionKey
-	cryptoA, err := crypto.NewAesGcmCryptoService(keyA)
-	require.NoError(t, err)
-	repoA := NewStreamerRepo(pool, cryptoA)
-
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	user, err := repoA.Upsert(ctx, "12345", "testuser", "secret_access", "secret_refresh", expiry)
-	require.NoError(t, err)
-
-	// Read tokens with key B
-	keyB := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-	cryptoB, err := crypto.NewAesGcmCryptoService(keyB)
-	require.NoError(t, err)
-	repoB := NewStreamerRepo(pool, cryptoB)
-
-	_, err = repoB.GetByID(ctx, user.ID)
-	assert.Error(t, err)
-}
-
 func TestRotateOverlayUUID(t *testing.T) {
 	pool := setupTestDB(t)
-	repo := NewStreamerRepo(pool, cryptotest.NoopService{})
+	repo := NewStreamerRepo(pool)
 	ctx := context.Background()
 
 	// Insert user
-	expiry := time.Now().UTC().Add(1 * time.Hour)
-	user, err := repo.Upsert(ctx, "12345", "testuser", "access", "refresh", expiry)
+	user, err := repo.Upsert(ctx, "12345", "testuser")
 	require.NoError(t, err)
 
 	oldOverlayUUID := user.OverlayUUID

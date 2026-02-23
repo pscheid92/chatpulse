@@ -15,15 +15,11 @@ type Streamer struct {
 
 	TwitchUserID   string
 	TwitchUsername string
-
-	AccessToken  string
-	RefreshToken string
-	TokenExpiry  time.Time
 }
 
 type StreamerRepository interface {
 	GetByID(ctx context.Context, streamerID uuid.UUID) (*Streamer, error)
 	GetByOverlayUUID(ctx context.Context, overlayUUID uuid.UUID) (*Streamer, error)
-	Upsert(ctx context.Context, twitchUserID, twitchUsername, accessToken, refreshToken string, tokenExpiry time.Time) (*Streamer, error)
+	Upsert(ctx context.Context, twitchUserID, twitchUsername string) (*Streamer, error)
 	RotateOverlayUUID(ctx context.Context, streamerID uuid.UUID) (uuid.UUID, error)
 }

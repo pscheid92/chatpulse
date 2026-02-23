@@ -16,8 +16,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-const testEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
 var (
 	testPool        *pgxpool.Pool
 	testDatabaseURL string

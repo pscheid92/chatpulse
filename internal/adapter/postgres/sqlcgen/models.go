@@ -19,8 +19,8 @@ type Config struct {
 	ForLabel       string
 	AgainstTrigger string
 	AgainstLabel   string
-	DisplayMode    string
 	MemorySeconds  int32
+	DisplayMode    string
 }
 
 type EventsubSubscription struct {
@@ -37,7 +37,4 @@ type Streamer struct {
 	OverlayUUID    uuid.UUID
 	TwitchUserID   string
 	TwitchUsername string
-	AccessToken    string
-	RefreshToken   string
-	TokenExpiry    time.Time
 }
