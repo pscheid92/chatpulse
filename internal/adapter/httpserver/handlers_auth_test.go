@@ -149,7 +149,11 @@ func TestHandleLanding_NoSession(t *testing.T) {
 }
 
 func TestHandleLanding_WithValidSession(t *testing.T) {
-	srv := newTestServer(t, &mockAppService{})
+	srv := newTestServer(t, &mockAppService{
+		getStreamerByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.Streamer, error) {
+			return &domain.Streamer{}, nil
+		},
+	})
 	e := srv.echo
 	userID := uuid.NewV4()
 

@@ -28,16 +28,8 @@ func (s *Server) registerAuthRoutes(csrfMiddleware, rateLimiter echo.MiddlewareF
 }
 
 func (s *Server) handleLanding(c echo.Context) error {
-	session, err := s.sessionStore.Get(c.Request(), sessionName)
-	if err == nil {
-		if userIDStr, ok := session.Values[sessionKeyToken].(string); ok {
-			if _, err := uuid.Parse(userIDStr); err == nil {
-				if err := c.Redirect(http.StatusFound, "/dashboard"); err != nil {
-					return fmt.Errorf("failed to redirect: %w", err)
-				}
-				return nil
-			}
-		}
+	if s.isAuthenticated(c) {
+		return c.Redirect(http.StatusFound, "/dashboard")
 	}
 	return s.renderTemplate(c, "landing.html", nil)
 }
@@ -77,6 +69,24 @@ func (s *Server) requireAuth(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+// isAuthenticated checks whether the request has a valid session for an existing streamer.
+func (s *Server) isAuthenticated(c echo.Context) bool {
+	session, err := s.sessionStore.Get(c.Request(), sessionName)
+	if err != nil {
+		return false
+	}
+	userIDStr, ok := session.Values[sessionKeyToken].(string)
+	if !ok {
+		return false
+	}
+	userUUID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return false
+	}
+	_, err = s.app.GetStreamerByID(c.Request().Context(), userUUID)
+	return err == nil
+}
+
 func generateOAuthState() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -86,6 +96,11 @@ func generateOAuthState() (string, error) {
 }
 
 func (s *Server) handleLoginPage(c echo.Context) error {
+	// Redirect already-authenticated users to dashboard (avoids Twitch's redirect page).
+	if s.isAuthenticated(c) {
+		return c.Redirect(http.StatusFound, "/dashboard")
+	}
+
 	state, err := generateOAuthState()
 	if err != nil {
 		return apperrors.InternalError("failed to generate OAuth state", err)
